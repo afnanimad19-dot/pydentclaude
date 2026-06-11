@@ -1,0 +1,394 @@
+// Demo-mode dataset for Pydental. Every dashboard screen reads from here so the
+// whole product can be explored end-to-end before any live integration
+// (OpenDental, WhatsApp Business, Twilio, Retell) is connected.
+
+export type Channel = "whatsapp" | "sms" | "email" | "voice";
+
+export interface Patient {
+  id: string;
+  patNum: number; // OpenDental PatNum
+  name: string;
+  phone: string;
+  email: string;
+  birthdate: string;
+  balance: number;
+  insurance: string;
+  lastVisit: string;
+  nextAppointment: string | null;
+  recallDue: boolean;
+  status: "Active" | "Inactive" | "New";
+}
+
+export interface Appointment {
+  id: string;
+  aptNum: number; // OpenDental AptNum
+  patientId: string;
+  patientName: string;
+  provider: string;
+  operatory: string;
+  procedure: string;
+  date: string;
+  time: string;
+  durationMin: number;
+  status: "Scheduled" | "Confirmed" | "Completed" | "Broken" | "Unconfirmed";
+  confirmedVia: Channel | null;
+}
+
+export interface Message {
+  id: string;
+  direction: "inbound" | "outbound";
+  author: string;
+  body: string;
+  time: string;
+  byBot?: boolean;
+}
+
+export interface Conversation {
+  id: string;
+  channel: Channel;
+  patientId: string;
+  patientName: string;
+  preview: string;
+  time: string;
+  unread: number;
+  assignedTo: string | null;
+  tags: string[];
+  messages: Message[];
+}
+
+export interface VoiceAgent {
+  id: string;
+  name: string;
+  role: string;
+  voice: string;
+  language: string;
+  status: "Live" | "Paused" | "Draft";
+  phoneNumber: string;
+  callsToday: number;
+  avgDurationSec: number;
+  bookingRate: number;
+}
+
+export interface VoiceCall {
+  id: string;
+  agentId: string;
+  agentName: string;
+  patientName: string;
+  phone: string;
+  direction: "inbound" | "outbound";
+  startedAt: string;
+  durationSec: number;
+  outcome: "Booked" | "Rescheduled" | "Question answered" | "Voicemail" | "Transferred" | "Missed";
+  sentiment: "positive" | "neutral" | "negative";
+  transcript: { speaker: "agent" | "patient"; text: string }[];
+}
+
+export interface Broadcast {
+  id: string;
+  channel: Channel;
+  name: string;
+  audience: string;
+  recipients: number;
+  delivered: number;
+  read: number;
+  replied: number;
+  booked: number;
+  status: "Sent" | "Scheduled" | "Draft" | "Sending";
+  sentAt: string;
+}
+
+export interface EmailCampaign {
+  id: string;
+  name: string;
+  subject: string;
+  audience: string;
+  recipients: number;
+  openRate: number;
+  clickRate: number;
+  bookings: number;
+  status: "Sent" | "Scheduled" | "Draft";
+  sentAt: string;
+}
+
+export interface Deal {
+  id: string;
+  patientName: string;
+  treatment: string;
+  value: number;
+  source: Channel | "walk-in" | "referral";
+  owner: string;
+  daysInStage: number;
+}
+
+export interface PipelineStage {
+  id: string;
+  name: string;
+  deals: Deal[];
+}
+
+export interface BotNode {
+  id: string;
+  type: "trigger" | "message" | "condition" | "action" | "handoff";
+  title: string;
+  detail: string;
+}
+
+export interface BotFlow {
+  id: string;
+  name: string;
+  channel: Channel;
+  status: "Live" | "Paused" | "Draft";
+  triggeredToday: number;
+  completionRate: number;
+  nodes: BotNode[];
+}
+
+// ---------------------------------------------------------------------------
+
+export const patients: Patient[] = [
+  { id: "p1", patNum: 1042, name: "Maria Hernandez", phone: "+1 (305) 555-0114", email: "maria.h@gmail.com", birthdate: "1987-04-12", balance: 0, insurance: "Delta Dental PPO", lastVisit: "2026-05-28", nextAppointment: "2026-06-12 09:00", recallDue: false, status: "Active" },
+  { id: "p2", patNum: 1187, name: "James Carter", phone: "+1 (305) 555-0162", email: "jcarter88@yahoo.com", birthdate: "1979-11-03", balance: 240.5, insurance: "Cigna Dental", lastVisit: "2025-12-15", nextAppointment: null, recallDue: true, status: "Active" },
+  { id: "p3", patNum: 1290, name: "Aisha Williams", phone: "+1 (786) 555-0190", email: "aisha.w@outlook.com", birthdate: "1994-02-21", balance: 0, insurance: "MetLife", lastVisit: "2026-06-02", nextAppointment: "2026-06-13 14:30", recallDue: false, status: "Active" },
+  { id: "p4", patNum: 1311, name: "Robert Kim", phone: "+1 (305) 555-0177", email: "rkim@gmail.com", birthdate: "1968-07-30", balance: 1180, insurance: "Self-pay", lastVisit: "2026-04-10", nextAppointment: "2026-06-18 11:00", recallDue: false, status: "Active" },
+  { id: "p5", patNum: 1402, name: "Sofia Lopez", phone: "+1 (786) 555-0145", email: "sofia.lopez@gmail.com", birthdate: "2001-09-17", balance: 0, insurance: "Guardian", lastVisit: "2025-11-20", nextAppointment: null, recallDue: true, status: "Inactive" },
+  { id: "p6", patNum: 1455, name: "Daniel Osei", phone: "+1 (305) 555-0133", email: "d.osei@gmail.com", birthdate: "1990-01-08", balance: 75, insurance: "Aetna", lastVisit: "2026-06-09", nextAppointment: "2026-09-09 10:00", recallDue: false, status: "Active" },
+  { id: "p7", patNum: 1503, name: "Emily Tran", phone: "+1 (786) 555-0108", email: "emily.tran@icloud.com", birthdate: "1998-06-25", balance: 0, insurance: "Delta Dental PPO", lastVisit: "—", nextAppointment: "2026-06-12 16:00", recallDue: false, status: "New" },
+  { id: "p8", patNum: 1544, name: "Luis Mendoza", phone: "+1 (305) 555-0121", email: "lmendoza@hotmail.com", birthdate: "1975-03-14", balance: 520, insurance: "Humana", lastVisit: "2026-02-02", nextAppointment: null, recallDue: true, status: "Active" },
+];
+
+export const appointments: Appointment[] = [
+  { id: "a1", aptNum: 5012, patientId: "p1", patientName: "Maria Hernandez", provider: "Dr. Patel", operatory: "Op 1", procedure: "Prophylaxis + Exam", date: "2026-06-12", time: "09:00", durationMin: 60, status: "Confirmed", confirmedVia: "whatsapp" },
+  { id: "a2", aptNum: 5013, patientId: "p7", patientName: "Emily Tran", provider: "Dr. Patel", operatory: "Op 2", procedure: "New Patient Exam + FMX", date: "2026-06-12", time: "16:00", durationMin: 90, status: "Confirmed", confirmedVia: "voice" },
+  { id: "a3", aptNum: 5014, patientId: "p3", patientName: "Aisha Williams", provider: "Dr. Gomez", operatory: "Op 3", procedure: "Crown Seat #19", date: "2026-06-13", time: "14:30", durationMin: 60, status: "Unconfirmed", confirmedVia: null },
+  { id: "a4", aptNum: 5015, patientId: "p4", patientName: "Robert Kim", provider: "Dr. Gomez", operatory: "Op 1", procedure: "Implant Consult", date: "2026-06-18", time: "11:00", durationMin: 45, status: "Scheduled", confirmedVia: null },
+  { id: "a5", aptNum: 5016, patientId: "p6", patientName: "Daniel Osei", provider: "Hygiene — Kelly", operatory: "Op 4", procedure: "Perio Maintenance", date: "2026-09-09", time: "10:00", durationMin: 50, status: "Scheduled", confirmedVia: "sms" },
+];
+
+export const conversations: Conversation[] = [
+  {
+    id: "c1", channel: "whatsapp", patientId: "p1", patientName: "Maria Hernandez",
+    preview: "Perfect, see you Friday at 9!", time: "9:42 AM", unread: 0, assignedTo: "Front Desk", tags: ["confirmation"],
+    messages: [
+      { id: "m1", direction: "outbound", author: "Recall Bot", byBot: true, body: "Hi Maria! 👋 This is Bright Smile Dental. You're due for your cleaning — Dr. Patel has Friday Jun 12 at 9:00 AM open. Want me to book it?", time: "Yesterday 4:10 PM" },
+      { id: "m2", direction: "inbound", author: "Maria Hernandez", body: "Yes please, that works for me", time: "Yesterday 6:31 PM" },
+      { id: "m3", direction: "outbound", author: "Recall Bot", byBot: true, body: "You're booked ✅ Friday Jun 12, 9:00 AM with Dr. Patel. Reply RESCHEDULE anytime if plans change.", time: "Yesterday 6:31 PM" },
+      { id: "m4", direction: "inbound", author: "Maria Hernandez", body: "Perfect, see you Friday at 9!", time: "9:42 AM" },
+    ],
+  },
+  {
+    id: "c2", channel: "voice", patientId: "p7", patientName: "Emily Tran",
+    preview: "Call summary: New patient booked for Jun 12, 4:00 PM", time: "9:15 AM", unread: 1, assignedTo: null, tags: ["new-patient", "voice-agent"],
+    messages: [
+      { id: "m5", direction: "inbound", author: "Ava (Voice Agent)", byBot: true, body: "📞 Inbound call handled by Ava (3m 12s). Caller asked about new-patient availability and insurance. Outcome: booked New Patient Exam + FMX for Jun 12, 4:00 PM with Dr. Patel. Verified Delta Dental PPO.", time: "9:15 AM" },
+    ],
+  },
+  {
+    id: "c3", channel: "sms", patientId: "p3", patientName: "Aisha Williams",
+    preview: "Can I move it to 3pm instead?", time: "8:58 AM", unread: 2, assignedTo: null, tags: ["reschedule"],
+    messages: [
+      { id: "m6", direction: "outbound", author: "Reminder Bot", byBot: true, body: "Reminder: crown seat appointment tomorrow Jun 13 at 2:30 PM with Dr. Gomez. Reply C to confirm or R to reschedule.", time: "8:00 AM" },
+      { id: "m7", direction: "inbound", author: "Aisha Williams", body: "R", time: "8:57 AM" },
+      { id: "m8", direction: "inbound", author: "Aisha Williams", body: "Can I move it to 3pm instead?", time: "8:58 AM" },
+    ],
+  },
+  {
+    id: "c4", channel: "email", patientId: "p4", patientName: "Robert Kim",
+    preview: "Re: Your implant consult — financing options", time: "Yesterday", unread: 0, assignedTo: "Dr. Gomez", tags: ["treatment-plan", "high-value"],
+    messages: [
+      { id: "m9", direction: "outbound", author: "Dr. Gomez", body: "Hi Robert, ahead of your consult on Jun 18 I've attached the treatment plan options for the implant at #30, including the financing breakdown we discussed. Happy to walk through it on a quick call.", time: "Yesterday 2:20 PM" },
+      { id: "m10", direction: "inbound", author: "Robert Kim", body: "Thanks Dr. Gomez. The 12-month plan looks doable. I'll bring my questions on the 18th.", time: "Yesterday 5:47 PM" },
+    ],
+  },
+  {
+    id: "c5", channel: "whatsapp", patientId: "p8", patientName: "Luis Mendoza",
+    preview: "What are your Saturday hours?", time: "Yesterday", unread: 1, assignedTo: null, tags: ["question"],
+    messages: [
+      { id: "m11", direction: "inbound", author: "Luis Mendoza", body: "What are your Saturday hours?", time: "Yesterday 7:12 PM" },
+      { id: "m12", direction: "outbound", author: "FAQ Bot", byBot: true, body: "We're open Saturdays 9 AM – 2 PM. Want me to check availability for you this Saturday?", time: "Yesterday 7:12 PM" },
+    ],
+  },
+  {
+    id: "c6", channel: "sms", patientId: "p2", patientName: "James Carter",
+    preview: "Ok I'll call back next week about the balance", time: "Mon", unread: 0, assignedTo: "Billing", tags: ["billing", "recall-due"],
+    messages: [
+      { id: "m13", direction: "outbound", author: "Billing Bot", byBot: true, body: "Hi James, a friendly note from Bright Smile Dental: you have an open balance of $240.50. You can pay securely here: pay.brightsmile.demo/8821 — or reply HELP to talk to our billing team.", time: "Mon 10:00 AM" },
+      { id: "m14", direction: "inbound", author: "James Carter", body: "Ok I'll call back next week about the balance", time: "Mon 11:34 AM" },
+    ],
+  },
+];
+
+export const voiceAgents: VoiceAgent[] = [
+  { id: "va1", name: "Ava", role: "Front-desk receptionist — answers, books, reschedules 24/7", voice: "Warm female · US English", language: "English + Spanish", status: "Live", phoneNumber: "+1 (305) 555-0100", callsToday: 23, avgDurationSec: 168, bookingRate: 0.61 },
+  { id: "va2", name: "Leo", role: "Recall & reactivation — calls overdue hygiene patients", voice: "Friendly male · US English", language: "English", status: "Live", phoneNumber: "+1 (305) 555-0101", callsToday: 41, avgDurationSec: 94, bookingRate: 0.34 },
+  { id: "va3", name: "Mia", role: "Insurance verification — calls payers, logs eligibility", voice: "Neutral female · US English", language: "English", status: "Paused", phoneNumber: "+1 (305) 555-0102", callsToday: 0, avgDurationSec: 412, bookingRate: 0 },
+];
+
+export const voiceCalls: VoiceCall[] = [
+  {
+    id: "vc1", agentId: "va1", agentName: "Ava", patientName: "Emily Tran", phone: "+1 (786) 555-0108",
+    direction: "inbound", startedAt: "Today 9:12 AM", durationSec: 192, outcome: "Booked", sentiment: "positive",
+    transcript: [
+      { speaker: "agent", text: "Thank you for calling Bright Smile Dental, this is Ava. How can I help you today?" },
+      { speaker: "patient", text: "Hi, I'm new to the area and looking for a dentist. Do you take Delta Dental?" },
+      { speaker: "agent", text: "We do take Delta Dental PPO. I'd love to get you set up — our next new-patient opening is this Friday at 4 PM with Dr. Patel. Does that work?" },
+      { speaker: "patient", text: "Friday at 4 works great." },
+      { speaker: "agent", text: "Wonderful. Can I get your full name and date of birth to create your chart?" },
+    ],
+  },
+  {
+    id: "vc2", agentId: "va2", agentName: "Leo", patientName: "Sofia Lopez", phone: "+1 (786) 555-0145",
+    direction: "outbound", startedAt: "Today 8:45 AM", durationSec: 71, outcome: "Voicemail", sentiment: "neutral",
+    transcript: [
+      { speaker: "agent", text: "Hi Sofia, this is Leo calling from Bright Smile Dental. It's been a little while since your last cleaning and we'd love to see you back. You can book by replying to our text or calling us at 305-555-0100. Take care!" },
+    ],
+  },
+  {
+    id: "vc3", agentId: "va1", agentName: "Ava", patientName: "Unknown caller", phone: "+1 (954) 555-0188",
+    direction: "inbound", startedAt: "Today 8:21 AM", durationSec: 235, outcome: "Transferred", sentiment: "negative",
+    transcript: [
+      { speaker: "patient", text: "I've been in pain since my filling last week and I want to speak with the doctor now." },
+      { speaker: "agent", text: "I'm so sorry to hear you're in pain — that's a priority for us. Let me connect you directly with our clinical team right away. Please hold for just a moment." },
+    ],
+  },
+  {
+    id: "vc4", agentId: "va2", agentName: "Leo", patientName: "James Carter", phone: "+1 (305) 555-0162",
+    direction: "outbound", startedAt: "Yesterday 3:30 PM", durationSec: 154, outcome: "Booked", sentiment: "positive",
+    transcript: [
+      { speaker: "agent", text: "Hi James, Leo from Bright Smile Dental. You're overdue for your 6-month cleaning — want me to find you a time?" },
+      { speaker: "patient", text: "Yeah, I keep putting it off. What do you have on a late afternoon?" },
+      { speaker: "agent", text: "I have Tuesday Jun 16 at 5:00 PM or Thursday Jun 18 at 4:30 PM." },
+      { speaker: "patient", text: "Thursday at 4:30." },
+    ],
+  },
+];
+
+export const broadcasts: Broadcast[] = [
+  { id: "b1", channel: "whatsapp", name: "June recall — 6 months overdue", audience: "Recall due > 180 days (214 patients)", recipients: 214, delivered: 209, read: 182, replied: 64, booked: 31, status: "Sent", sentAt: "2026-06-08" },
+  { id: "b2", channel: "whatsapp", name: "Whitening promo — Father's Day", audience: "Active patients, age 25–60 (486)", recipients: 486, delivered: 480, read: 391, replied: 47, booked: 18, status: "Sent", sentAt: "2026-06-05" },
+  { id: "b3", channel: "sms", name: "Unconfirmed appts — next 48h", audience: "Tomorrow + Friday unconfirmed (12)", recipients: 12, delivered: 12, read: 0, replied: 9, booked: 9, status: "Sent", sentAt: "2026-06-10" },
+  { id: "b4", channel: "whatsapp", name: "Hurricane closure notice", audience: "All active patients (1,240)", recipients: 0, delivered: 0, read: 0, replied: 0, booked: 0, status: "Draft", sentAt: "—" },
+  { id: "b5", channel: "sms", name: "Insurance benefits expiring — use it or lose it", audience: "Remaining benefits > $500 (167)", recipients: 167, delivered: 0, read: 0, replied: 0, booked: 0, status: "Scheduled", sentAt: "2026-06-15" },
+];
+
+export const emailCampaigns: EmailCampaign[] = [
+  { id: "e1", name: "Monthly newsletter — June", subject: "Summer smiles: 3 tips + a whitening offer inside", audience: "All subscribers (2,180)", recipients: 2180, openRate: 0.41, clickRate: 0.072, bookings: 14, status: "Sent", sentAt: "2026-06-03" },
+  { id: "e2", name: "Treatment plan follow-up (auto)", subject: "Your treatment plan from Bright Smile Dental", audience: "Unscheduled tx plans, 7-day drip", recipients: 38, openRate: 0.63, clickRate: 0.18, bookings: 9, status: "Sent", sentAt: "Ongoing" },
+  { id: "e3", name: "Reactivation — 12+ months", subject: "We miss your smile, {{first_name}}", audience: "Inactive > 12 months (342)", recipients: 342, openRate: 0.28, clickRate: 0.051, bookings: 6, status: "Sent", sentAt: "2026-05-22" },
+  { id: "e4", name: "Post-visit review request (auto)", subject: "How was your visit?", audience: "Completed appts, +4 hours", recipients: 0, openRate: 0, clickRate: 0, bookings: 0, status: "Scheduled", sentAt: "Ongoing" },
+];
+
+export const pipeline: PipelineStage[] = [
+  {
+    id: "s1", name: "New lead",
+    deals: [
+      { id: "d1", patientName: "Karen Phillips", treatment: "Invisalign consult", value: 4800, source: "whatsapp", owner: "Front Desk", daysInStage: 1 },
+      { id: "d2", patientName: "Tom Becker", treatment: "New patient exam", value: 350, source: "voice", owner: "Ava (AI)", daysInStage: 0 },
+      { id: "d3", patientName: "Nina Alvarez", treatment: "Emergency — toothache", value: 600, source: "sms", owner: "Front Desk", daysInStage: 0 },
+    ],
+  },
+  {
+    id: "s2", name: "Contacted",
+    deals: [
+      { id: "d4", patientName: "Sofia Lopez", treatment: "Recall cleaning", value: 220, source: "voice", owner: "Leo (AI)", daysInStage: 2 },
+      { id: "d5", patientName: "Mark Johnson", treatment: "Veneers consult", value: 9600, source: "email", owner: "Dr. Gomez", daysInStage: 4 },
+    ],
+  },
+  {
+    id: "s3", name: "Consult booked",
+    deals: [
+      { id: "d6", patientName: "Robert Kim", treatment: "Implant #30", value: 4200, source: "email", owner: "Dr. Gomez", daysInStage: 6 },
+      { id: "d7", patientName: "Emily Tran", treatment: "New patient exam + FMX", value: 420, source: "voice", owner: "Ava (AI)", daysInStage: 1 },
+    ],
+  },
+  {
+    id: "s4", name: "Treatment presented",
+    deals: [
+      { id: "d8", patientName: "Patricia Wells", treatment: "Full-arch restoration", value: 18500, source: "referral", owner: "Dr. Patel", daysInStage: 9 },
+      { id: "d9", patientName: "Luis Mendoza", treatment: "Crown #14 + filling", value: 1650, source: "whatsapp", owner: "Front Desk", daysInStage: 3 },
+    ],
+  },
+  {
+    id: "s5", name: "Accepted / scheduled",
+    deals: [
+      { id: "d10", patientName: "Aisha Williams", treatment: "Crown seat #19", value: 1280, source: "sms", owner: "Front Desk", daysInStage: 2 },
+      { id: "d11", patientName: "James Carter", treatment: "Recall cleaning", value: 220, source: "voice", owner: "Leo (AI)", daysInStage: 1 },
+    ],
+  },
+];
+
+export const botFlows: BotFlow[] = [
+  {
+    id: "f1", name: "Hygiene recall & rebooking", channel: "whatsapp", status: "Live", triggeredToday: 38, completionRate: 0.72,
+    nodes: [
+      { id: "n1", type: "trigger", title: "Trigger: recall due", detail: "OpenDental recall list — patient overdue ≥ 30 days" },
+      { id: "n2", type: "message", title: "Send recall message", detail: "Template: “Hi {{first_name}}, you're due for your cleaning…” with 3 slot buttons" },
+      { id: "n3", type: "condition", title: "Patient replied?", detail: "Wait 24h → if no reply, retry once; after 2nd silence, queue voice call by Leo" },
+      { id: "n4", type: "action", title: "Book in OpenDental", detail: "Create appointment via Appointments API in chosen slot" },
+      { id: "n5", type: "message", title: "Confirmation + reminder", detail: "Send instant confirmation, reminder at T-24h and T-2h" },
+    ],
+  },
+  {
+    id: "f2", name: "FAQ & office-hours autoresponder", channel: "whatsapp", status: "Live", triggeredToday: 17, completionRate: 0.91,
+    nodes: [
+      { id: "n6", type: "trigger", title: "Trigger: inbound message", detail: "Any WhatsApp message outside an active conversation" },
+      { id: "n7", type: "condition", title: "Intent detection (AI)", detail: "Classify: hours / pricing / insurance / emergency / other" },
+      { id: "n8", type: "message", title: "Answer from knowledge base", detail: "AI answer grounded in clinic info; emergencies skip straight to handoff" },
+      { id: "n9", type: "handoff", title: "Human handoff", detail: "Unresolved after 2 turns → assign to Front Desk inbox with full context" },
+    ],
+  },
+  {
+    id: "f3", name: "No-show recovery", channel: "sms", status: "Paused", triggeredToday: 0, completionRate: 0.44,
+    nodes: [
+      { id: "n10", type: "trigger", title: "Trigger: appointment broken", detail: "OpenDental status changes to Broken" },
+      { id: "n11", type: "message", title: "Empathetic rebook text", detail: "“We missed you today — want to grab a new time?” with booking link" },
+      { id: "n12", type: "condition", title: "Booked within 48h?", detail: "If not, add to Pipeline → Contacted and notify Front Desk" },
+    ],
+  },
+];
+
+// Dashboard KPI series ------------------------------------------------------
+
+export const weeklyConversations = [
+  { day: "Mon", whatsapp: 42, sms: 28, email: 12, voice: 19 },
+  { day: "Tue", whatsapp: 51, sms: 31, email: 9, voice: 24 },
+  { day: "Wed", whatsapp: 47, sms: 25, email: 15, voice: 22 },
+  { day: "Thu", whatsapp: 58, sms: 33, email: 11, voice: 27 },
+  { day: "Fri", whatsapp: 63, sms: 36, email: 14, voice: 31 },
+  { day: "Sat", whatsapp: 22, sms: 12, email: 4, voice: 9 },
+  { day: "Sun", whatsapp: 8, sms: 5, email: 2, voice: 3 },
+];
+
+export const monthlyRevenue = [
+  { month: "Jan", production: 86_000, fromPydental: 9_400 },
+  { month: "Feb", production: 91_500, fromPydental: 14_200 },
+  { month: "Mar", production: 88_200, fromPydental: 18_900 },
+  { month: "Apr", production: 97_800, fromPydental: 24_600 },
+  { month: "May", production: 104_300, fromPydental: 31_200 },
+  { month: "Jun", production: 48_900, fromPydental: 17_800 },
+];
+
+export const todayStats = {
+  conversationsHandled: 96,
+  byAi: 71,
+  appointmentsBooked: 14,
+  noShowsSaved: 3,
+  avgFirstResponseSec: 8,
+  openInboxItems: 4,
+};
+
+export const channelMeta: Record<Channel, { label: string; color: string; bg: string }> = {
+  whatsapp: { label: "WhatsApp", color: "#16a34a", bg: "#dcfce7" },
+  sms: { label: "SMS", color: "#2563eb", bg: "#dbeafe" },
+  email: { label: "Email", color: "#9333ea", bg: "#f3e8ff" },
+  voice: { label: "Voice", color: "#ea580c", bg: "#ffedd5" },
+};
+
+export function formatMoney(n: number): string {
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+}
+
+export function formatDuration(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s.toString().padStart(2, "0")}s`;
+}

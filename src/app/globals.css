@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f7f9fa;
+  --foreground: #0f1f24;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* Pydental brand palette — calm teal + warm slate */
+  --color-brand-50: #effafa;
+  --color-brand-100: #d6f3f2;
+  --color-brand-200: #b1e7e6;
+  --color-brand-300: #7dd4d4;
+  --color-brand-400: #44b8ba;
+  --color-brand-500: #289ca0;
+  --color-brand-600: #207e84;
+  --color-brand-700: #1e656b;
+  --color-brand-800: #1e5258;
+  --color-brand-900: #1c454b;
+  --color-brand-950: #0b2b31;
+
+  --color-ink-50: #f5f7f8;
+  --color-ink-100: #eceff1;
+  --color-ink-200: #d8dee2;
+  --color-ink-300: #b6c2c9;
+  --color-ink-400: #8fa0aa;
+  --color-ink-500: #70838f;
+  --color-ink-600: #5a6b77;
+  --color-ink-700: #4a5862;
+  --color-ink-800: #404b53;
+  --color-ink-900: #0f1f24;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d8dee2;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b6c2c9;
+}
