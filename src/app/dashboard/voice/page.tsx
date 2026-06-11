@@ -14,6 +14,7 @@ import {
   Frown,
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
+import { NewAgentModal } from "@/components/dashboard/create-modals";
 import { voiceAgents, voiceCalls, formatDuration } from "@/lib/mock-data";
 
 const sentimentIcon = {
@@ -33,16 +34,21 @@ const outcomeTone = {
 
 export default function VoicePage() {
   const [activeCallId, setActiveCallId] = useState(voiceCalls[0].id);
+  const [modalOpen, setModalOpen] = useState(false);
   const activeCall = voiceCalls.find((c) => c.id === activeCallId) ?? voiceCalls[0];
 
   return (
     <>
+      <NewAgentModal open={modalOpen} onClose={() => setModalOpen(false)} />
       <DemoBanner context="Voice agents (Retell AI) are not connected to a phone line yet — these are sample calls." />
       <PageHeader
         title="Voice Agents"
         subtitle="AI receptionists that answer, book and follow up — every call transcribed and summarized."
         actions={
-          <button className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+          <button
+            onClick={() => setModalOpen(true)}
+            className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+          >
             <Plus className="h-4 w-4" /> New agent
           </button>
         }
@@ -54,7 +60,7 @@ export default function VoicePage() {
         <StatCard icon={Timer} label="Avg call duration" value="2m 28s" hint="across all agents" accent="violet" />
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-3">
+      <div id="agents" className="mt-6 grid scroll-mt-20 gap-4 lg:grid-cols-3">
         {voiceAgents.map((a) => (
           <Card key={a.id} className="p-5">
             <div className="flex items-start justify-between">
@@ -87,7 +93,7 @@ export default function VoicePage() {
         ))}
       </div>
 
-      <div className="mt-6 grid gap-4 xl:grid-cols-5">
+      <div id="call-log" className="mt-6 grid scroll-mt-20 gap-4 xl:grid-cols-5">
         <Card className="overflow-hidden xl:col-span-3">
           <div className="border-b border-ink-200 px-5 py-4">
             <h2 className="font-semibold text-ink-900">Call log</h2>

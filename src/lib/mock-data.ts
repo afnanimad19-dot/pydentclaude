@@ -377,11 +377,105 @@ export const todayStats = {
 };
 
 export const channelMeta: Record<Channel, { label: string; color: string; bg: string }> = {
-  whatsapp: { label: "WhatsApp", color: "#16a34a", bg: "#dcfce7" },
-  sms: { label: "SMS", color: "#2563eb", bg: "#dbeafe" },
-  email: { label: "Email", color: "#9333ea", bg: "#f3e8ff" },
-  voice: { label: "Voice", color: "#ea580c", bg: "#ffedd5" },
+  whatsapp: { label: "WhatsApp", color: "#22c55e", bg: "#22c55e26" },
+  sms: { label: "SMS", color: "#3b82f6", bg: "#3b82f626" },
+  email: { label: "Email", color: "#a855f7", bg: "#a855f726" },
+  voice: { label: "Voice", color: "#f97316", bg: "#f9731626" },
 };
+
+// Patient-profile data (our own practice-management layer — used until a
+// clinic's OpenDental sync is connected, and shaped to map 1:1 onto it).
+
+export interface TreatmentPlan {
+  id: string;
+  patientId: string;
+  name: string;
+  procedures: { code: string; description: string; tooth: string; fee: number; status: "Planned" | "Accepted" | "Completed" }[];
+  presentedOn: string;
+  status: "Presented" | "Accepted" | "In progress" | "Completed";
+}
+
+export interface PatientDocument {
+  id: string;
+  patientId: string;
+  name: string;
+  category: "X-ray" | "Photo (before)" | "Photo (after)" | "Consent form" | "Insurance" | "Referral" | "Other";
+  uploadedAt: string;
+  size: string;
+}
+
+export interface InsurancePolicy {
+  id: string;
+  patientId: string;
+  carrier: string;
+  plan: string;
+  memberId: string;
+  groupNumber: string;
+  annualMax: number;
+  usedBenefits: number;
+  deductible: number;
+  status: "Verified" | "Pending verification" | "Expired";
+}
+
+export interface Payment {
+  id: string;
+  patientId: string;
+  date: string;
+  amount: number;
+  method: "Card (Stripe)" | "Cash" | "Bank transfer" | "Insurance" | "Financing";
+  description: string;
+  status: "Paid" | "Pending" | "Refunded";
+}
+
+export const treatmentPlans: TreatmentPlan[] = [
+  {
+    id: "tp1", patientId: "p4", name: "Implant restoration — lower right", presentedOn: "2026-04-10", status: "Presented",
+    procedures: [
+      { code: "D6010", description: "Implant placement", tooth: "#30", fee: 2400, status: "Planned" },
+      { code: "D6058", description: "Abutment supported crown", tooth: "#30", fee: 1500, status: "Planned" },
+      { code: "D7140", description: "Extraction (completed)", tooth: "#30", fee: 300, status: "Completed" },
+    ],
+  },
+  {
+    id: "tp2", patientId: "p8", name: "Crown + restorative", presentedOn: "2026-02-02", status: "Accepted",
+    procedures: [
+      { code: "D2740", description: "Porcelain crown", tooth: "#14", fee: 1280, status: "Accepted" },
+      { code: "D2392", description: "Composite filling, 2 surfaces", tooth: "#15", fee: 370, status: "Accepted" },
+    ],
+  },
+  {
+    id: "tp3", patientId: "p3", name: "Crown seat", presentedOn: "2026-05-12", status: "In progress",
+    procedures: [
+      { code: "D2740", description: "Porcelain crown", tooth: "#19", fee: 1280, status: "Accepted" },
+    ],
+  },
+];
+
+export const patientDocuments: PatientDocument[] = [
+  { id: "doc1", patientId: "p4", name: "Panoramic X-ray — Apr 2026", category: "X-ray", uploadedAt: "2026-04-10", size: "4.2 MB" },
+  { id: "doc2", patientId: "p4", name: "Implant consult consent", category: "Consent form", uploadedAt: "2026-04-10", size: "180 KB" },
+  { id: "doc3", patientId: "p4", name: "Site #30 — before", category: "Photo (before)", uploadedAt: "2026-04-10", size: "2.1 MB" },
+  { id: "doc4", patientId: "p1", name: "Bitewings — May 2026", category: "X-ray", uploadedAt: "2026-05-28", size: "3.8 MB" },
+  { id: "doc5", patientId: "p1", name: "Delta Dental card", category: "Insurance", uploadedAt: "2025-01-14", size: "640 KB" },
+  { id: "doc6", patientId: "p3", name: "Crown prep — before", category: "Photo (before)", uploadedAt: "2026-05-12", size: "1.9 MB" },
+  { id: "doc7", patientId: "p3", name: "Crown prep — after", category: "Photo (after)", uploadedAt: "2026-05-12", size: "2.0 MB" },
+];
+
+export const insurancePolicies: InsurancePolicy[] = [
+  { id: "ins1", patientId: "p1", carrier: "Delta Dental", plan: "PPO Premier", memberId: "DD-88412-MH", groupNumber: "GRP-2210", annualMax: 2000, usedBenefits: 740, deductible: 50, status: "Verified" },
+  { id: "ins2", patientId: "p3", carrier: "MetLife", plan: "Dental PPO High", memberId: "ML-55218-AW", groupNumber: "GRP-9904", annualMax: 1500, usedBenefits: 1120, deductible: 75, status: "Verified" },
+  { id: "ins3", patientId: "p4", carrier: "—", plan: "Self-pay", memberId: "—", groupNumber: "—", annualMax: 0, usedBenefits: 0, deductible: 0, status: "Verified" },
+  { id: "ins4", patientId: "p8", carrier: "Humana", plan: "Dental Value", memberId: "HU-30141-LM", groupNumber: "GRP-1167", annualMax: 1000, usedBenefits: 410, deductible: 50, status: "Pending verification" },
+];
+
+export const payments: Payment[] = [
+  { id: "pay1", patientId: "p1", date: "2026-05-28", amount: 145, method: "Insurance", description: "Prophylaxis + exam — Delta Dental claim", status: "Paid" },
+  { id: "pay2", patientId: "p1", date: "2026-05-28", amount: 35, method: "Card (Stripe)", description: "Patient portion — copay", status: "Paid" },
+  { id: "pay3", patientId: "p4", date: "2026-04-10", amount: 300, method: "Card (Stripe)", description: "Extraction #30", status: "Paid" },
+  { id: "pay4", patientId: "p4", date: "2026-06-01", amount: 1180, method: "Financing", description: "Implant deposit — 12-month plan", status: "Pending" },
+  { id: "pay5", patientId: "p3", date: "2026-05-12", amount: 640, method: "Card (Stripe)", description: "Crown #19 — 50% at prep", status: "Paid" },
+  { id: "pay6", patientId: "p8", date: "2026-02-02", amount: 200, method: "Cash", description: "Partial payment on balance", status: "Paid" },
+];
 
 export function formatMoney(n: number): string {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });

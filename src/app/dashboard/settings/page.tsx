@@ -85,7 +85,7 @@ export default function SettingsPage() {
               value={developerKey}
               onChange={(e) => setDeveloperKey(e.target.value)}
               placeholder="ODDevKey…"
-              className="w-full rounded-xl border border-ink-200 bg-white px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-300 focus:border-brand-400"
+              className="w-full rounded-xl border border-ink-200 bg-surface px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-300 focus:border-brand-400"
             />
           </label>
           <label className="block">
@@ -97,7 +97,7 @@ export default function SettingsPage() {
               value={customerKey}
               onChange={(e) => setCustomerKey(e.target.value)}
               placeholder="ODCustKey…"
-              className="w-full rounded-xl border border-ink-200 bg-white px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-300 focus:border-brand-400"
+              className="w-full rounded-xl border border-ink-200 bg-surface px-3.5 py-2.5 text-sm outline-none placeholder:text-ink-300 focus:border-brand-400"
             />
           </label>
         </div>

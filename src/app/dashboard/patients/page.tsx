@@ -1,22 +1,45 @@
-import { Users, CalendarClock, BellRing, Database } from "lucide-react";
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { Users, CalendarClock, BellRing, Database, Plus, CalendarPlus } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
+import { NewPatientModal, NewAppointmentModal } from "@/components/dashboard/create-modals";
 import { patients, appointments } from "@/lib/mock-data";
 
 const aptTone = { Confirmed: "green", Scheduled: "blue", Unconfirmed: "amber", Completed: "gray", Broken: "red" } as const;
 
 export default function PatientsPage() {
+  const [patientModal, setPatientModal] = useState(false);
+  const [aptModal, setAptModal] = useState(false);
   const recallDue = patients.filter((p) => p.recallDue);
 
   return (
     <>
+      <NewPatientModal open={patientModal} onClose={() => setPatientModal(false)} />
+      <NewAppointmentModal open={aptModal} onClose={() => setAptModal(false)} />
       <DemoBanner context="This is a sample patient roster shaped like an OpenDental sync (PatNum, recalls, balances)." />
       <PageHeader
         title="Patients"
-        subtitle="Your OpenDental roster, recall lists and schedule — in a UI the front desk will love."
+        subtitle="Roster, schedule, recalls — click any patient for their full profile."
         actions={
-          <span className="flex items-center gap-2 rounded-xl border border-ink-200 bg-white px-3.5 py-2 text-xs font-medium text-ink-500">
-            <Database className="h-4 w-4 text-brand-600" /> Last sync: demo data
-          </span>
+          <>
+            <span className="hidden items-center gap-2 rounded-xl border border-ink-200 bg-surface px-3.5 py-2 text-xs font-medium text-ink-500 md:flex">
+              <Database className="h-4 w-4 text-brand-500" /> Last sync: demo data
+            </span>
+            <button
+              onClick={() => setAptModal(true)}
+              className="flex items-center gap-2 rounded-xl border border-ink-200 bg-surface px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50"
+            >
+              <CalendarPlus className="h-4 w-4" /> New appointment
+            </button>
+            <button
+              onClick={() => setPatientModal(true)}
+              className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
+              <Plus className="h-4 w-4" /> New patient
+            </button>
+          </>
         }
       />
 
@@ -47,13 +70,13 @@ export default function PatientsPage() {
               {patients.map((p) => (
                 <tr key={p.id} className="border-b border-ink-100 last:border-0 hover:bg-ink-50/60">
                   <td className="px-5 py-3.5">
-                    <div className="flex items-center gap-3">
+                    <Link href={`/dashboard/patients/${p.id}`} className="flex items-center gap-3">
                       <Avatar name={p.name} size="sm" />
                       <div>
-                        <p className="font-medium text-ink-900">{p.name}</p>
+                        <p className="font-medium text-ink-900 hover:text-brand-600">{p.name}</p>
                         <p className="text-xs text-ink-400">PatNum {p.patNum}</p>
                       </div>
-                    </div>
+                    </Link>
                   </td>
                   <td className="px-4 py-3.5">
                     <p className="text-ink-700">{p.phone}</p>
@@ -70,7 +93,7 @@ export default function PatientsPage() {
                       <span className="text-ink-400">—</span>
                     )}
                   </td>
-                  <td className={`px-4 py-3.5 text-right font-medium ${p.balance > 0 ? "text-rose-600" : "text-ink-700"}`}>
+                  <td className={`px-4 py-3.5 text-right font-medium ${p.balance > 0 ? "text-rose-500" : "text-ink-700"}`}>
                     ${p.balance.toFixed(2)}
                   </td>
                   <td className="px-4 py-3.5">
@@ -84,7 +107,7 @@ export default function PatientsPage() {
       </Card>
 
       <div className="mt-6 grid gap-4 xl:grid-cols-2">
-        <Card className="p-5">
+        <Card className="scroll-mt-20 p-5" id="appointments">
           <h2 className="mb-4 font-semibold text-ink-900">Upcoming appointments</h2>
           <ul className="space-y-2.5">
             {appointments.map((a) => (
@@ -108,14 +131,14 @@ export default function PatientsPage() {
           </ul>
         </Card>
 
-        <Card className="p-5">
+        <Card className="scroll-mt-20 p-5" id="recall">
           <h2 className="mb-1 font-semibold text-ink-900">Recall worklist</h2>
           <p className="mb-4 text-sm text-ink-500">
             Patients overdue for hygiene — automatically enrolled in the WhatsApp recall flow.
           </p>
           <ul className="space-y-2.5">
             {recallDue.map((p) => (
-              <li key={p.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-100 bg-amber-50/50 px-4 py-3">
+              <li key={p.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
                 <div className="flex items-center gap-3">
                   <Avatar name={p.name} size="sm" />
                   <div>

@@ -1,6 +1,10 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import { MessageSquareText, CalendarCheck2, Undo2, Plus } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
+import { NewCampaignModal } from "@/components/dashboard/create-modals";
 import { broadcasts, conversations } from "@/lib/mock-data";
 
 const templates = [
@@ -11,17 +15,22 @@ const templates = [
 ];
 
 export default function SmsPage() {
+  const [modalOpen, setModalOpen] = useState(false);
   const smsConversations = conversations.filter((c) => c.channel === "sms");
   const smsBroadcasts = broadcasts.filter((b) => b.channel === "sms");
 
   return (
     <>
+      <NewCampaignModal open={modalOpen} onClose={() => setModalOpen(false)} channel="SMS" />
       <DemoBanner context="SMS (Twilio) is not connected yet — these are sample texts and templates." />
       <PageHeader
         title="SMS"
         subtitle="Reminders, confirmations and recovery texts patients actually answer."
         actions={
-          <button className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+          <button
+            onClick={() => setModalOpen(true)}
+            className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+          >
             <Plus className="h-4 w-4" /> New text blast
           </button>
         }
@@ -34,7 +43,7 @@ export default function SmsPage() {
       </div>
 
       <div className="mt-6 grid gap-4 xl:grid-cols-2">
-        <Card className="p-5">
+        <Card className="scroll-mt-20 p-5" id="conversations">
           <h2 className="mb-4 font-semibold text-ink-900">Recent SMS conversations</h2>
           <ul className="space-y-1">
             {smsConversations.map((c) => (
@@ -75,7 +84,7 @@ export default function SmsPage() {
           </ul>
         </Card>
 
-        <Card className="p-5">
+        <Card className="scroll-mt-20 p-5" id="templates">
           <h2 className="mb-1 font-semibold text-ink-900">Message templates</h2>
           <p className="mb-4 text-sm text-ink-500">
             Merge fields pull live from OpenDental — names, times, balances, booking links.

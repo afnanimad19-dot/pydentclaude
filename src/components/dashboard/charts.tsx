@@ -18,10 +18,10 @@ export function ConversationsChart() {
   return (
     <ResponsiveContainer width="100%" height={280}>
       <BarChart data={weeklyConversations} barCategoryGap="28%">
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eceff1" />
-        <XAxis dataKey="day" tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: "#70838f" }} />
-        <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: "#70838f" }} width={32} />
-        <Tooltip cursor={{ fill: "#f5f7f8" }} contentStyle={{ borderRadius: 12, border: "1px solid #d8dee2", fontSize: 13 }} />
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
+        <XAxis dataKey="day" tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: "var(--chart-tick)" }} />
+        <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: "var(--chart-tick)" }} width={32} />
+        <Tooltip cursor={{ fill: "var(--ink-50)" }} contentStyle={{ borderRadius: 12, border: "1px solid var(--ink-200)", background: "var(--surface)", color: "var(--foreground)", fontSize: 13 }} />
         <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
         <Bar dataKey="whatsapp" name="WhatsApp" stackId="a" fill={channelMeta.whatsapp.color} radius={[0, 0, 0, 0]} />
         <Bar dataKey="sms" name="SMS" stackId="a" fill={channelMeta.sms.color} />
@@ -46,17 +46,17 @@ export function RevenueChart() {
             <stop offset="100%" stopColor="#289ca0" stopOpacity={0.05} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eceff1" />
-        <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: "#70838f" }} />
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
+        <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: "var(--chart-tick)" }} />
         <YAxis
           tickLine={false}
           axisLine={false}
-          tick={{ fontSize: 12, fill: "#70838f" }}
+          tick={{ fontSize: 12, fill: "var(--chart-tick)" }}
           width={48}
           tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`}
         />
         <Tooltip
-          contentStyle={{ borderRadius: 12, border: "1px solid #d8dee2", fontSize: 13 }}
+          contentStyle={{ borderRadius: 12, border: "1px solid var(--ink-200)", background: "var(--surface)", color: "var(--foreground)", fontSize: 13 }}
           formatter={(v) => `$${Number(v).toLocaleString()}`}
         />
         <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />

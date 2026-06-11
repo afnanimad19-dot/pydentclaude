@@ -4,12 +4,14 @@ import { channelMeta, type Channel } from "@/lib/mock-data";
 export function Card({
   children,
   className = "",
+  id,
 }: {
   children: React.ReactNode;
   className?: string;
+  id?: string;
 }) {
   return (
-    <div className={`rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,31,36,0.04)] ${className}`}>
+    <div id={id} className={`rounded-2xl border border-ink-200 bg-surface shadow-[0_1px_2px_rgba(15,31,36,0.04)] ${className}`}>
       {children}
     </div>
   );
@@ -49,10 +51,10 @@ export function StatCard({
   accent?: "brand" | "green" | "amber" | "violet";
 }) {
   const accents = {
-    brand: "bg-brand-50 text-brand-600",
-    green: "bg-emerald-50 text-emerald-600",
-    amber: "bg-amber-50 text-amber-600",
-    violet: "bg-violet-50 text-violet-600",
+    brand: "bg-brand-500/15 text-brand-500",
+    green: "bg-emerald-500/15 text-emerald-600",
+    amber: "bg-amber-500/15 text-amber-600",
+    violet: "bg-violet-500/15 text-violet-500",
   };
   return (
     <Card className="p-5">
@@ -90,11 +92,11 @@ export function StatusBadge({
   tone: "green" | "amber" | "red" | "gray" | "blue";
 }) {
   const tones = {
-    green: "bg-emerald-50 text-emerald-700",
-    amber: "bg-amber-50 text-amber-700",
-    red: "bg-red-50 text-red-700",
+    green: "bg-emerald-500/15 text-emerald-600",
+    amber: "bg-amber-500/15 text-amber-600",
+    red: "bg-red-500/15 text-red-600",
     gray: "bg-ink-100 text-ink-600",
-    blue: "bg-blue-50 text-blue-700",
+    blue: "bg-blue-500/15 text-blue-600",
   };
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tones[tone]}`}>
@@ -105,7 +107,7 @@ export function StatusBadge({
 
 export function DemoBanner({ context }: { context: string }) {
   return (
-    <div className="mb-6 flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-sm text-brand-800">
+    <div className="mb-6 flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-sm text-brand-800 dark:text-brand-300">
       <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-brand-500" />
       <span>
         <strong className="font-semibold">Demo mode</strong> — {context} Connect your OpenDental

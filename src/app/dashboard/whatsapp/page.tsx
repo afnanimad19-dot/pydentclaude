@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   MessageCircle,
   Megaphone,
@@ -14,39 +15,50 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge, Avatar, StatCard } from "@/components/ui";
+import { NewCampaignModal } from "@/components/dashboard/create-modals";
 import { broadcasts, botFlows, conversations, type BotNode } from "@/lib/mock-data";
 
 type Tab = "chats" | "broadcasts" | "bots";
 
 const nodeStyle: Record<BotNode["type"], { icon: typeof Zap; chip: string; label: string }> = {
-  trigger: { icon: Zap, chip: "bg-amber-50 text-amber-600", label: "Trigger" },
-  message: { icon: MessageSquare, chip: "bg-emerald-50 text-emerald-600", label: "Message" },
-  condition: { icon: GitBranch, chip: "bg-blue-50 text-blue-600", label: "Condition" },
-  action: { icon: PlugZap, chip: "bg-violet-50 text-violet-600", label: "Action" },
-  handoff: { icon: UserRound, chip: "bg-rose-50 text-rose-600", label: "Handoff" },
+  trigger: { icon: Zap, chip: "bg-amber-500/15 text-amber-600", label: "Trigger" },
+  message: { icon: MessageSquare, chip: "bg-emerald-500/15 text-emerald-600", label: "Message" },
+  condition: { icon: GitBranch, chip: "bg-blue-500/15 text-blue-600", label: "Condition" },
+  action: { icon: PlugZap, chip: "bg-violet-500/15 text-violet-600", label: "Action" },
+  handoff: { icon: UserRound, chip: "bg-rose-500/15 text-rose-600", label: "Handoff" },
 };
 
 const statusTone = { Sent: "green", Sending: "blue", Scheduled: "blue", Draft: "gray", Live: "green", Paused: "amber" } as const;
 
 export default function WhatsAppPage() {
-  const [tab, setTab] = useState<Tab>("chats");
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlTab = searchParams.get("tab");
+  // URL is the source of truth so sidebar sub-links and tab buttons stay in sync
+  const tab: Tab = urlTab === "broadcasts" || urlTab === "bots" ? urlTab : "chats";
+  const setTab = (t: Tab) => router.replace(`/dashboard/whatsapp?tab=${t}`, { scroll: false });
+  const [modalOpen, setModalOpen] = useState(false);
   const waConversations = conversations.filter((c) => c.channel === "whatsapp");
 
   return (
     <>
+      <NewCampaignModal open={modalOpen} onClose={() => setModalOpen(false)} channel="WhatsApp" />
       <DemoBanner context="WhatsApp Business is not connected yet — these are sample chats, broadcasts and flows." />
       <PageHeader
         title="WhatsApp"
         subtitle="Two-way chats, broadcast campaigns and automation flows on WhatsApp Business."
         actions={
-          <button className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+          <button
+            onClick={() => setModalOpen(true)}
+            className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+          >
             <Plus className="h-4 w-4" />
-            {tab === "broadcasts" ? "New broadcast" : tab === "bots" ? "New flow" : "New chat"}
+            {tab === "broadcasts" ? "New broadcast" : tab === "bots" ? "New flow" : "New campaign"}
           </button>
         }
       />
 
-      <div className="mb-5 flex gap-1 rounded-xl border border-ink-200 bg-white p-1">
+      <div className="mb-5 flex gap-1 rounded-xl border border-ink-200 bg-surface p-1">
         {(
           [
             { key: "chats", label: "Chats", icon: MessageCircle },
@@ -157,7 +169,7 @@ export default function WhatsAppPage() {
                   const s = nodeStyle[node.type];
                   return (
                     <div key={node.id}>
-                      <div className="rounded-xl border border-ink-200 bg-white p-3">
+                      <div className="rounded-xl border border-ink-200 bg-surface p-3">
                         <div className="flex items-center gap-2">
                           <span className={`rounded-lg p-1.5 ${s.chip}`}>
                             <s.icon className="h-3.5 w-3.5" />

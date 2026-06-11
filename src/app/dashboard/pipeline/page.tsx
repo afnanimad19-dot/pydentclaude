@@ -41,7 +41,7 @@ export default function PipelinePage() {
               </div>
               <div className="space-y-3 rounded-2xl bg-ink-100/60 p-3">
                 {stage.deals.map((deal) => (
-                  <div key={deal.id} className="cursor-grab rounded-xl border border-ink-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
+                  <div key={deal.id} className="cursor-grab rounded-xl border border-ink-200 bg-surface p-4 shadow-sm transition-shadow hover:shadow-md">
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-sm font-semibold text-ink-900">{deal.patientName}</p>
                       <span className="text-sm font-semibold text-brand-700">{formatMoney(deal.value)}</span>

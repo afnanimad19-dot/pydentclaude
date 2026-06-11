@@ -1,6 +1,10 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import { Mail, MousePointerClick, CalendarPlus, Plus } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
+import { NewCampaignModal } from "@/components/dashboard/create-modals";
 import { emailCampaigns, conversations } from "@/lib/mock-data";
 
 const automations = [
@@ -11,16 +15,21 @@ const automations = [
 ];
 
 export default function EmailPage() {
+  const [modalOpen, setModalOpen] = useState(false);
   const emailConversations = conversations.filter((c) => c.channel === "email");
 
   return (
     <>
+      <NewCampaignModal open={modalOpen} onClose={() => setModalOpen(false)} channel="Email" />
       <DemoBanner context="Email sending is not connected yet — these are sample campaigns and automations." />
       <PageHeader
         title="Email"
         subtitle="Campaigns and automations measured in bookings, not just opens."
         actions={
-          <button className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+          <button
+            onClick={() => setModalOpen(true)}
+            className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+          >
             <Plus className="h-4 w-4" /> New campaign
           </button>
         }
@@ -33,7 +42,7 @@ export default function EmailPage() {
       </div>
 
       <div className="mt-6 grid gap-4 xl:grid-cols-5">
-        <Card className="overflow-hidden xl:col-span-3">
+        <Card className="scroll-mt-20 overflow-hidden xl:col-span-3" id="campaigns">
           <div className="border-b border-ink-200 px-5 py-4">
             <h2 className="font-semibold text-ink-900">Campaigns</h2>
           </div>
@@ -67,7 +76,7 @@ export default function EmailPage() {
         </Card>
 
         <div className="space-y-4 xl:col-span-2">
-          <Card className="p-5">
+          <Card className="scroll-mt-20 p-5" id="automations">
             <h2 className="mb-4 font-semibold text-ink-900">Automations</h2>
             <ul className="space-y-3">
               {automations.map((a) => (

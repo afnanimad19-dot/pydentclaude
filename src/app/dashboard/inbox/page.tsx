@@ -56,7 +56,7 @@ export default function InboxPage() {
             className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
               filter === f.key
                 ? "bg-ink-900 text-white"
-                : "border border-ink-200 bg-white text-ink-600 hover:bg-ink-50"
+                : "border border-ink-200 bg-surface text-ink-600 hover:bg-ink-50"
             }`}
           >
             {f.label}
@@ -120,7 +120,7 @@ export default function InboxPage() {
                   className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
                     m.direction === "outbound"
                       ? "rounded-br-sm bg-brand-600 text-white"
-                      : "rounded-bl-sm border border-ink-200 bg-white text-ink-800"
+                      : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"
                   }`}
                 >
                   <p className={`mb-1 flex items-center gap-1 text-[11px] font-semibold ${m.direction === "outbound" ? "text-brand-100" : "text-ink-400"}`}>
@@ -145,7 +145,7 @@ export default function InboxPage() {
                 }}
                 rows={2}
                 placeholder={`Reply on ${channelMeta[active.channel].label}…`}
-                className="flex-1 resize-none rounded-xl border border-ink-200 bg-white px-3.5 py-2.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400"
+                className="flex-1 resize-none rounded-xl border border-ink-200 bg-surface px-3.5 py-2.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400"
               />
               <button
                 onClick={() => setDraft("Hi! Thanks for reaching out — let me check that for you right away. 😊")}
