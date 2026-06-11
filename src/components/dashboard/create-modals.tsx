@@ -1,43 +1,105 @@
 "use client";
 
 import { useState } from "react";
-import { CalendarDays, CheckCircle2 } from "lucide-react";
+import { CalendarDays, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
+import { createPatient, createAppointment } from "@/lib/db";
 
-function SuccessNote({ text }: { text: string }) {
-  return (
+function ResultNote({ ok, text }: { ok: boolean; text: string }) {
+  return ok ? (
     <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600">
       <CheckCircle2 className="h-4 w-4 shrink-0" /> {text}
+    </div>
+  ) : (
+    <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-600">
+      <AlertTriangle className="h-4 w-4 shrink-0" /> {text}
     </div>
   );
 }
 
-export function NewPatientModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [done, setDone] = useState(false);
+export function NewPatientModal({
+  open,
+  onClose,
+  onCreated,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onCreated?: () => void;
+}) {
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    firstName: "",
+    lastName: "",
+    phone: "",
+    email: "",
+    birthdate: "",
+    status: "New",
+    insurance: "",
+  });
+
+  function set<K extends keyof typeof form>(k: K, v: string) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
   function close() {
-    setDone(false);
+    setResult(null);
+    setForm({ firstName: "", lastName: "", phone: "", email: "", birthdate: "", status: "New", insurance: "" });
     onClose();
   }
+
+  async function submit() {
+    if (!form.firstName.trim() && !form.lastName.trim()) {
+      setResult({ ok: false, message: "Please enter the patient's name." });
+      return;
+    }
+    setSaving(true);
+    const res = await createPatient({
+      name: `${form.firstName.trim()} ${form.lastName.trim()}`.trim(),
+      phone: form.phone,
+      email: form.email,
+      birthdate: form.birthdate,
+      insurance: form.insurance,
+      status: form.status,
+    });
+    setSaving(false);
+    setResult(res);
+    if (res.ok) onCreated?.();
+  }
+
   return (
-    <Modal open={open} onClose={close} title="New patient" subtitle="Creates the chart here — and in OpenDental once connected." wide>
-      {done ? (
-        <SuccessNote text="Patient created (demo) — they'd now appear in the roster and sync to OpenDental in live mode." />
+    <Modal open={open} onClose={close} title="New patient" subtitle="Saved to your Pydental database — syncs to OpenDental when connected." wide>
+      {result?.ok ? (
+        <ResultNote ok text={result.message} />
       ) : (
         <>
+          {result && <div className="mb-4"><ResultNote ok={false} text={result.message} /></div>}
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="First name"><input className={inputCls} placeholder="Maria" /></Field>
-            <Field label="Last name"><input className={inputCls} placeholder="Hernandez" /></Field>
-            <Field label="Phone"><input className={inputCls} placeholder="+1 (305) 555-0100" /></Field>
-            <Field label="Email"><input className={inputCls} placeholder="patient@email.com" /></Field>
-            <Field label="Date of birth"><input type="date" className={inputCls} /></Field>
+            <Field label="First name">
+              <input className={inputCls} placeholder="Maria" value={form.firstName} onChange={(e) => set("firstName", e.target.value)} />
+            </Field>
+            <Field label="Last name">
+              <input className={inputCls} placeholder="Hernandez" value={form.lastName} onChange={(e) => set("lastName", e.target.value)} />
+            </Field>
+            <Field label="Phone">
+              <input className={inputCls} placeholder="+1 (305) 555-0100" value={form.phone} onChange={(e) => set("phone", e.target.value)} />
+            </Field>
+            <Field label="Email">
+              <input className={inputCls} placeholder="patient@email.com" value={form.email} onChange={(e) => set("email", e.target.value)} />
+            </Field>
+            <Field label="Date of birth">
+              <input type="date" className={inputCls} value={form.birthdate} onChange={(e) => set("birthdate", e.target.value)} />
+            </Field>
             <Field label="Status">
-              <select className={inputCls}>
+              <select className={inputCls} value={form.status} onChange={(e) => set("status", e.target.value)}>
                 <option>New</option>
                 <option>Active</option>
                 <option>Inactive</option>
               </select>
             </Field>
-            <Field label="Insurance carrier"><input className={inputCls} placeholder="Delta Dental, Cigna, Self-pay…" /></Field>
+            <Field label="Insurance carrier">
+              <input className={inputCls} placeholder="Delta Dental, Cigna, Self-pay…" value={form.insurance} onChange={(e) => set("insurance", e.target.value)} />
+            </Field>
             <Field label="Preferred channel">
               <select className={inputCls}>
                 <option>WhatsApp</option>
@@ -47,41 +109,111 @@ export function NewPatientModal({ open, onClose }: { open: boolean; onClose: () 
               </select>
             </Field>
           </div>
-          <ModalFooter onClose={close} submitLabel="Create patient" onSubmit={() => setDone(true)} />
+          <ModalFooter onClose={close} submitLabel={saving ? "Saving…" : "Create patient"} onSubmit={submit} />
         </>
       )}
     </Modal>
   );
 }
 
-export function NewAppointmentModal({ open, onClose, patientName }: { open: boolean; onClose: () => void; patientName?: string }) {
-  const [done, setDone] = useState(false);
+const SLOT_DATES: Record<string, string> = {
+  "Mon 15": "2026-06-15",
+  "Tue 16": "2026-06-16",
+  "Wed 17": "2026-06-17",
+  "Thu 18": "2026-06-18",
+  "Fri 19": "2026-06-19",
+};
+
+export function NewAppointmentModal({
+  open,
+  onClose,
+  patientId,
+  patientName,
+  patientOptions,
+  onCreated,
+}: {
+  open: boolean;
+  onClose: () => void;
+  patientId?: string;
+  patientName?: string;
+  patientOptions?: { id: string; name: string }[];
+  onCreated?: () => void;
+}) {
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [slot, setSlot] = useState<string | null>(null);
-  const days = ["Mon 15", "Tue 16", "Wed 17", "Thu 18", "Fri 19"];
+  const [selectedPatient, setSelectedPatient] = useState(patientId ?? "");
+  const [provider, setProvider] = useState("Dr. Patel");
+  const [operatory, setOperatory] = useState("Op 1");
+  const [procedure, setProcedure] = useState("");
+  const days = Object.keys(SLOT_DATES);
   const times = ["9:00", "10:00", "11:30", "14:00", "15:30", "16:30"];
+
   function close() {
-    setDone(false);
+    setResult(null);
     setSlot(null);
     onClose();
   }
+
+  async function submit() {
+    const pid = patientId ?? selectedPatient;
+    if (!pid) {
+      setResult({ ok: false, message: "Please choose a patient." });
+      return;
+    }
+    if (!slot) {
+      setResult({ ok: false, message: "Please pick a time slot." });
+      return;
+    }
+    const [day, time] = [slot.slice(0, 6).trim(), slot.slice(6).trim()];
+    setSaving(true);
+    const res = await createAppointment({
+      patientId: pid,
+      provider,
+      operatory,
+      procedure,
+      date: SLOT_DATES[day] ?? "2026-06-15",
+      time,
+    });
+    setSaving(false);
+    setResult(res);
+    if (res.ok) onCreated?.();
+  }
+
   return (
-    <Modal open={open} onClose={close} title="New appointment" subtitle="Writes to the schedule — and to OpenDental + Google Calendar when connected." wide>
-      {done ? (
-        <SuccessNote text={`Appointment booked (demo) for ${slot ?? "the selected slot"} — confirmations would go out automatically.`} />
+    <Modal open={open} onClose={close} title="New appointment" subtitle="Saved to your schedule — OpenDental + Google Calendar sync when connected." wide>
+      {result?.ok ? (
+        <ResultNote ok text={`${result.message} (${slot})`} />
       ) : (
         <>
+          {result && <div className="mb-4"><ResultNote ok={false} text={result.message} /></div>}
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Patient"><input className={inputCls} defaultValue={patientName} placeholder="Search patient…" /></Field>
+            <Field label="Patient">
+              {patientId ? (
+                <input className={inputCls} value={patientName} readOnly />
+              ) : patientOptions?.length ? (
+                <select className={inputCls} value={selectedPatient} onChange={(e) => setSelectedPatient(e.target.value)}>
+                  <option value="">Choose patient…</option>
+                  {patientOptions.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <input className={inputCls} placeholder="Search patient…" />
+              )}
+            </Field>
             <Field label="Provider">
-              <select className={inputCls}>
+              <select className={inputCls} value={provider} onChange={(e) => setProvider(e.target.value)}>
                 <option>Dr. Patel</option>
                 <option>Dr. Gomez</option>
                 <option>Hygiene — Kelly</option>
               </select>
             </Field>
-            <Field label="Procedure"><input className={inputCls} placeholder="Prophylaxis + exam" /></Field>
+            <Field label="Procedure">
+              <input className={inputCls} placeholder="Prophylaxis + exam" value={procedure} onChange={(e) => setProcedure(e.target.value)} />
+            </Field>
             <Field label="Operatory">
-              <select className={inputCls}>
+              <select className={inputCls} value={operatory} onChange={(e) => setOperatory(e.target.value)}>
                 <option>Op 1</option>
                 <option>Op 2</option>
                 <option>Op 3</option>
@@ -119,7 +251,7 @@ export function NewAppointmentModal({ open, onClose, patientName }: { open: bool
             <input type="checkbox" defaultChecked className="h-4 w-4 accent-[#207e84]" />
             Also add to Google Calendar and send confirmation via patient&apos;s preferred channel
           </label>
-          <ModalFooter onClose={close} submitLabel="Book appointment" onSubmit={() => setDone(true)} />
+          <ModalFooter onClose={close} submitLabel={saving ? "Booking…" : "Book appointment"} onSubmit={submit} />
         </>
       )}
     </Modal>
@@ -143,7 +275,7 @@ export function NewCampaignModal({
   return (
     <Modal open={open} onClose={close} title={`New ${channel} campaign`} subtitle="Audiences come straight from your synced patient lists." wide>
       {done ? (
-        <SuccessNote text="Campaign saved as draft (demo) — in live mode you could schedule or send it now." />
+        <ResultNote ok text="Campaign saved as draft (demo) — sending activates when the channel is connected." />
       ) : (
         <>
           <div className="grid gap-4">
@@ -198,7 +330,7 @@ export function NewAgentModal({ open, onClose }: { open: boolean; onClose: () =>
   return (
     <Modal open={open} onClose={close} title="New voice agent" subtitle="Powered by Retell AI once a phone line is connected." wide>
       {done ? (
-        <SuccessNote text="Agent created as draft (demo) — assign a phone number in Settings to take it live." />
+        <ResultNote ok text="Agent created as draft (demo) — assign a phone number in Settings to take it live." />
       ) : (
         <>
           <div className="grid gap-4 md:grid-cols-2">

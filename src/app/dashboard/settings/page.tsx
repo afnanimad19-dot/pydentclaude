@@ -12,7 +12,9 @@ import {
   CheckCircle2,
   Lock,
 } from "lucide-react";
+import { useEffect } from "react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
+import { fetchPatients } from "@/lib/db";
 
 const otherIntegrations = [
   {
@@ -45,6 +47,11 @@ export default function SettingsPage() {
   const [developerKey, setDeveloperKey] = useState("");
   const [customerKey, setCustomerKey] = useState("");
   const [tested, setTested] = useState<null | string>(null);
+  const [dbLive, setDbLive] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    fetchPatients().then((r) => setDbLive(r.source === "live"));
+  }, []);
 
   return (
     <>
@@ -53,6 +60,32 @@ export default function SettingsPage() {
         title="Settings"
         subtitle="Connect your practice systems and channels. Everything works in demo mode until you flip the switch."
       />
+
+      {/* Supabase database */}
+      <Card className="mb-6 flex flex-wrap items-center justify-between gap-4 p-6">
+        <div className="flex items-start gap-4">
+          <div className="rounded-xl bg-emerald-500/15 p-3 text-emerald-600">
+            <Database className="h-6 w-6" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-ink-900">Database (Supabase)</h2>
+              {dbLive === null ? (
+                <StatusBadge status="Checking…" tone="gray" />
+              ) : dbLive ? (
+                <StatusBadge status="Connected" tone="green" />
+              ) : (
+                <StatusBadge status="Schema not installed" tone="amber" />
+              )}
+            </div>
+            <p className="mt-1 max-w-xl text-sm leading-relaxed text-ink-500">
+              {dbLive
+                ? "Patients, appointments, treatment plans, documents, insurance and payments are stored in your Supabase project."
+                : "Run supabase/migrations/0001_init.sql in the Supabase SQL Editor to create the tables and sample data."}
+            </p>
+          </div>
+        </div>
+      </Card>
 
       {/* OpenDental */}
       <Card className="p-6">

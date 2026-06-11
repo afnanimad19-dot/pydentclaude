@@ -1,31 +1,75 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Users, CalendarClock, BellRing, Database, Plus, CalendarPlus } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
 import { NewPatientModal, NewAppointmentModal } from "@/components/dashboard/create-modals";
-import { patients, appointments } from "@/lib/mock-data";
+import { fetchPatients, fetchAppointments, type DataSource } from "@/lib/db";
+import {
+  patients as mockPatients,
+  appointments as mockAppointments,
+  type Patient,
+  type Appointment,
+} from "@/lib/mock-data";
 
 const aptTone = { Confirmed: "green", Scheduled: "blue", Unconfirmed: "amber", Completed: "gray", Broken: "red" } as const;
+
+function LiveBanner() {
+  return (
+    <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-600">
+      <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" />
+      <span>
+        <strong className="font-semibold">Live database</strong> — patients and appointments are
+        reading and writing to your Supabase project in real time.
+      </span>
+    </div>
+  );
+}
 
 export default function PatientsPage() {
   const [patientModal, setPatientModal] = useState(false);
   const [aptModal, setAptModal] = useState(false);
+  const [patients, setPatients] = useState<Patient[]>(mockPatients);
+  const [appointments, setAppointments] = useState<Appointment[]>(mockAppointments);
+  const [source, setSource] = useState<DataSource>("demo");
+
+  const refresh = useCallback(() => {
+    fetchPatients().then((r) => {
+      setPatients(r.patients);
+      setSource(r.source);
+    });
+    fetchAppointments().then((r) => setAppointments(r.appointments));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
   const recallDue = patients.filter((p) => p.recallDue);
 
   return (
     <>
-      <NewPatientModal open={patientModal} onClose={() => setPatientModal(false)} />
-      <NewAppointmentModal open={aptModal} onClose={() => setAptModal(false)} />
-      <DemoBanner context="This is a sample patient roster shaped like an OpenDental sync (PatNum, recalls, balances)." />
+      <NewPatientModal open={patientModal} onClose={() => setPatientModal(false)} onCreated={refresh} />
+      <NewAppointmentModal
+        open={aptModal}
+        onClose={() => setAptModal(false)}
+        patientOptions={patients.map((p) => ({ id: p.id, name: p.name }))}
+        onCreated={refresh}
+      />
+      {source === "live" ? (
+        <LiveBanner />
+      ) : (
+        <DemoBanner context="Database not reachable — showing the bundled sample roster." />
+      )}
       <PageHeader
         title="Patients"
         subtitle="Roster, schedule, recalls — click any patient for their full profile."
         actions={
           <>
             <span className="hidden items-center gap-2 rounded-xl border border-ink-200 bg-surface px-3.5 py-2 text-xs font-medium text-ink-500 md:flex">
-              <Database className="h-4 w-4 text-brand-500" /> Last sync: demo data
+              <Database className="h-4 w-4 text-brand-500" />
+              {source === "live" ? "Supabase · live" : "Demo data"}
             </span>
             <button
               onClick={() => setAptModal(true)}
@@ -44,9 +88,27 @@ export default function PatientsPage() {
       />
 
       <div className="grid gap-4 md:grid-cols-3">
-        <StatCard icon={Users} label="Active patients" value="1,240" hint="38 new this month" accent="brand" />
-        <StatCard icon={BellRing} label="Recall due" value="214" hint="auto-enrolled in recall flow" accent="amber" />
-        <StatCard icon={CalendarClock} label="Unscheduled treatment" value="$86,200" hint="47 open treatment plans" accent="violet" />
+        <StatCard
+          icon={Users}
+          label="Patients on file"
+          value={String(patients.length)}
+          hint={`${patients.filter((p) => p.status === "New").length} new`}
+          accent="brand"
+        />
+        <StatCard
+          icon={BellRing}
+          label="Recall due"
+          value={String(recallDue.length)}
+          hint="auto-enrolled in recall flow"
+          accent="amber"
+        />
+        <StatCard
+          icon={CalendarClock}
+          label="Upcoming appointments"
+          value={String(appointments.length)}
+          hint={`${appointments.filter((a) => a.status === "Unconfirmed").length} unconfirmed`}
+          accent="violet"
+        />
       </div>
 
       <Card className="mt-6 overflow-hidden">

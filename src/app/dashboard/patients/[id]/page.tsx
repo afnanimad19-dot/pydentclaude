@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -15,15 +15,8 @@ import {
 } from "lucide-react";
 import { Card, DemoBanner, StatusBadge, Avatar } from "@/components/ui";
 import { NewAppointmentModal } from "@/components/dashboard/create-modals";
-import {
-  patients,
-  appointments,
-  treatmentPlans,
-  patientDocuments,
-  insurancePolicies,
-  payments,
-  formatMoney,
-} from "@/lib/mock-data";
+import { fetchPatientBundle, type PatientBundle } from "@/lib/db";
+import { formatMoney } from "@/lib/mock-data";
 
 type Tab = "overview" | "appointments" | "treatment" | "documents" | "insurance" | "payments";
 
@@ -44,9 +37,20 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
   const { id } = use(params);
   const [tab, setTab] = useState<Tab>("overview");
   const [aptModal, setAptModal] = useState(false);
+  const [bundle, setBundle] = useState<PatientBundle | null | "loading">("loading");
 
-  const patient = patients.find((p) => p.id === id);
-  if (!patient) {
+  const refresh = useCallback(() => {
+    fetchPatientBundle(id).then(setBundle);
+  }, [id]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  if (bundle === "loading") {
+    return <p className="py-20 text-center text-sm text-ink-500">Loading patient chart…</p>;
+  }
+  if (!bundle) {
     return (
       <div className="py-20 text-center">
         <p className="text-ink-500">Patient not found.</p>
@@ -57,16 +61,25 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
     );
   }
 
-  const pAppointments = appointments.filter((a) => a.patientId === id);
-  const pPlans = treatmentPlans.filter((t) => t.patientId === id);
-  const pDocs = patientDocuments.filter((d) => d.patientId === id);
-  const pInsurance = insurancePolicies.filter((i) => i.patientId === id);
-  const pPayments = payments.filter((p2) => p2.patientId === id);
+  const { patient, appointments: pAppointments, plans: pPlans, documents: pDocs, insurance: pInsurance, payments: pPayments } = bundle;
 
   return (
     <>
-      <NewAppointmentModal open={aptModal} onClose={() => setAptModal(false)} patientName={patient.name} />
-      <DemoBanner context="Sample patient chart — in live mode this maps 1:1 onto the clinic's OpenDental record." />
+      <NewAppointmentModal
+        open={aptModal}
+        onClose={() => setAptModal(false)}
+        patientId={patient.id}
+        patientName={patient.name}
+        onCreated={refresh}
+      />
+      {bundle.source === "live" ? (
+        <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-600">
+          <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" />
+          <span><strong className="font-semibold">Live chart</strong> — reading from your Supabase database.</span>
+        </div>
+      ) : (
+        <DemoBanner context="Sample patient chart — in live mode this maps 1:1 onto the clinic's OpenDental record." />
+      )}
       <Link href="/dashboard/patients" className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-ink-500 hover:text-ink-900">
         <ArrowLeft className="h-4 w-4" /> All patients
       </Link>
