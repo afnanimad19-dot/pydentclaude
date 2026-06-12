@@ -10,6 +10,7 @@ import {
   MessageSquareText,
   Mail,
   Bot,
+  Camera,
   KanbanSquare,
   Users,
   Settings,
@@ -40,6 +41,9 @@ const nav: NavItem[] = [
     icon: Bot,
     children: [
       { href: "/dashboard/agents", label: "All agents" },
+      { href: "/dashboard/agents/chat", label: "Chat agents" },
+      { href: "/dashboard/agents/voice", label: "Voice agents" },
+      { href: "/dashboard/agents/hub", label: "Agent Hub" },
       { href: "/dashboard/voice", label: "Call log" },
     ],
   },
@@ -49,8 +53,17 @@ const nav: NavItem[] = [
     icon: MessageCircle,
     children: [
       { href: "/dashboard/whatsapp?tab=chats", label: "Chats" },
+      { href: "/dashboard/whatsapp/templates", label: "Templates" },
       { href: "/dashboard/whatsapp?tab=broadcasts", label: "Broadcasts" },
       { href: "/dashboard/whatsapp?tab=bots", label: "Chatbot builder" },
+    ],
+  },
+  {
+    href: "/dashboard/instagram",
+    label: "Instagram",
+    icon: Camera,
+    children: [
+      { href: "/dashboard/instagram", label: "Content calendar" },
     ],
   },
   {
@@ -158,7 +171,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   <div className="ml-[26px] mt-0.5 space-y-0.5 border-l border-ink-200 pl-3">
                     {item.children.map((sub) => {
                       const subTab = sub.href.includes("?tab=") ? sub.href.split("?tab=")[1] : null;
-                      const subActive = subTab !== null && (currentTab ?? "chats") === subTab;
+                      const subPath = sub.href.split(/[?#]/)[0];
+                      const subActive = subTab !== null
+                        ? pathname === subPath && (currentTab ?? "chats") === subTab
+                        : pathname === subPath && !sub.href.includes("#");
                       return (
                         <Link
                           key={sub.href}

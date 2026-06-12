@@ -2,10 +2,19 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Users, CalendarClock, BellRing, Database, Plus, CalendarPlus } from "lucide-react";
+import { Users, CalendarClock, BellRing, Database, Plus, CalendarPlus, FolderPlus, Folder } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
 import { NewPatientModal, NewAppointmentModal } from "@/components/dashboard/create-modals";
-import { fetchPatients, fetchAppointments, type DataSource } from "@/lib/db";
+import {
+  fetchPatients,
+  fetchAppointments,
+  fetchFolders,
+  createFolder,
+  movePatientToFolder,
+  fetchPatientFolderMap,
+  type DataSource,
+  type PatientFolder,
+} from "@/lib/db";
 import {
   patients as mockPatients,
   appointments as mockAppointments,
@@ -33,6 +42,11 @@ export default function PatientsPage() {
   const [patients, setPatients] = useState<Patient[]>(mockPatients);
   const [appointments, setAppointments] = useState<Appointment[]>(mockAppointments);
   const [source, setSource] = useState<DataSource>("demo");
+  const [folders, setFolders] = useState<PatientFolder[]>([]);
+  const [folderMap, setFolderMap] = useState<Record<string, string>>({});
+  const [activeFolder, setActiveFolder] = useState<string | "all">("all");
+  const [newFolderName, setNewFolderName] = useState("");
+  const [addingFolder, setAddingFolder] = useState(false);
 
   const refresh = useCallback(() => {
     fetchPatients().then((r) => {
@@ -40,7 +54,27 @@ export default function PatientsPage() {
       setSource(r.source);
     });
     fetchAppointments().then((r) => setAppointments(r.appointments));
+    fetchFolders().then(setFolders);
+    fetchPatientFolderMap().then(setFolderMap);
   }, []);
+
+  async function addFolder() {
+    if (!newFolderName.trim()) return;
+    await createFolder(newFolderName.trim());
+    setNewFolderName("");
+    setAddingFolder(false);
+    fetchFolders().then(setFolders);
+  }
+
+  async function moveTo(patientId: string, folderId: string) {
+    setFolderMap((prev) => {
+      const next = { ...prev };
+      if (folderId) next[patientId] = folderId;
+      else delete next[patientId];
+      return next;
+    });
+    await movePatientToFolder(patientId, folderId || null);
+  }
 
   useEffect(() => {
     refresh();
@@ -111,9 +145,55 @@ export default function PatientsPage() {
         />
       </div>
 
-      <Card className="mt-6 overflow-hidden">
+      {/* Folders — organize patients and use folders as broadcast audiences */}
+      <div className="mt-6 flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => setActiveFolder("all")}
+          className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
+            activeFolder === "all" ? "bg-brand-600 text-white" : "border border-ink-200 bg-surface text-ink-600 hover:bg-ink-50"
+          }`}
+        >
+          All patients
+        </button>
+        {folders.map((f) => (
+          <button
+            key={f.id}
+            onClick={() => setActiveFolder(f.id)}
+            className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
+              activeFolder === f.id ? "bg-brand-600 text-white" : "border border-ink-200 bg-surface text-ink-600 hover:bg-ink-50"
+            }`}
+          >
+            <Folder className="h-3.5 w-3.5" /> {f.name}
+            <span className="opacity-70">({Object.values(folderMap).filter((v) => v === f.id).length})</span>
+          </button>
+        ))}
+        {addingFolder ? (
+          <span className="flex items-center gap-1.5">
+            <input
+              autoFocus
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addFolder()}
+              placeholder="Folder name…"
+              className="rounded-full border border-brand-400 bg-surface px-3.5 py-1.5 text-sm text-ink-900 outline-none"
+            />
+            <button onClick={addFolder} className="rounded-full bg-brand-600 px-3 py-1.5 text-sm font-medium text-white">Add</button>
+          </span>
+        ) : (
+          <button
+            onClick={() => setAddingFolder(true)}
+            className="flex items-center gap-1.5 rounded-full border border-dashed border-ink-300 px-3.5 py-1.5 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600 dark:hover:text-brand-300"
+          >
+            <FolderPlus className="h-3.5 w-3.5" /> New folder
+          </button>
+        )}
+      </div>
+
+      <Card className="mt-4 overflow-hidden">
         <div className="border-b border-ink-200 px-5 py-4">
-          <h2 className="font-semibold text-ink-900">Patient roster</h2>
+          <h2 className="font-semibold text-ink-900">
+            {activeFolder === "all" ? "Patient roster" : `Folder: ${folders.find((f) => f.id === activeFolder)?.name}`}
+          </h2>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -126,10 +206,11 @@ export default function PatientsPage() {
                 <th className="px-4 py-3">Next appt</th>
                 <th className="px-4 py-3 text-right">Balance</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Folder</th>
               </tr>
             </thead>
             <tbody>
-              {patients.map((p) => (
+              {patients.filter((p) => activeFolder === "all" || folderMap[p.id] === activeFolder).map((p) => (
                 <tr key={p.id} className="border-b border-ink-100 last:border-0 hover:bg-ink-50/60">
                   <td className="px-5 py-3.5">
                     <Link href={`/dashboard/patients/${p.id}`} className="flex items-center gap-3">
@@ -160,6 +241,18 @@ export default function PatientsPage() {
                   </td>
                   <td className="px-4 py-3.5">
                     <StatusBadge status={p.status} tone={p.status === "Active" ? "green" : p.status === "New" ? "blue" : "gray"} />
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <select
+                      value={folderMap[p.id] ?? ""}
+                      onChange={(e) => moveTo(p.id, e.target.value)}
+                      className="rounded-lg border border-ink-200 bg-surface px-2 py-1.5 text-xs text-ink-600 outline-none"
+                    >
+                      <option value="">No folder</option>
+                      {folders.map((f) => (
+                        <option key={f.id} value={f.id}>{f.name}</option>
+                      ))}
+                    </select>
                   </td>
                 </tr>
               ))}

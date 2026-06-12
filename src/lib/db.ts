@@ -284,7 +284,6 @@ function agentToRow(input: Omit<AiAgent, "id" | "vapiAssistantId">): Record<stri
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSource }> {
   try {
@@ -413,4 +412,141 @@ export async function fetchFollowUps(): Promise<Record<string, string>> {
   } catch {
     return {};
   }
+}
+
+// ------------------------------------------------------------ patient folders
+
+export interface PatientFolder {
+  id: string;
+  name: string;
+}
+
+export async function fetchFolders(): Promise<PatientFolder[]> {
+  try {
+    const { data } = await supabase.from("patient_folders").select("*").order("name");
+    return (data ?? []).map((r) => ({ id: r.id, name: r.name }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createFolder(name: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("patient_folders").insert({ name });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Folder created." };
+}
+
+export async function movePatientToFolder(patientId: string, folderId: string | null): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("patients").update({ folder_id: folderId }).eq("id", patientId);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Patient moved." };
+}
+
+export async function fetchPatientFolderMap(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.from("patients").select("id, folder_id").not("folder_id", "is", null);
+    return Object.fromEntries((data ?? []).map((r) => [r.id, r.folder_id]));
+  } catch {
+    return {};
+  }
+}
+
+// --------------------------------------------------------- whatsapp templates
+
+export interface WaTemplateButton {
+  type: "url" | "phone" | "quick_reply";
+  text: string;
+  value: string;
+}
+
+export interface WaTemplate {
+  id: string;
+  name: string;
+  category: "MARKETING" | "UTILITY" | "AUTHENTICATION";
+  language: string;
+  headerType: "none" | "text" | "image" | "video" | "document";
+  headerText: string;
+  body: string;
+  footer: string;
+  buttons: WaTemplateButton[];
+  status: "Draft" | "Pending approval" | "Approved" | "Rejected";
+}
+
+export async function fetchWaTemplates(): Promise<{ templates: WaTemplate[]; source: DataSource }> {
+  try {
+    const { data, error } = await supabase.from("wa_templates").select("*").order("created_at", { ascending: false });
+    if (error || !data) throw error ?? new Error("no data");
+    return {
+      templates: data.map((r) => ({
+        id: r.id,
+        name: r.name,
+        category: r.category,
+        language: r.language,
+        headerType: r.header_type ?? "none",
+        headerText: r.header_text ?? "",
+        body: r.body,
+        footer: r.footer ?? "",
+        buttons: r.buttons ?? [],
+        status: r.status,
+      })),
+      source: "live",
+    };
+  } catch {
+    return { templates: [], source: "demo" };
+  }
+}
+
+export async function createWaTemplate(t: Omit<WaTemplate, "id">): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("wa_templates").insert({
+    name: t.name,
+    category: t.category,
+    language: t.language,
+    header_type: t.headerType,
+    header_text: t.headerText,
+    body: t.body,
+    footer: t.footer,
+    buttons: t.buttons,
+    status: t.status,
+  });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Template saved." };
+}
+
+// ------------------------------------------------------------ instagram posts
+
+export interface IgPost {
+  id: string;
+  caption: string;
+  mediaName: string;
+  scheduledFor: string; // YYYY-MM-DD
+  time: string;
+  status: "Draft" | "Scheduled" | "Published";
+}
+
+export async function fetchIgPosts(): Promise<IgPost[]> {
+  try {
+    const { data } = await supabase.from("ig_posts").select("*").order("scheduled_for");
+    return (data ?? []).map((r) => ({
+      id: r.id,
+      caption: r.caption,
+      mediaName: r.media_name ?? "",
+      scheduledFor: r.scheduled_for,
+      time: r.time ?? "10:00",
+      status: r.status,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createIgPost(p: Omit<IgPost, "id">): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("ig_posts").insert({
+    caption: p.caption,
+    media_name: p.mediaName,
+    scheduled_for: p.scheduledFor,
+    time: p.time,
+    status: p.status,
+  });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Post scheduled." };
 }
