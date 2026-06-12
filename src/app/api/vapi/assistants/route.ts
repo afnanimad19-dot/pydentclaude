@@ -12,6 +12,18 @@ function vapiHeaders() {
   };
 }
 
+// Map Pydental voice labels onto currently-supported Vapi voices
+// (verified against the live API: Leah, Elliot, Savannah, Rohan, Tara).
+function voiceFor(label?: string): string {
+  const map: Record<string, string> = {
+    "Warm female · US English": "Leah",
+    "Friendly male · US English": "Elliot",
+    "Neutral female · US English": "Savannah",
+    "Calm male · US English": "Rohan",
+  };
+  return map[label ?? ""] ?? "Leah";
+}
+
 function notConfigured() {
   return NextResponse.json(
     {
@@ -52,7 +64,7 @@ export async function POST(req: NextRequest) {
         },
       ],
     },
-    voice: { provider: "11labs", voiceId: agent.voiceId || "rachel" },
+    voice: { provider: "vapi", voiceId: voiceFor(agent.voice) },
     transcriber: { provider: "deepgram", model: "nova-2", language: agent.language?.includes("Spanish") ? "multi" : "en" },
   };
 

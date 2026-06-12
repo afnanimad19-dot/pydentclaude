@@ -223,6 +223,7 @@ function CreateAgentModal({ open, onClose, onCreated }: { open: boolean; onClose
             instructions: form.instructions,
             knowledgeBase: form.knowledgeBase,
             language: form.language,
+            voice: form.voice,
           }),
         });
         const vapiData = await vapiRes.json();
