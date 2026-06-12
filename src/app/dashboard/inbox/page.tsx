@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bot, Send, Sparkles, UserCheck } from "lucide-react";
 import { Card, ChannelBadge, Avatar, DemoBanner, PageHeader } from "@/components/ui";
+import { fetchAgents, fetchAssignments, assignAgent, type AiAgent } from "@/lib/db";
 import { conversations, channelMeta, patients, type Channel, type Message } from "@/lib/mock-data";
 
 const filters: { key: Channel | "all"; label: string }[] = [
@@ -18,6 +19,15 @@ export default function InboxPage() {
   const [activeId, setActiveId] = useState(conversations[0].id);
   const [draft, setDraft] = useState("");
   const [extraMessages, setExtraMessages] = useState<Record<string, Message[]>>({});
+  const [agents, setAgents] = useState<AiAgent[]>([]);
+  const [assignments, setAssignments] = useState<Record<string, string>>({});
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "chat")));
+    fetchAssignments().then(setAssignments);
+  }, []);
 
   const list = useMemo(
     () => (filter === "all" ? conversations : conversations.filter((c) => c.channel === filter)),
@@ -26,6 +36,7 @@ export default function InboxPage() {
   const active = conversations.find((c) => c.id === activeId) ?? conversations[0];
   const patient = patients.find((p) => p.id === active.patientId);
   const thread = [...active.messages, ...(extraMessages[active.id] ?? [])];
+  const assignedAgent = agents.find((a) => a.id === assignments[active.id]) ?? null;
 
   function send() {
     if (!draft.trim()) return;
@@ -38,6 +49,56 @@ export default function InboxPage() {
     };
     setExtraMessages((prev) => ({ ...prev, [active.id]: [...(prev[active.id] ?? []), msg] }));
     setDraft("");
+  }
+
+  async function onAssign(agentId: string) {
+    setAssignments((prev) => ({ ...prev, [active.id]: agentId }));
+    if (agentId) await assignAgent(active.id, agentId);
+  }
+
+  async function aiReply() {
+    const agent = assignedAgent ?? agents.find((a) => a.status === "Live");
+    if (!agent) {
+      setAiError("Create a chat agent first (AI Agents → New agent).");
+      return;
+    }
+    setAiBusy(true);
+    setAiError(null);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: agent.model,
+          agentName: agent.name,
+          instructions: agent.instructions,
+          knowledgeBase: agent.knowledgeBase,
+          capabilities: { canBook: agent.canBook, canReschedule: agent.canReschedule, canCancel: agent.canCancel },
+          patientContext: patient
+            ? `Name: ${patient.name}. Insurance: ${patient.insurance}. Last visit: ${patient.lastVisit}. Next appointment: ${patient.nextAppointment ?? "none"}. Balance: $${patient.balance}.`
+            : "",
+          messages: thread.map((m) => ({
+            role: m.direction === "inbound" ? ("user" as const) : ("assistant" as const),
+            content: m.body,
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "AI request failed");
+      const msg: Message = {
+        id: `ai-${Date.now()}`,
+        direction: "outbound",
+        author: `${agent.name} (AI)`,
+        byBot: true,
+        body: data.reply,
+        time: "Just now",
+      };
+      setExtraMessages((prev) => ({ ...prev, [active.id]: [...(prev[active.id] ?? []), msg] }));
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : "AI reply failed.");
+    } finally {
+      setAiBusy(false);
+    }
   }
 
   return (
@@ -55,7 +116,7 @@ export default function InboxPage() {
             onClick={() => setFilter(f.key)}
             className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
               filter === f.key
-                ? "bg-ink-900 text-white"
+                ? "bg-brand-600 text-white"
                 : "border border-ink-200 bg-surface text-ink-600 hover:bg-ink-50"
             }`}
           >
@@ -108,9 +169,25 @@ export default function InboxPage() {
                 </p>
               </div>
             </div>
-            <button className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
-              <UserCheck className="h-3.5 w-3.5" /> Assign to me
-            </button>
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-ink-400" />
+              <select
+                value={assignments[active.id] ?? ""}
+                onChange={(e) => onAssign(e.target.value)}
+                className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none"
+                title="Assign an AI agent to this conversation"
+              >
+                <option value="">No AI agent</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} — {a.role}
+                  </option>
+                ))}
+              </select>
+              <button className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+                <UserCheck className="h-3.5 w-3.5" /> Assign to me
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 space-y-4 overflow-y-auto bg-ink-50/40 p-5">
@@ -133,6 +210,7 @@ export default function InboxPage() {
           </div>
 
           <div className="border-t border-ink-200 p-4">
+            {aiError && <p className="mb-2 text-xs text-amber-600">{aiError}</p>}
             <div className="flex items-end gap-2">
               <textarea
                 value={draft}
@@ -148,11 +226,13 @@ export default function InboxPage() {
                 className="flex-1 resize-none rounded-xl border border-ink-200 bg-surface px-3.5 py-2.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400"
               />
               <button
-                onClick={() => setDraft("Hi! Thanks for reaching out — let me check that for you right away. 😊")}
-                title="Draft with AI"
-                className="rounded-xl border border-ink-200 p-2.5 text-brand-600 hover:bg-brand-50"
+                onClick={aiReply}
+                disabled={aiBusy}
+                title={assignedAgent ? `Let ${assignedAgent.name} reply` : "Let the AI agent reply"}
+                className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-3 py-2.5 text-sm font-medium text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:text-brand-300"
               >
-                <Sparkles className="h-5 w-5" />
+                <Sparkles className={`h-5 w-5 ${aiBusy ? "animate-pulse" : ""}`} />
+                {aiBusy ? "Thinking…" : "AI reply"}
               </button>
               <button onClick={send} className="rounded-xl bg-brand-600 p-2.5 text-white hover:bg-brand-700">
                 <Send className="h-5 w-5" />
@@ -163,7 +243,7 @@ export default function InboxPage() {
 
         {/* Patient context panel */}
         <div className="hidden border-l border-ink-200 p-5 lg:block">
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Patient · OpenDental</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Patient chart</p>
           {patient ? (
             <div className="mt-4 space-y-4 text-sm">
               <div className="flex items-center gap-3">

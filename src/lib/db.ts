@@ -211,3 +211,114 @@ export async function createAppointment(input: {
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Appointment saved to the schedule." };
 }
+
+// ----------------------------------------------------------------- agents
+
+export interface AiAgent {
+  id: string;
+  name: string;
+  kind: "chat" | "voice";
+  role: "Receptionist" | "Sales" | "Knowledge base" | "Appointment setter" | "Follow-up";
+  status: "Live" | "Paused" | "Draft";
+  model: string;
+  vapiAssistantId: string | null;
+  voice: string;
+  firstMessage: string;
+  language: string;
+  instructions: string;
+  knowledgeBase: string;
+  canBook: boolean;
+  canReschedule: boolean;
+  canCancel: boolean;
+  channels: string[];
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function rowToAgent(r: any): AiAgent {
+  return {
+    id: r.id,
+    name: r.name,
+    kind: r.kind,
+    role: r.role,
+    status: r.status,
+    model: r.model ?? "openai/gpt-4o-mini",
+    vapiAssistantId: r.vapi_assistant_id ?? null,
+    voice: r.voice ?? "",
+    firstMessage: r.first_message ?? "",
+    language: r.language ?? "English",
+    instructions: r.instructions ?? "",
+    knowledgeBase: r.knowledge_base ?? "",
+    canBook: !!r.can_book,
+    canReschedule: !!r.can_reschedule,
+    canCancel: !!r.can_cancel,
+    channels: r.channels ?? [],
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSource }> {
+  try {
+    const { data, error } = await supabase.from("agents").select("*").order("created_at");
+    if (error || !data) throw error ?? new Error("no data");
+    return { agents: data.map(rowToAgent), source: "live" };
+  } catch {
+    return { agents: [], source: "demo" };
+  }
+}
+
+export async function createAgent(input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("agents").insert({
+    name: input.name,
+    kind: input.kind,
+    role: input.role,
+    status: input.status,
+    model: input.kind === "chat" ? input.model : null,
+    voice: input.kind === "voice" ? input.voice : null,
+    first_message: input.firstMessage,
+    language: input.language,
+    instructions: input.instructions,
+    knowledge_base: input.knowledgeBase,
+    can_book: input.canBook,
+    can_reschedule: input.canReschedule,
+    can_cancel: input.canCancel,
+    channels: input.channels,
+  });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Agent saved to the database." };
+}
+
+export async function updateAgentStatus(id: string, status: AiAgent["status"]): Promise<void> {
+  await supabase.from("agents").update({ status }).eq("id", id);
+}
+
+export async function assignAgent(conversationKey: string, agentId: string): Promise<void> {
+  await supabase
+    .from("agent_assignments")
+    .upsert({ conversation_key: conversationKey, agent_id: agentId, active: true }, { onConflict: "conversation_key" });
+}
+
+export async function fetchAssignments(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.from("agent_assignments").select("conversation_key, agent_id").eq("active", true);
+    return Object.fromEntries((data ?? []).map((r) => [r.conversation_key, r.agent_id]));
+  } catch {
+    return {};
+  }
+}
+
+export async function enrollFollowUp(dealKey: string, agentId: string, patientName: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase
+    .from("follow_ups")
+    .upsert({ deal_key: dealKey, agent_id: agentId, patient_name: patientName, active: true }, { onConflict: "deal_key" });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Enrolled in daily follow-up." };
+}
+
+export async function fetchFollowUps(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.from("follow_ups").select("deal_key, agent_id").eq("active", true);
+    return Object.fromEntries((data ?? []).map((r) => [r.deal_key, r.agent_id]));
+  } catch {
+    return {};
+  }
+}

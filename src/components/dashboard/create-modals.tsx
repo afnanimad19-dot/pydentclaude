@@ -68,7 +68,7 @@ export function NewPatientModal({
   }
 
   return (
-    <Modal open={open} onClose={close} title="New patient" subtitle="Saved to your Pydental database — syncs to OpenDental when connected." wide>
+    <Modal open={open} onClose={close} title="New patient" subtitle="Saved straight to your clinic database." wide>
       {result?.ok ? (
         <ResultNote ok text={result.message} />
       ) : (
@@ -181,7 +181,7 @@ export function NewAppointmentModal({
   }
 
   return (
-    <Modal open={open} onClose={close} title="New appointment" subtitle="Saved to your schedule — OpenDental + Google Calendar sync when connected." wide>
+    <Modal open={open} onClose={close} title="New appointment" subtitle="Saved to your schedule — mirrors to Google Calendar when connected." wide>
       {result?.ok ? (
         <ResultNote ok text={`${result.message} (${slot})`} />
       ) : (

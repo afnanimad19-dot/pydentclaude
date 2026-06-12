@@ -1,15 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   LayoutDashboard,
   Inbox,
   MessageCircle,
   MessageSquareText,
   Mail,
-  PhoneCall,
+  Bot,
   KanbanSquare,
   Users,
   Settings,
@@ -18,9 +18,11 @@ import {
   Bell,
   PanelLeftClose,
   PanelLeftOpen,
+  LogOut,
 } from "lucide-react";
 import { Avatar } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme";
+import { supabase } from "@/lib/supabase";
 
 interface NavItem {
   href: string;
@@ -32,6 +34,15 @@ interface NavItem {
 const nav: NavItem[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/inbox", label: "Omnichannel Inbox", icon: Inbox },
+  {
+    href: "/dashboard/agents",
+    label: "AI Agents",
+    icon: Bot,
+    children: [
+      { href: "/dashboard/agents", label: "All agents" },
+      { href: "/dashboard/voice", label: "Call log" },
+    ],
+  },
   {
     href: "/dashboard/whatsapp",
     label: "WhatsApp",
@@ -60,15 +71,6 @@ const nav: NavItem[] = [
       { href: "/dashboard/email#automations", label: "Automations" },
     ],
   },
-  {
-    href: "/dashboard/voice",
-    label: "Voice Agents",
-    icon: PhoneCall,
-    children: [
-      { href: "/dashboard/voice#agents", label: "Agents" },
-      { href: "/dashboard/voice#call-log", label: "Call log" },
-    ],
-  },
   { href: "/dashboard/pipeline", label: "Pipeline", icon: KanbanSquare },
   {
     href: "/dashboard/patients",
@@ -85,9 +87,34 @@ const nav: NavItem[] = [
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(true);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const pathname = usePathname();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const currentTab = searchParams.get("tab");
+
+  // Auth guard: allow logged-in users, or explicit demo-mode visitors.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) {
+        setUserEmail(data.session.user.email ?? null);
+        return;
+      }
+      let demo = false;
+      try {
+        demo = sessionStorage.getItem("pydental-demo") === "1";
+      } catch {}
+      if (!demo) router.replace("/login");
+    });
+  }, [router]);
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    try {
+      sessionStorage.removeItem("pydental-demo");
+    } catch {}
+    router.push("/login");
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -155,15 +182,15 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
         {open && (
           <div className="m-3 rounded-xl border border-brand-200 bg-brand-50 p-3.5">
-            <p className="text-xs font-semibold text-brand-800 dark:text-brand-300">Demo workspace</p>
+            <p className="text-xs font-semibold text-brand-800 dark:text-brand-300">Bright Smile Dental</p>
             <p className="mt-1 text-xs leading-relaxed text-brand-700 dark:text-brand-400">
-              Exploring with sample clinic data. Connect OpenDental to sync your real schedule.
+              Your full practice workspace — patients, schedule, agents and channels in one place.
             </p>
             <Link
               href="/dashboard/settings"
               className="mt-2.5 inline-block rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
             >
-              Connect OpenDental
+              Workspace settings
             </Link>
           </div>
         )}
@@ -195,11 +222,20 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-brand-500" />
             </button>
             <div className="ml-2 flex items-center gap-2.5">
-              <Avatar name="Dana Reyes" size="sm" />
+              <Avatar name={userEmail ?? "Demo User"} size="sm" />
               <div className="hidden leading-tight lg:block">
-                <p className="text-sm font-medium text-ink-900">Dana Reyes</p>
-                <p className="text-xs text-ink-400">Office Manager</p>
+                <p className="max-w-[160px] truncate text-sm font-medium text-ink-900">
+                  {userEmail ?? "Demo mode"}
+                </p>
+                <p className="text-xs text-ink-400">{userEmail ? "Clinic account" : "Not signed in"}</p>
               </div>
+              <button
+                onClick={signOut}
+                title={userEmail ? "Sign out" : "Exit demo / log in"}
+                className="rounded-xl p-2 text-ink-500 hover:bg-ink-50"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
             </div>
           </div>
         </header>

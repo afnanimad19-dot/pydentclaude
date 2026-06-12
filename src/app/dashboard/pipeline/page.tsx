@@ -1,10 +1,32 @@
-import { Plus, TrendingUp, CircleDollarSign, Hourglass } from "lucide-react";
+"use client";
+
+import { useEffect, useState } from "react";
+import { Plus, TrendingUp, CircleDollarSign, Hourglass, Bot } from "lucide-react";
 import { PageHeader, DemoBanner, ChannelBadge, StatCard } from "@/components/ui";
+import { fetchAgents, fetchFollowUps, enrollFollowUp, type AiAgent } from "@/lib/db";
 import { pipeline, formatMoney } from "@/lib/mock-data";
 
 export default function PipelinePage() {
   const allDeals = pipeline.flatMap((s) => s.deals);
   const totalValue = allDeals.reduce((sum, d) => sum + d.value, 0);
+  const [agents, setAgents] = useState<AiAgent[]>([]);
+  const [followUps, setFollowUps] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    fetchAgents().then((r) => setAgents(r.agents));
+    fetchFollowUps().then(setFollowUps);
+  }, []);
+
+  const followUpAgent =
+    agents.find((a) => a.role === "Follow-up" && a.status === "Live") ??
+    agents.find((a) => a.role === "Follow-up") ??
+    agents.find((a) => a.kind === "chat");
+
+  async function toggleFollowUp(dealId: string, patientName: string) {
+    if (!followUpAgent) return;
+    setFollowUps((prev) => ({ ...prev, [dealId]: followUpAgent.id }));
+    await enrollFollowUp(dealId, followUpAgent.id, patientName);
+  }
 
   return (
     <>
@@ -57,6 +79,21 @@ export default function PipelinePage() {
                         {deal.owner} · {deal.daysInStage}d
                       </span>
                     </div>
+                    {followUps[deal.id] ? (
+                      <span className="mt-2.5 flex items-center gap-1.5 rounded-lg bg-violet-500/15 px-2.5 py-1.5 text-xs font-medium text-violet-500">
+                        <Bot className="h-3.5 w-3.5" /> Daily follow-up by{" "}
+                        {agents.find((a) => a.id === followUps[deal.id])?.name ?? "agent"}
+                      </span>
+                    ) : (
+                      followUpAgent && (
+                        <button
+                          onClick={() => toggleFollowUp(deal.id, deal.patientName)}
+                          className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-ink-300 py-1.5 text-xs font-medium text-ink-500 hover:border-violet-400 hover:text-violet-500"
+                        >
+                          <Bot className="h-3.5 w-3.5" /> Follow up daily ({followUpAgent.name})
+                        </button>
+                      )
+                    )}
                   </div>
                 ))}
               </div>

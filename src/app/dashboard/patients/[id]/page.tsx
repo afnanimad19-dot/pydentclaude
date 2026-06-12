@@ -78,7 +78,7 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
           <span><strong className="font-semibold">Live chart</strong> — reading from your Supabase database.</span>
         </div>
       ) : (
-        <DemoBanner context="Sample patient chart — in live mode this maps 1:1 onto the clinic's OpenDental record." />
+        <DemoBanner context="Sample patient chart — connect the database to manage real charts." />
       )}
       <Link href="/dashboard/patients" className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-ink-500 hover:text-ink-900">
         <ArrowLeft className="h-4 w-4" /> All patients

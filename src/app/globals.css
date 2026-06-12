@@ -110,3 +110,48 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--ink-300);
 }
+
+/* Marketing site — floating 3D elements */
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-18px) rotate(3deg); }
+}
+@keyframes float-slower {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(14px) rotate(-4deg); }
+}
+.animate-float-slow { animation: float-slow 7s ease-in-out infinite; }
+.animate-float-slower { animation: float-slower 9s ease-in-out infinite; }
+
+.orb-3d {
+  border-radius: 9999px;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0) 28%),
+    radial-gradient(circle at 70% 75%, rgba(124, 92, 255, 0.9) 0%, rgba(76, 49, 192, 1) 55%, rgba(28, 18, 84, 1) 100%);
+  box-shadow:
+    inset -14px -18px 36px rgba(10, 5, 40, 0.65),
+    0 24px 60px rgba(98, 70, 234, 0.45);
+}
+.orb-3d-teal {
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.8) 0%, rgba(255, 255, 255, 0) 26%),
+    radial-gradient(circle at 70% 75%, rgba(72, 213, 217, 0.95) 0%, rgba(23, 122, 130, 1) 55%, rgba(8, 45, 52, 1) 100%);
+  box-shadow:
+    inset -12px -16px 32px rgba(3, 25, 30, 0.6),
+    0 24px 60px rgba(40, 156, 160, 0.4);
+}
+.preview-3d {
+  transform: perspective(1400px) rotateX(14deg);
+  transform-origin: center top;
+  transition: transform 0.6s ease;
+}
+.preview-3d:hover {
+  transform: perspective(1400px) rotateX(4deg);
+}
+.grid-floor {
+  background-image:
+    linear-gradient(rgba(124, 92, 255, 0.14) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(124, 92, 255, 0.14) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(60% 60% at 50% 40%, black 0%, transparent 100%);
+}

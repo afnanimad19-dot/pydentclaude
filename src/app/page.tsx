@@ -60,8 +60,8 @@ const features = [
   },
   {
     icon: Database,
-    title: "OpenDental Native",
-    body: "Connect your own API key. Patients, schedule, recalls and treatment plans sync in — read-only first, zero risk.",
+    title: "Built-in Practice Management",
+    body: "Patients, schedule, treatment plans, documents, insurance and payments — your own complete system, with OpenDental import coming for clinics that want it.",
   },
 ];
 
@@ -71,7 +71,7 @@ const benefits = [
   { title: "Continual improvement", body: "Booking rates, response times and revenue attribution per channel and per agent." },
   { title: "Sweet efficiency", body: "74% of conversations resolved without a human, with an 8-second average first response." },
   { title: "Actionable insights", body: "See exactly which campaign, channel or agent produced each booked appointment." },
-  { title: "Safe with your data", body: "OpenDental stays your system of record. Reads first; writes are an explicit opt-in." },
+  { title: "Safe with your data", body: "Your patient data lives in your own database, encrypted in transit and at rest — and exportable anytime." },
 ];
 
 const testimonials = [
@@ -101,7 +101,7 @@ const plans = [
     price: "$99",
     period: "/mo per location",
     blurb: "For solo practices getting off voicemail.",
-    features: ["Omnichannel inbox", "SMS reminders & confirmations", "Email campaigns", "OpenDental read-only sync", "1 user seat"],
+    features: ["Omnichannel inbox", "SMS reminders & confirmations", "Email campaigns", "Built-in patient management", "1 user seat"],
     cta: "Start free trial",
     featured: false,
   },
@@ -145,16 +145,24 @@ export default function Home() {
           </Link>
           <nav className="hidden items-center gap-8 text-sm font-medium text-slate-400 md:flex">
             <a href="#features" className="transition-colors hover:text-white">Features</a>
-            <a href="#opendental" className="transition-colors hover:text-white">OpenDental</a>
+            <a href="#platform" className="transition-colors hover:text-white">Platform</a>
             <a href="#testimonials" className="transition-colors hover:text-white">Customers</a>
             <a href="#pricing" className="transition-colors hover:text-white">Pricing</a>
           </nav>
-          <Link
-            href="/dashboard"
-            className="rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-violet-600/30 transition-opacity hover:opacity-90"
-          >
-            Open live demo
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/login"
+              className="rounded-xl px-4 py-2 text-sm font-semibold text-slate-300 transition-colors hover:text-white"
+            >
+              Log in
+            </Link>
+            <Link
+              href="/signup"
+              className="rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-violet-600/30 transition-opacity hover:opacity-90"
+            >
+              Get started
+            </Link>
+          </div>
         </div>
       </header>
 
@@ -163,6 +171,13 @@ export default function Home() {
         <Glow className="-top-40 left-1/2 h-[480px] w-[900px] -translate-x-1/2 bg-violet-600/25" />
         <Glow className="top-40 -left-40 h-[380px] w-[380px] bg-indigo-600/20" />
         <Glow className="top-60 -right-40 h-[380px] w-[380px] bg-fuchsia-600/15" />
+        <div className="grid-floor pointer-events-none absolute inset-x-0 top-0 h-[640px]" aria-hidden />
+
+        {/* Floating 3D orbs */}
+        <div className="orb-3d animate-float-slow pointer-events-none absolute left-[6%] top-44 hidden h-24 w-24 lg:block" aria-hidden />
+        <div className="orb-3d-teal animate-float-slower pointer-events-none absolute right-[8%] top-32 hidden h-16 w-16 rounded-full lg:block" aria-hidden />
+        <div className="orb-3d animate-float-slower pointer-events-none absolute right-[16%] top-[430px] hidden h-10 w-10 lg:block" aria-hidden />
+        <div className="orb-3d-teal animate-float-slow pointer-events-none absolute left-[14%] top-[480px] hidden h-12 w-12 rounded-full lg:block" aria-hidden />
 
         <div className="relative mx-auto max-w-6xl px-6 pt-20 text-center md:pt-28">
           <SectionTag>
@@ -186,15 +201,15 @@ export default function Home() {
               className="w-full bg-transparent px-3.5 py-2.5 text-sm text-white outline-none placeholder:text-slate-500"
             />
             <Link
-              href="/dashboard"
+              href="/signup"
               className="shrink-0 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-violet-600/30 transition-opacity hover:opacity-90"
             >
               Get started
             </Link>
           </div>
 
-          {/* Product preview */}
-          <div className="relative mx-auto mt-16 max-w-4xl">
+          {/* Product preview — 3D perspective tilt */}
+          <div className="preview-3d relative mx-auto mt-16 max-w-4xl">
             <div className="absolute -inset-1 rounded-3xl bg-gradient-to-r from-violet-600/40 via-fuchsia-500/30 to-indigo-600/40 blur-xl" />
             <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-night-900 shadow-2xl">
               <div className="flex items-center gap-1.5 border-b border-white/5 px-5 py-3.5">
@@ -254,7 +269,7 @@ export default function Home() {
             every clinic deserves a front desk that never sleeps.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-slate-500">
-            {["OpenDental", "WhatsApp Business", "Twilio", "Retell AI", "Stripe", "Google Calendar"].map((l) => (
+            {["WhatsApp Business", "Vapi", "Twilio", "Google Calendar", "OpenRouter", "Supabase"].map((l) => (
               <span key={l} className="font-semibold tracking-wide">{l}</span>
             ))}
           </div>
@@ -291,25 +306,26 @@ export default function Home() {
         </div>
       </section>
 
-      {/* OpenDental */}
-      <section id="opendental" className="relative py-24">
+      {/* Platform */}
+      <section id="platform" className="relative py-24">
+        <div className="orb-3d animate-float-slow pointer-events-none absolute right-[4%] top-12 hidden h-16 w-16 lg:block" aria-hidden />
         <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-6 lg:grid-cols-2">
           <div>
-            <SectionTag><Database className="h-3.5 w-3.5" /> OpenDental native</SectionTag>
+            <SectionTag><Database className="h-3.5 w-3.5" /> Complete practice platform</SectionTag>
             <h2 className="mt-5 text-3xl font-semibold tracking-tight text-white">
-              Your OpenDental data, a UI your team will love
+              Your whole practice, in one system you own
             </h2>
             <p className="mt-4 leading-relaxed text-slate-400">
-              Clinics connect their own OpenDental API key and Pydental syncs patients,
-              appointments, recall lists and unscheduled treatment plans into modern screens —
-              while OpenDental stays the system of record.
+              Pydental isn&apos;t just the conversation layer — it&apos;s a full patient system.
+              Charts, schedule, treatment plans, documents, insurance and payments live in your own
+              database, and every AI agent works directly on that data.
             </p>
             <ul className="mt-6 space-y-3">
               {[
-                "Read-only first: explore everything with zero risk to your live database",
-                "Write actions (booking, confirmations) are an explicit per-clinic opt-in",
-                "Recall and treatment-plan lists automatically feed campaigns and pipeline",
-                "You keep OpenDental — Pydental is the conversation layer on top",
+                "Patient charts with treatment plans, documents, X-rays, insurance and payments",
+                "Booking calendar that mirrors to Google Calendar automatically",
+                "AI agents read the chart, so every reply and call is personalized",
+                "Already on OpenDental? One-click import is coming — no risk to your live setup",
               ].map((t) => (
                 <li key={t} className="flex items-start gap-2.5 text-sm text-slate-300">
                   <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-violet-400" /> {t}
@@ -319,18 +335,25 @@ export default function Home() {
           </div>
           <div className="relative">
             <div className="absolute -inset-1 rounded-3xl bg-gradient-to-r from-violet-600/30 to-indigo-600/30 blur-xl" />
-            <div className="relative rounded-2xl border border-white/10 bg-night-900 p-6 font-mono text-sm leading-relaxed text-slate-300 shadow-2xl">
-              <p className="text-slate-500"># Connect once in Settings → Integrations</p>
-              <p className="mt-3"><span className="text-violet-400">GET</span> /api/v1/patients</p>
-              <p><span className="text-violet-400">GET</span> /api/v1/appointments</p>
-              <p><span className="text-violet-400">GET</span> /api/v1/recalls</p>
-              <p><span className="text-violet-400">GET</span> /api/v1/treatplans</p>
-              <p className="mt-3 text-slate-500"># Opt-in write actions, when you&apos;re ready</p>
-              <p><span className="text-fuchsia-400">POST</span> /api/v1/appointments</p>
-              <p><span className="text-fuchsia-400">PUT</span> /api/v1/appointments/&#123;AptNum&#125;/Confirm</p>
-              <p><span className="text-fuchsia-400">POST</span> /api/v1/commlogs</p>
-              <p className="mt-4 flex items-center gap-2 text-xs text-emerald-400">
-                <ShieldCheck className="h-4 w-4" /> Demo mode on — no live writes possible
+            <div className="relative space-y-3 rounded-2xl border border-white/10 bg-night-900 p-6 shadow-2xl">
+              {[
+                ["Patient chart", "Robert Kim · Implant #30 · plan presented", "violet"],
+                ["Schedule", "Fri Jun 12 · 9:00 Maria H. · 16:00 Emily T. (new)", "indigo"],
+                ["Insurance", "Delta Dental PPO · $1,260 benefits remaining", "fuchsia"],
+                ["Payments", "$1,180 financing · 12-month plan active", "emerald"],
+                ["AI agent Mila", "“Booked Aisha's crown seat for Tue 3:00 PM ✓”", "violet"],
+              ].map(([title, sub], i) => (
+                <div
+                  key={title as string}
+                  className="animate-float-slow rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 backdrop-blur transition-colors hover:border-violet-500/40"
+                  style={{ animationDelay: `${i * 0.8}s`, animationDuration: "11s" }}
+                >
+                  <p className="text-sm font-semibold text-white">{title}</p>
+                  <p className="mt-0.5 text-xs text-slate-400">{sub}</p>
+                </div>
+              ))}
+              <p className="flex items-center gap-2 pt-1 text-xs text-emerald-400">
+                <ShieldCheck className="h-4 w-4" /> Your data, your database — exportable anytime
               </p>
             </div>
           </div>
@@ -413,7 +436,7 @@ export default function Home() {
           </h2>
           <div className="mt-12 grid gap-5 text-left md:grid-cols-3">
             {[
-              ["01", "Connect OpenDental", "Paste your API key — patients, schedule and recalls sync in, read-only and risk-free."],
+              ["01", "Create your workspace", "Sign up, add your team, and your patient system is ready — schedule, charts and channels included."],
               ["02", "Turn on your agents", "Pick ready-made recall, reminder and FAQ flows, or build your own. Assign a voice agent to your line."],
               ["03", "Watch revenue compound", "Bookings, recovered no-shows and accepted treatment — attributed to the agent that earned them."],
             ].map(([n, title, body]) => (
@@ -529,7 +552,7 @@ export default function Home() {
               <div>
                 <p className="font-semibold text-white">Integrations</p>
                 <ul className="mt-3 space-y-2 text-slate-500">
-                  <li>OpenDental</li>
+                  <li>Vapi · OpenRouter</li>
                   <li>WhatsApp Business</li>
                   <li>Twilio · Retell AI · Stripe</li>
                 </ul>

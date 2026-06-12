@@ -9,7 +9,7 @@ import { broadcasts, conversations } from "@/lib/mock-data";
 
 const templates = [
   { name: "Appointment reminder (T-24h)", body: "Reminder: {{procedure}} tomorrow at {{time}} with {{provider}}. Reply C to confirm or R to reschedule.", usage: "Auto — runs on every scheduled appt" },
-  { name: "No-show recovery", body: "We missed you today, {{first_name}}! Want to grab a new time? Book here: {{booking_link}}", usage: "Auto — fires when OpenDental marks Broken" },
+  { name: "No-show recovery", body: "We missed you today, {{first_name}}! Want to grab a new time? Book here: {{booking_link}}", usage: "Auto — fires when an appointment is marked broken" },
   { name: "Recall — overdue cleaning", body: "Hi {{first_name}}, it's been {{months_overdue}} months since your last cleaning. We have openings this week — reply YES and we'll find you a time.", usage: "Campaigns" },
   { name: "Balance reminder", body: "Friendly note: you have an open balance of {{balance}}. Pay securely: {{payment_link}} or reply HELP to reach billing.", usage: "Manual / scheduled" },
 ];
@@ -87,7 +87,7 @@ export default function SmsPage() {
         <Card className="scroll-mt-20 p-5" id="templates">
           <h2 className="mb-1 font-semibold text-ink-900">Message templates</h2>
           <p className="mb-4 text-sm text-ink-500">
-            Merge fields pull live from OpenDental — names, times, balances, booking links.
+            Merge fields pull live from your patient database — names, times, balances, booking links.
           </p>
           <ul className="space-y-3">
             {templates.map((t) => (

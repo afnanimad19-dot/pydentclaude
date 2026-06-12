@@ -110,8 +110,7 @@ export function DemoBanner({ context }: { context: string }) {
     <div className="mb-6 flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-sm text-brand-800 dark:text-brand-300">
       <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-brand-500" />
       <span>
-        <strong className="font-semibold">Demo mode</strong> — {context} Connect your OpenDental
-        API key in Settings to go live.
+        <strong className="font-semibold">Demo mode</strong> — {context}
       </span>
     </div>
   );
