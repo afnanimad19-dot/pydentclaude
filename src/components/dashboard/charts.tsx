@@ -38,12 +38,12 @@ export function RevenueChart() {
       <AreaChart data={monthlyRevenue}>
         <defs>
           <linearGradient id="prod" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#b6c2c9" stopOpacity={0.5} />
-            <stop offset="100%" stopColor="#b6c2c9" stopOpacity={0.05} />
+            <stop offset="0%" stopColor="#bcb9d0" stopOpacity={0.5} />
+            <stop offset="100%" stopColor="#bcb9d0" stopOpacity={0.05} />
           </linearGradient>
           <linearGradient id="pyd" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#289ca0" stopOpacity={0.55} />
-            <stop offset="100%" stopColor="#289ca0" stopOpacity={0.05} />
+            <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.55} />
+            <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.05} />
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" />
@@ -60,8 +60,8 @@ export function RevenueChart() {
           formatter={(v) => `$${Number(v).toLocaleString()}`}
         />
         <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
-        <Area type="monotone" dataKey="production" name="Total production" stroke="#8fa0aa" fill="url(#prod)" strokeWidth={2} />
-        <Area type="monotone" dataKey="fromPydental" name="Booked via Pydental" stroke="#289ca0" fill="url(#pyd)" strokeWidth={2} />
+        <Area type="monotone" dataKey="production" name="Total production" stroke="#9692b0" fill="url(#prod)" strokeWidth={2} />
+        <Area type="monotone" dataKey="fromPydental" name="Booked via Pydental" stroke="#8b5cf6" fill="url(#pyd)" strokeWidth={2} />
       </AreaChart>
     </ResponsiveContainer>
   );

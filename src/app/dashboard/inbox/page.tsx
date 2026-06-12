@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, Send, Sparkles, UserCheck } from "lucide-react";
 import { Card, ChannelBadge, Avatar, DemoBanner, PageHeader } from "@/components/ui";
-import { fetchAgents, fetchAssignments, assignAgent, type AiAgent } from "@/lib/db";
+import { fetchAgents, fetchAssignments, assignAgent, fetchChannelDefaults, type AiAgent, type ChannelDefault } from "@/lib/db";
 import { conversations, channelMeta, patients, type Channel, type Message } from "@/lib/mock-data";
 
 const filters: { key: Channel | "all"; label: string }[] = [
@@ -24,9 +24,12 @@ export default function InboxPage() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
+  const [channelDefaults, setChannelDefaults] = useState<ChannelDefault[]>([]);
+
   useEffect(() => {
     fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "chat")));
     fetchAssignments().then(setAssignments);
+    fetchChannelDefaults().then(setChannelDefaults);
   }, []);
 
   const list = useMemo(
@@ -36,7 +39,12 @@ export default function InboxPage() {
   const active = conversations.find((c) => c.id === activeId) ?? conversations[0];
   const patient = patients.find((p) => p.id === active.patientId);
   const thread = [...active.messages, ...(extraMessages[active.id] ?? [])];
-  const assignedAgent = agents.find((a) => a.id === assignments[active.id]) ?? null;
+  // Per-conversation assignment wins; otherwise the Agent Hub default for this channel
+  const hubDefault = channelDefaults.find((d) => d.channel === active.channel && d.enabled && d.agentId);
+  const assignedAgent =
+    agents.find((a) => a.id === assignments[active.id]) ??
+    agents.find((a) => a.id === hubDefault?.agentId) ??
+    null;
 
   function send() {
     if (!draft.trim()) return;
@@ -57,9 +65,9 @@ export default function InboxPage() {
   }
 
   async function aiReply() {
-    const agent = assignedAgent ?? agents.find((a) => a.status === "Live");
+    const agent = assignedAgent;
     if (!agent) {
-      setAiError("Create a chat agent first (AI Agents → New agent).");
+      setAiError("Assign an agent to this chat, or set a default for this channel in AI Agents → Agent Hub.");
       return;
     }
     setAiBusy(true);
@@ -177,7 +185,11 @@ export default function InboxPage() {
                 className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none"
                 title="Assign an AI agent to this conversation"
               >
-                <option value="">No AI agent</option>
+                <option value="">
+                  {hubDefault
+                    ? `Hub default — ${agents.find((a) => a.id === hubDefault.agentId)?.name ?? "agent"}`
+                    : "No AI agent — humans reply"}
+                </option>
                 {agents.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.name} — {a.role}

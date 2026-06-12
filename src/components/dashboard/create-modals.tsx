@@ -248,7 +248,7 @@ export function NewAppointmentModal({
             ))}
           </div>
           <label className="mt-4 flex items-center gap-2 text-sm text-ink-600">
-            <input type="checkbox" defaultChecked className="h-4 w-4 accent-[#207e84]" />
+            <input type="checkbox" defaultChecked className="h-4 w-4 accent-[#7c3aed]" />
             Also add to Google Calendar and send confirmation via patient&apos;s preferred channel
           </label>
           <ModalFooter onClose={close} submitLabel={saving ? "Booking…" : "Book appointment"} onSubmit={submit} />
@@ -365,7 +365,7 @@ export function NewAgentModal({ open, onClose }: { open: boolean; onClose: () =>
             />
           </Field>
           <label className="mt-4 flex items-center gap-2 text-sm text-ink-600">
-            <input type="checkbox" defaultChecked className="h-4 w-4 accent-[#207e84]" />
+            <input type="checkbox" defaultChecked className="h-4 w-4 accent-[#7c3aed]" />
             Can book appointments directly into the schedule
           </label>
           <ModalFooter onClose={close} submitLabel="Create agent" onSubmit={() => setDone(true)} />

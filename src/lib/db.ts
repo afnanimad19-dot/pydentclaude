@@ -231,6 +231,9 @@ export interface AiAgent {
   canReschedule: boolean;
   canCancel: boolean;
   channels: string[];
+  purpose: "inbound" | "outbound" | "both";
+  firstMessageMode: "assistant_first" | "user_first" | "assistant_first_generated";
+  kbFiles: string[];
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -252,8 +255,35 @@ function rowToAgent(r: any): AiAgent {
     canReschedule: !!r.can_reschedule,
     canCancel: !!r.can_cancel,
     channels: r.channels ?? [],
+    purpose: r.purpose ?? "both",
+    firstMessageMode: r.first_message_mode ?? "assistant_first",
+    kbFiles: r.kb_files ?? [],
   };
 }
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function agentToRow(input: Omit<AiAgent, "id" | "vapiAssistantId">): Record<string, any> {
+  return {
+    name: input.name,
+    kind: input.kind,
+    role: input.role,
+    status: input.status,
+    model: input.model,
+    voice: input.kind === "voice" ? input.voice : null,
+    first_message: input.firstMessage,
+    language: input.language,
+    instructions: input.instructions,
+    knowledge_base: input.knowledgeBase,
+    can_book: input.canBook,
+    can_reschedule: input.canReschedule,
+    can_cancel: input.canCancel,
+    channels: input.channels,
+    purpose: input.purpose,
+    first_message_mode: input.firstMessageMode,
+    kb_files: input.kbFiles,
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSource }> {
@@ -266,25 +296,87 @@ export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSo
   }
 }
 
-export async function createAgent(input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
-  const { error } = await supabase.from("agents").insert({
-    name: input.name,
-    kind: input.kind,
-    role: input.role,
-    status: input.status,
-    model: input.kind === "chat" ? input.model : null,
-    voice: input.kind === "voice" ? input.voice : null,
-    first_message: input.firstMessage,
-    language: input.language,
-    instructions: input.instructions,
-    knowledge_base: input.knowledgeBase,
-    can_book: input.canBook,
-    can_reschedule: input.canReschedule,
-    can_cancel: input.canCancel,
-    channels: input.channels,
-  });
+export async function createAgent(input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string; id?: string }> {
+  const row = agentToRow(input);
+  let { data, error } = await supabase.from("agents").insert(row).select("id").single();
+  if (error && /purpose|first_message_mode|kb_files/.test(error.message)) {
+    // Migration 0003 not applied yet — retry without the new columns.
+    delete row.purpose;
+    delete row.first_message_mode;
+    delete row.kb_files;
+    ({ data, error } = await supabase.from("agents").insert(row).select("id").single());
+  }
   if (error) return { ok: false, message: error.message };
-  return { ok: true, message: "Agent saved to the database." };
+  return { ok: true, message: "Agent saved to the database.", id: data?.id };
+}
+
+export async function setAgentVapiId(id: string, vapiId: string): Promise<void> {
+  await supabase.from("agents").update({ vapi_assistant_id: vapiId }).eq("id", id);
+}
+
+export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
+  const row = agentToRow(input);
+  let { error } = await supabase.from("agents").update(row).eq("id", id);
+  if (error && /purpose|first_message_mode|kb_files/.test(error.message)) {
+    delete row.purpose;
+    delete row.first_message_mode;
+    delete row.kb_files;
+    ({ error } = await supabase.from("agents").update(row).eq("id", id));
+  }
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Agent updated." };
+}
+
+// ----------------------------------------------- agent hub (defaults/lines)
+
+export interface ChannelDefault {
+  channel: string;
+  agentId: string | null;
+  enabled: boolean;
+}
+
+export async function fetchChannelDefaults(): Promise<ChannelDefault[]> {
+  try {
+    const { data } = await supabase.from("channel_defaults").select("*");
+    return (data ?? []).map((r) => ({ channel: r.channel, agentId: r.agent_id, enabled: r.enabled }));
+  } catch {
+    return [];
+  }
+}
+
+export async function setChannelDefault(channel: string, agentId: string | null, enabled: boolean): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase
+    .from("channel_defaults")
+    .upsert({ channel, agent_id: agentId, enabled, updated_at: new Date().toISOString() }, { onConflict: "channel" });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Saved." };
+}
+
+export interface PhoneLine {
+  id: string;
+  number: string;
+  agentId: string | null;
+  direction: "inbound" | "outbound" | "both";
+  active: boolean;
+}
+
+export async function fetchPhoneLines(): Promise<PhoneLine[]> {
+  try {
+    const { data } = await supabase.from("phone_lines").select("*").order("created_at");
+    return (data ?? []).map((r) => ({ id: r.id, number: r.number, agentId: r.agent_id, direction: r.direction, active: r.active }));
+  } catch {
+    return [];
+  }
+}
+
+export async function addPhoneLine(number: string, agentId: string | null, direction: PhoneLine["direction"]): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("phone_lines").upsert({ number, agent_id: agentId, direction, active: true }, { onConflict: "number" });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Phone line saved." };
+}
+
+export async function removePhoneLine(id: string): Promise<void> {
+  await supabase.from("phone_lines").delete().eq("id", id);
 }
 
 export async function updateAgentStatus(id: string, status: AiAgent["status"]): Promise<void> {
