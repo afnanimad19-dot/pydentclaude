@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -14,9 +14,24 @@ import {
   MessageCircle,
 } from "lucide-react";
 import { Card, DemoBanner, StatusBadge, Avatar } from "@/components/ui";
+import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { NewAppointmentModal } from "@/components/dashboard/create-modals";
-import { fetchPatientBundle, type PatientBundle } from "@/lib/db";
+import { toast } from "@/components/toast";
+import { fetchPatientBundle, addDocument, addPayment, type PatientBundle } from "@/lib/db";
 import { formatMoney } from "@/lib/mock-data";
+
+function categoryFor(name: string): string {
+  if (/\.(png|jpe?g|webp|heic)$/i.test(name)) return "Photo (before)";
+  if (/xray|pano|bitewing/i.test(name)) return "X-ray";
+  if (/consent/i.test(name)) return "Consent form";
+  if (/insurance|card/i.test(name)) return "Insurance";
+  return "Other";
+}
+
+function sizeLabel(bytes: number): string {
+  if (bytes > 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
 
 type Tab = "overview" | "appointments" | "treatment" | "documents" | "insurance" | "payments";
 
@@ -37,7 +52,19 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
   const { id } = use(params);
   const [tab, setTab] = useState<Tab>("overview");
   const [aptModal, setAptModal] = useState(false);
+  const [payModal, setPayModal] = useState(false);
   const [bundle, setBundle] = useState<PatientBundle | null | "loading">("loading");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function onUpload(files: FileList | null) {
+    if (!files || bundle === "loading" || !bundle) return;
+    for (const f of Array.from(files)) {
+      const res = await addDocument(bundle.patient.id, f.name, categoryFor(f.name), sizeLabel(f.size));
+      toast(res.ok ? `“${f.name}” added to ${bundle.patient.name}'s chart.` : `Upload failed: ${res.message}`, res.ok ? "success" : "info");
+    }
+    if (fileRef.current) fileRef.current.value = "";
+    refresh();
+  }
 
   const refresh = useCallback(() => {
     fetchPatientBundle(id).then(setBundle);
@@ -65,6 +92,14 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
 
   return (
     <>
+      {payModal && (
+        <CollectPaymentModal
+          patientId={patient.id}
+          patientName={patient.name}
+          onClose={() => setPayModal(false)}
+          onSaved={refresh}
+        />
+      )}
       <NewAppointmentModal
         open={aptModal}
         onClose={() => setAptModal(false)}
@@ -266,7 +301,11 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
         <Card className="p-5">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="font-semibold text-ink-900">Documents — X-rays, before/after photos, forms</h3>
-            <button className="flex items-center gap-2 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
+            <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => onUpload(e.target.files)} />
+            <button
+              onClick={() => fileRef.current?.click()}
+              className="flex items-center gap-2 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50"
+            >
               <Upload className="h-4 w-4" /> Upload
             </button>
           </div>
@@ -325,7 +364,10 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
         <Card className="overflow-hidden">
           <div className="flex items-center justify-between border-b border-ink-200 px-5 py-4">
             <h3 className="font-semibold text-ink-900">Payment history</h3>
-            <button className="flex items-center gap-2 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+            <button
+              onClick={() => setPayModal(true)}
+              className="flex items-center gap-2 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
               <CreditCard className="h-4 w-4" /> Collect payment
             </button>
           </div>
@@ -358,5 +400,65 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
         </Card>
       )}
     </>
+  );
+}
+
+function CollectPaymentModal({
+  patientId,
+  patientName,
+  onClose,
+  onSaved,
+}: {
+  patientId: string;
+  patientName: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState("Card (Stripe)");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    const value = Number(amount);
+    if (!value || value <= 0) {
+      setError("Enter a valid amount.");
+      return;
+    }
+    setSaving(true);
+    const res = await addPayment(patientId, value, method, description || "Payment collected at front desk");
+    setSaving(false);
+    if (!res.ok) {
+      setError(res.message);
+      return;
+    }
+    toast(`${formatMoney(value)} recorded for ${patientName}.`);
+    onSaved();
+    onClose();
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Collect payment" subtitle={`Record a payment on ${patientName}'s chart. Card processing activates when Stripe is connected.`}>
+      {error && <p className="mb-3 text-sm text-amber-600">{error}</p>}
+      <div className="grid gap-4">
+        <Field label="Amount ($)">
+          <input type="number" min="0" step="0.01" className={inputCls} placeholder="120.00" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        </Field>
+        <Field label="Method">
+          <select className={inputCls} value={method} onChange={(e) => setMethod(e.target.value)}>
+            <option>Card (Stripe)</option>
+            <option>Cash</option>
+            <option>Bank transfer</option>
+            <option>Insurance</option>
+            <option>Financing</option>
+          </select>
+        </Field>
+        <Field label="Description">
+          <input className={inputCls} placeholder="Cleaning copay" value={description} onChange={(e) => setDescription(e.target.value)} />
+        </Field>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Recording…" : "Record payment"} onSubmit={submit} />
+    </Modal>
   );
 }

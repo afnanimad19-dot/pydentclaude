@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
 import { NewAgentModal } from "@/components/dashboard/create-modals";
+import { toast } from "@/components/toast";
 import { voiceAgents, voiceCalls, formatDuration } from "@/lib/mock-data";
 
 const sentimentIcon = {
@@ -134,7 +135,10 @@ export default function VoicePage() {
                 {activeCall.patientName} · {activeCall.phone} · {formatDuration(activeCall.durationSec)}
               </p>
             </div>
-            <button className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+            <button
+              onClick={() => toast("Recordings are available for real calls once a phone line is connected to your Vapi agents.", "info")}
+              className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"
+            >
               <Play className="h-3.5 w-3.5" /> Play recording
             </button>
           </div>

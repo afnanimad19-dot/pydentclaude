@@ -550,3 +550,28 @@ export async function createIgPost(p: Omit<IgPost, "id">): Promise<{ ok: boolean
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Post scheduled." };
 }
+
+// --------------------------------------------------- patient chart actions
+
+export async function addDocument(patientId: string, name: string, category: string, sizeLabel: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("documents").insert({
+    patient_id: patientId,
+    name,
+    category,
+    size_label: sizeLabel,
+  });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Document added to the chart." };
+}
+
+export async function addPayment(patientId: string, amount: number, method: string, description: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("payments").insert({
+    patient_id: patientId,
+    amount,
+    method,
+    description,
+    status: "Paid",
+  });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Payment recorded." };
+}

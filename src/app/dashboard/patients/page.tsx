@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Users, CalendarClock, BellRing, Database, Plus, CalendarPlus, FolderPlus, Folder } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
 import { NewPatientModal, NewAppointmentModal } from "@/components/dashboard/create-modals";
+import { toast } from "@/components/toast";
 import {
   fetchPatients,
   fetchAppointments,
@@ -301,7 +302,10 @@ export default function PatientsPage() {
                     <p className="text-xs text-ink-500">Last visit {p.lastVisit} · {p.phone}</p>
                   </div>
                 </div>
-                <button className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">
+                <button
+                  onClick={() => toast(`Recall message queued for ${p.name} — it sends the moment WhatsApp/SMS is connected.`, "info")}
+                  className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
+                >
                   Send recall
                 </button>
               </li>

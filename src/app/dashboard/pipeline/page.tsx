@@ -14,6 +14,7 @@ export default function PipelinePage() {
   const [dealModal, setDealModal] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
+  const [dragOverStage, setDragOverStage] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAgents().then((r) => setAgents(r.agents));
@@ -152,9 +153,32 @@ export default function PipelinePage() {
                   </>
                 )}
               </div>
-              <div className="min-h-24 space-y-3 rounded-2xl bg-ink-100/60 p-3">
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOverStage(stage.id);
+                }}
+                onDragLeave={() => setDragOverStage(null)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const dealId = e.dataTransfer.getData("text/deal-id");
+                  if (dealId) moveDeal(dealId, stage.id);
+                  setDragOverStage(null);
+                }}
+                className={`min-h-24 space-y-3 rounded-2xl p-3 transition-colors ${
+                  dragOverStage === stage.id ? "bg-brand-500/15 ring-2 ring-brand-400" : "bg-ink-100/60"
+                }`}
+              >
                 {stage.deals.map((deal) => (
-                  <div key={deal.id} className="rounded-xl border border-ink-200 bg-surface p-4 shadow-sm transition-shadow hover:shadow-md">
+                  <div
+                    key={deal.id}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("text/deal-id", deal.id);
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    className="cursor-grab rounded-xl border border-ink-200 bg-surface p-4 shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing"
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-sm font-semibold text-ink-900">{deal.patientName}</p>
                       <span className="text-sm font-semibold text-brand-600 dark:text-brand-300">{formatMoney(deal.value)}</span>

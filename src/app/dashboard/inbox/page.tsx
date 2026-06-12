@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot, Send, Sparkles, UserCheck } from "lucide-react";
 import { Card, ChannelBadge, Avatar, DemoBanner, PageHeader } from "@/components/ui";
+import { toast } from "@/components/toast";
 import { fetchAgents, fetchAssignments, assignAgent, fetchChannelDefaults, type AiAgent, type ChannelDefault } from "@/lib/db";
 import { conversations, channelMeta, patients, type Channel, type Message } from "@/lib/mock-data";
 
@@ -196,7 +197,13 @@ export default function InboxPage() {
                   </option>
                 ))}
               </select>
-              <button className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+              <button
+                onClick={() => {
+                  onAssign("");
+                  toast(`${active.patientName}'s conversation is assigned to you — the AI agent steps back until you hand it back.`);
+                }}
+                className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"
+              >
                 <UserCheck className="h-3.5 w-3.5" /> Assign to me
               </button>
             </div>

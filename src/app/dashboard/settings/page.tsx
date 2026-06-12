@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { fetchPatients } from "@/lib/db";
+import { toast } from "@/components/toast";
 
 const channelIntegrations = [
   {
@@ -190,7 +191,10 @@ export default function SettingsPage() {
             detail={i.detail}
             badge={<StatusBadge status="Not connected" tone="gray" />}
             action={
-              <button className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
+              <button
+                onClick={() => toast(`${i.name}: the guided connection wizard ships with the channel-webhook update — your platform keys are already configured.`, "info")}
+                className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50"
+              >
                 Connect
               </button>
             }

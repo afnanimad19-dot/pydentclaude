@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { Avatar } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme";
+import { Toaster } from "@/components/toast";
 import { supabase } from "@/lib/supabase";
 
 interface NavItem {
@@ -256,6 +257,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <main className="mx-auto max-w-7xl p-6">{children}</main>
+        <Toaster />
       </div>
     </div>
   );
