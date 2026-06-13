@@ -25,6 +25,7 @@ import {
   MessageSquareText,
   Mic,
   PhoneOff,
+  MessagesSquare,
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
@@ -83,11 +84,12 @@ const ABILITIES_BY_ROLE: Record<string, ("canBook" | "canReschedule" | "canCance
   "Knowledge base": ["canBook", "canReschedule", "canCancel"],
 };
 
-const CHAT_CHANNELS = ["whatsapp", "instagram", "sms", "email"] as const;
+const CHAT_CHANNELS = ["whatsapp", "instagram", "messenger", "sms", "email"] as const;
 
 const CHANNEL_ICONS: Record<string, typeof MessageCircle> = {
   whatsapp: MessageCircle,
   instagram: Camera,
+  messenger: MessagesSquare,
   sms: MessageSquareText,
   email: Mail,
 };
@@ -347,11 +349,13 @@ export function AgentHubView() {
 
         <Card className="p-6">
           <h2 className="flex items-center gap-2 font-semibold text-ink-900">
-            <MessageCircle className="h-5 w-5 text-brand-500" /> Chat — default agent per channel
+            <MessageCircle className="h-5 w-5 text-brand-500" /> Routing rules — default agent per platform
           </h2>
           <p className="mt-1 text-sm text-ink-500">
-            When a new message arrives on a channel, this agent answers automatically. Turn it off to
-            route everything to your team instead.
+            Set a condition per channel: <em>when</em> a message arrives on a platform, <em>route it to</em>
+            {" "}the chosen agent automatically. Mix and match — e.g. WhatsApp → your booking agent,
+            Instagram → your sales agent. Toggle a rule off to hand that channel to your team instead.
+            Changes save instantly and can be edited any time.
           </p>
           <div className="mt-5 space-y-2.5">
             {CHAT_CHANNELS.map((ch) => {

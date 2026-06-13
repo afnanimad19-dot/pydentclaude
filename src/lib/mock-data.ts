@@ -2,7 +2,7 @@
 // whole product can be explored end-to-end before any live integration
 // (OpenDental, WhatsApp Business, Twilio, Retell) is connected.
 
-export type Channel = "whatsapp" | "sms" | "email" | "voice";
+export type Channel = "whatsapp" | "instagram" | "messenger" | "sms" | "email" | "voice";
 
 export interface Patient {
   id: string;
@@ -215,6 +215,24 @@ export const conversations: Conversation[] = [
       { id: "m14", direction: "inbound", author: "James Carter", body: "Ok I'll call back next week about the balance", time: "Mon 11:34 AM" },
     ],
   },
+  {
+    id: "c7", channel: "instagram", patientId: "p5", patientName: "Sofia Lopez",
+    preview: "Do you do teeth whitening? saw your reel 😍", time: "10:21 AM", unread: 1, assignedTo: null, tags: ["new-lead", "whitening"],
+    messages: [
+      { id: "m15", direction: "inbound", author: "Sofia Lopez", body: "Hey! Do you do teeth whitening? Saw your reel 😍", time: "10:18 AM" },
+      { id: "m16", direction: "outbound", author: "Social Bot", byBot: true, body: "Hi Sofia! 💜 Yes — we offer in-office Zoom whitening and take-home trays. New patients get a free whitening consult. Want me to find you a time this week?", time: "10:19 AM" },
+      { id: "m17", direction: "inbound", author: "Sofia Lopez", body: "Do you do teeth whitening? saw your reel 😍", time: "10:21 AM" },
+    ],
+  },
+  {
+    id: "c8", channel: "messenger", patientId: "p6", patientName: "Daniel Osei",
+    preview: "Is Saturday available for a checkup?", time: "Yesterday", unread: 2, assignedTo: null, tags: ["facebook", "question"],
+    messages: [
+      { id: "m18", direction: "inbound", author: "Daniel Osei", body: "Hi, found you on Facebook. Is Saturday available for a checkup?", time: "Yesterday 3:02 PM" },
+      { id: "m19", direction: "outbound", author: "Social Bot", byBot: true, body: "Hi Daniel! We're open Saturdays 9 AM–2 PM. I can offer Sat Jun 14 at 10:30 AM with Dr. Patel — shall I book it?", time: "Yesterday 3:02 PM" },
+      { id: "m20", direction: "inbound", author: "Daniel Osei", body: "Is Saturday available for a checkup?", time: "Yesterday 3:05 PM" },
+    ],
+  },
 ];
 
 export const voiceAgents: VoiceAgent[] = [
@@ -378,6 +396,8 @@ export const todayStats = {
 
 export const channelMeta: Record<Channel, { label: string; color: string; bg: string }> = {
   whatsapp: { label: "WhatsApp", color: "#22c55e", bg: "#22c55e26" },
+  instagram: { label: "Instagram", color: "#e1306c", bg: "#e1306c26" },
+  messenger: { label: "Messenger", color: "#0084ff", bg: "#0084ff26" },
   sms: { label: "SMS", color: "#3b82f6", bg: "#3b82f626" },
   email: { label: "Email", color: "#a855f7", bg: "#a855f726" },
   voice: { label: "Voice", color: "#f97316", bg: "#f9731626" },
@@ -475,6 +495,96 @@ export const payments: Payment[] = [
   { id: "pay4", patientId: "p4", date: "2026-06-01", amount: 1180, method: "Financing", description: "Implant deposit — 12-month plan", status: "Pending" },
   { id: "pay5", patientId: "p3", date: "2026-05-12", amount: 640, method: "Card (Stripe)", description: "Crown #19 — 50% at prep", status: "Paid" },
   { id: "pay6", patientId: "p8", date: "2026-02-02", amount: 200, method: "Cash", description: "Partial payment on balance", status: "Paid" },
+];
+
+// --------------------------------------------------------------- billing & claims
+
+export interface InsuranceClaim {
+  id: string;
+  claimNum: number;
+  patientId: string;
+  patientName: string;
+  carrier: string;
+  dateOfService: string;
+  procedures: string;
+  billed: number;
+  estimated: number;
+  paid: number;
+  status: "Unsent" | "Sent" | "Received" | "Paid" | "Denied" | "Pending";
+}
+
+export const insuranceClaims: InsuranceClaim[] = [
+  { id: "cl1", claimNum: 78021, patientId: "p1", patientName: "Maria Hernandez", carrier: "Delta Dental", dateOfService: "2026-05-28", procedures: "D1110, D0120", billed: 180, estimated: 145, paid: 145, status: "Paid" },
+  { id: "cl2", claimNum: 78022, patientId: "p3", patientName: "Aisha Williams", carrier: "MetLife", dateOfService: "2026-05-12", procedures: "D2740 Crown #19", billed: 1280, estimated: 640, paid: 0, status: "Sent" },
+  { id: "cl3", claimNum: 78023, patientId: "p8", patientName: "Luis Mendoza", carrier: "Humana", dateOfService: "2026-02-02", procedures: "D2740, D2392", billed: 1650, estimated: 720, paid: 0, status: "Pending" },
+  { id: "cl4", claimNum: 78024, patientId: "p4", patientName: "Robert Kim", carrier: "Self-pay", dateOfService: "2026-04-10", procedures: "D7140 Extraction #30", billed: 300, estimated: 0, paid: 300, status: "Paid" },
+  { id: "cl5", claimNum: 78025, patientId: "p6", patientName: "Daniel Osei", carrier: "Aetna", dateOfService: "2026-06-09", procedures: "D4910 Perio maint.", billed: 165, estimated: 120, paid: 0, status: "Unsent" },
+  { id: "cl6", claimNum: 78026, patientId: "p2", patientName: "James Carter", carrier: "Cigna Dental", dateOfService: "2025-12-15", procedures: "D2950 Core buildup", billed: 410, estimated: 0, paid: 0, status: "Denied" },
+];
+
+// ----------------------------------------------------------------- tooth chart
+
+export type ToothCondition =
+  | "healthy"
+  | "caries"
+  | "filling"
+  | "crown"
+  | "missing"
+  | "implant"
+  | "rct"
+  | "watch";
+
+export const toothConditionMeta: Record<ToothCondition, { label: string; color: string }> = {
+  healthy: { label: "Healthy", color: "#cbd5e1" },
+  caries: { label: "Caries / decay", color: "#ef4444" },
+  filling: { label: "Filling", color: "#3b82f6" },
+  crown: { label: "Crown", color: "#f59e0b" },
+  missing: { label: "Missing", color: "#94a3b8" },
+  implant: { label: "Implant", color: "#8b5cf6" },
+  rct: { label: "Root canal", color: "#ec4899" },
+  watch: { label: "Watch", color: "#10b981" },
+};
+
+// Seed conditions keyed by patient id then Universal tooth number (1–32).
+export const toothConditions: Record<string, Record<number, ToothCondition>> = {
+  p1: { 3: "filling", 14: "filling", 19: "watch" },
+  p3: { 19: "crown", 30: "watch" },
+  p4: { 30: "implant", 18: "missing", 31: "rct" },
+  p8: { 14: "crown", 15: "filling", 2: "caries" },
+};
+
+// --------------------------------------------------------------------- reports
+
+export const providerProduction = [
+  { provider: "Dr. Patel", production: 42600, goal: 48000 },
+  { provider: "Dr. Gomez", production: 38900, goal: 40000 },
+  { provider: "Hygiene — Kelly", production: 16400, goal: 15000 },
+  { provider: "Hygiene — Marcus", production: 12100, goal: 15000 },
+];
+
+export const newPatientsTrend = [
+  { month: "Jan", newPatients: 28, fromAi: 9 },
+  { month: "Feb", newPatients: 34, fromAi: 14 },
+  { month: "Mar", newPatients: 31, fromAi: 16 },
+  { month: "Apr", newPatients: 41, fromAi: 22 },
+  { month: "May", newPatients: 46, fromAi: 28 },
+  { month: "Jun", newPatients: 24, fromAi: 17 },
+];
+
+export const appointmentMix = [
+  { name: "Completed", value: 412, color: "#22c55e" },
+  { name: "Scheduled", value: 168, color: "#3b82f6" },
+  { name: "Unconfirmed", value: 54, color: "#f59e0b" },
+  { name: "Broken / no-show", value: 23, color: "#ef4444" },
+];
+
+export const productionByChannel = [
+  { channel: "WhatsApp", value: 38400 },
+  { channel: "Voice agent", value: 27600 },
+  { channel: "Instagram", value: 14800 },
+  { channel: "Messenger", value: 8200 },
+  { channel: "Email", value: 11200 },
+  { channel: "Walk-in / referral", value: 22100 },
 ];
 
 export function formatMoney(n: number): string {

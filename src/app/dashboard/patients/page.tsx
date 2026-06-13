@@ -48,6 +48,7 @@ export default function PatientsPage() {
   const [activeFolder, setActiveFolder] = useState<string | "all">("all");
   const [newFolderName, setNewFolderName] = useState("");
   const [addingFolder, setAddingFolder] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(() => {
     fetchPatients().then((r) => {
@@ -77,11 +78,38 @@ export default function PatientsPage() {
     await movePatientToFolder(patientId, folderId || null);
   }
 
+  async function moveSelectedTo(folderId: string) {
+    const ids = [...selected];
+    setFolderMap((prev) => {
+      const next = { ...prev };
+      ids.forEach((id) => {
+        if (folderId) next[id] = folderId;
+        else delete next[id];
+      });
+      return next;
+    });
+    setSelected(new Set());
+    await Promise.all(ids.map((id) => movePatientToFolder(id, folderId || null)));
+    const dest = folderId ? folders.find((f) => f.id === folderId)?.name ?? "folder" : "No folder";
+    toast(`${ids.length} patient${ids.length === 1 ? "" : "s"} moved to ${dest}.`);
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   useEffect(() => {
     refresh();
   }, [refresh]);
 
   const recallDue = patients.filter((p) => p.recallDue);
+  const visiblePatients = patients.filter((p) => activeFolder === "all" || folderMap[p.id] === activeFolder);
+  const allVisibleSelected = visiblePatients.length > 0 && visiblePatients.every((p) => selected.has(p.id));
 
   return (
     <>
@@ -191,16 +219,55 @@ export default function PatientsPage() {
       </div>
 
       <Card className="mt-4 overflow-hidden">
-        <div className="border-b border-ink-200 px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-200 px-5 py-4">
           <h2 className="font-semibold text-ink-900">
             {activeFolder === "all" ? "Patient roster" : `Folder: ${folders.find((f) => f.id === activeFolder)?.name}`}
           </h2>
+          {selected.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-3 py-1.5">
+              <span className="text-sm font-medium text-brand-800 dark:text-brand-300">{selected.size} selected</span>
+              <span className="text-sm text-ink-400">·</span>
+              <span className="text-sm text-ink-600">Move to</span>
+              <select
+                defaultValue=""
+                onChange={(e) => {
+                  if (e.target.value === "__none") moveSelectedTo("");
+                  else if (e.target.value) moveSelectedTo(e.target.value);
+                  e.target.value = "";
+                }}
+                className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none"
+              >
+                <option value="" disabled>Choose folder…</option>
+                {folders.map((f) => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
+                ))}
+                <option value="__none">Remove from folder</option>
+              </select>
+              <button
+                onClick={() => setSelected(new Set())}
+                className="rounded-lg px-2 py-1.5 text-xs font-medium text-ink-500 hover:bg-ink-100"
+              >
+                Clear
+              </button>
+            </div>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-ink-200 bg-ink-50 text-xs font-semibold uppercase tracking-wide text-ink-500">
               <tr>
-                <th className="px-5 py-3">Patient</th>
+                <th className="px-5 py-3">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all patients"
+                    checked={allVisibleSelected}
+                    onChange={(e) =>
+                      setSelected(e.target.checked ? new Set(visiblePatients.map((p) => p.id)) : new Set())
+                    }
+                    className="h-4 w-4 accent-brand-600"
+                  />
+                </th>
+                <th className="px-2 py-3">Patient</th>
                 <th className="px-4 py-3">Contact</th>
                 <th className="px-4 py-3">Insurance</th>
                 <th className="px-4 py-3">Last visit</th>
@@ -211,9 +278,21 @@ export default function PatientsPage() {
               </tr>
             </thead>
             <tbody>
-              {patients.filter((p) => activeFolder === "all" || folderMap[p.id] === activeFolder).map((p) => (
-                <tr key={p.id} className="border-b border-ink-100 last:border-0 hover:bg-ink-50/60">
+              {visiblePatients.map((p) => (
+                <tr
+                  key={p.id}
+                  className={`border-b border-ink-100 last:border-0 hover:bg-ink-50/60 ${selected.has(p.id) ? "bg-brand-50/40" : ""}`}
+                >
                   <td className="px-5 py-3.5">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${p.name}`}
+                      checked={selected.has(p.id)}
+                      onChange={() => toggleSelect(p.id)}
+                      className="h-4 w-4 accent-brand-600"
+                    />
+                  </td>
+                  <td className="px-2 py-3.5">
                     <Link href={`/dashboard/patients/${p.id}`} className="flex items-center gap-3">
                       <Avatar name={p.name} size="sm" />
                       <div>

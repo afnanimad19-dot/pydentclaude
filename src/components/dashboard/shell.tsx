@@ -15,6 +15,9 @@ import {
   Workflow,
   CalendarDays,
   Users,
+  Stethoscope,
+  Receipt,
+  BarChart3,
   Settings,
   Sparkles,
   Search,
@@ -108,6 +111,17 @@ const nav: NavItem[] = [
       { href: "/dashboard/patients#recall", label: "Recall worklist" },
     ],
   },
+  { href: "/dashboard/charting", label: "Charting", icon: Stethoscope },
+  {
+    href: "/dashboard/billing",
+    label: "Billing & Claims",
+    icon: Receipt,
+    children: [
+      { href: "/dashboard/billing#ledger", label: "Ledger" },
+      { href: "/dashboard/billing#claims", label: "Insurance claims" },
+    ],
+  },
+  { href: "/dashboard/reports", label: "Reports", icon: BarChart3 },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
@@ -118,6 +132,11 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentTab = searchParams.get("tab");
+  // Board-style screens get extra horizontal room instead of the centered column.
+  const wideLayout =
+    pathname.startsWith("/dashboard/pipeline") ||
+    pathname.startsWith("/dashboard/reports") ||
+    pathname.startsWith("/dashboard/charting");
 
   // Auth guard: allow logged-in users, or explicit demo-mode visitors.
   useEffect(() => {
@@ -268,7 +287,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
         </header>
-        <main className="mx-auto max-w-7xl p-6">{children}</main>
+        <main className={`mx-auto p-6 ${wideLayout ? "max-w-[1800px]" : "max-w-7xl"}`}>{children}</main>
         <Toaster />
       </div>
     </div>

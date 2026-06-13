@@ -10,6 +10,8 @@ import { conversations, channelMeta, patients, type Channel, type Message } from
 const filters: { key: Channel | "all"; label: string }[] = [
   { key: "all", label: "All channels" },
   { key: "whatsapp", label: "WhatsApp" },
+  { key: "instagram", label: "Instagram" },
+  { key: "messenger", label: "Messenger" },
   { key: "sms", label: "SMS" },
   { key: "email", label: "Email" },
   { key: "voice", label: "Voice" },
@@ -115,7 +117,7 @@ export default function InboxPage() {
       <DemoBanner context="Replies you send here stay local to the demo — nothing is delivered." />
       <PageHeader
         title="Omnichannel Inbox"
-        subtitle="Every WhatsApp, SMS, email and voice conversation in one calm queue."
+        subtitle="Every WhatsApp, Instagram, Messenger, SMS, email and voice conversation in one calm queue."
       />
 
       <div className="mb-4 flex flex-wrap gap-2">
