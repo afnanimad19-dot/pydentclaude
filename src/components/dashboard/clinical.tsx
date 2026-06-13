@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { LayoutGrid, Receipt, FileCheck2, Pill, Plus, ArrowRight, Trash2, Users } from "lucide-react";
+import { LayoutGrid, Receipt, FileCheck2, Pill, Plus, ArrowRight, Trash2, Users, Stethoscope } from "lucide-react";
 import { Card, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -26,6 +26,7 @@ import {
   type PrescriptionRecord,
 } from "@/lib/db";
 import { formatMoney, type Patient } from "@/lib/mock-data";
+import { CLINICAL_MODULES_ENABLED } from "@/lib/features";
 
 // ----------------------------------------------------------------- constants
 
@@ -431,6 +432,29 @@ const MODULE_META = {
 } as const;
 
 export function ClinicalWorkspace({ module }: { module: keyof typeof MODULE_META }) {
+  if (!CLINICAL_MODULES_ENABLED) return <ClinicalDisabled />;
+  return <ClinicalWorkspaceInner module={module} />;
+}
+
+function ClinicalDisabled() {
+  return (
+    <div className="mx-auto max-w-md py-24 text-center">
+      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-ink-100 text-ink-500">
+        <Stethoscope className="h-6 w-6" />
+      </div>
+      <h1 className="text-xl font-semibold text-ink-900">Clinical charting is coming soon</h1>
+      <p className="mt-2 text-sm text-ink-500">
+        Tooth chart, ledger, insurance claims and prescriptions unlock once your OpenDental
+        connection is set up. Until then, everything else in Pydental works as normal.
+      </p>
+      <Link href="/dashboard" className="mt-5 inline-block rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+        Back to dashboard
+      </Link>
+    </div>
+  );
+}
+
+function ClinicalWorkspaceInner({ module }: { module: keyof typeof MODULE_META }) {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [bundle, setBundle] = useState<PatientBundle | null | "loading">("loading");

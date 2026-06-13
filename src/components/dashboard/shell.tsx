@@ -29,6 +29,7 @@ import { Avatar } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme";
 import { Toaster } from "@/components/toast";
 import { supabase } from "@/lib/supabase";
+import { CLINICAL_MODULES_ENABLED } from "@/lib/features";
 
 interface NavItem {
   href: string;
@@ -186,7 +187,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         </Link>
 
         <nav className="mt-2 flex-1 space-y-0.5 overflow-y-auto px-3">
-          {nav.map((item) => {
+          {nav
+            .filter((item) => CLINICAL_MODULES_ENABLED || item.href !== "/dashboard/clinical")
+            .map((item) => {
             const active =
               item.href === "/dashboard" ? pathname === "/dashboard" : pathname.startsWith(item.href);
             return (

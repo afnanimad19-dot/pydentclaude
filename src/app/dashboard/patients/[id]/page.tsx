@@ -17,6 +17,7 @@ import { Card, DemoBanner, StatusBadge, Avatar } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { NewAppointmentModal } from "@/components/dashboard/create-modals";
 import { useClinicalModules, ToothChartCard, LedgerCard, ClaimsCard, RxCard } from "@/components/dashboard/clinical";
+import { CLINICAL_MODULES_ENABLED } from "@/lib/features";
 import { toast } from "@/components/toast";
 import { fetchPatientBundle, addDocument, addPayment, type PatientBundle } from "@/lib/db";
 import { formatMoney } from "@/lib/mock-data";
@@ -183,7 +184,9 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
       </Card>
 
       <div className="mb-5 flex flex-wrap gap-1 rounded-xl border border-ink-200 bg-surface p-1">
-        {tabs.map((t) => (
+        {tabs
+          .filter((t) => CLINICAL_MODULES_ENABLED || !["chart", "ledger", "claims", "rx"].includes(t.key))
+          .map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}

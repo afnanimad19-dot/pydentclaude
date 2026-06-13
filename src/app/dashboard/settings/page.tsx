@@ -11,6 +11,10 @@ import {
   CalendarDays,
   Bot,
   ArrowDownToLine,
+  Camera,
+  MessageSquare,
+  Globe,
+  AtSign,
 } from "lucide-react";
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { fetchPatients } from "@/lib/db";
@@ -20,7 +24,17 @@ const channelIntegrations = [
   {
     icon: MessageCircle,
     name: "WhatsApp Business",
-    detail: "Meta Cloud API — two-way chat, template broadcasts, chatbot flows.",
+    detail: "Meta Cloud API — connect your clinic's WhatsApp number for two-way chat, template broadcasts and chatbot flows.",
+  },
+  {
+    icon: Camera,
+    name: "Instagram (Meta)",
+    detail: "Reply to Instagram DMs and story replies straight from the inbox. Connects through your Meta business account.",
+  },
+  {
+    icon: MessageSquare,
+    name: "Facebook Messenger (Meta)",
+    detail: "Connect your Facebook Page so Messenger conversations land in the same inbox. (Facebook & Meta are the same login.)",
   },
   {
     icon: MessageSquareText,
@@ -28,9 +42,14 @@ const channelIntegrations = [
     detail: "Reminders, confirmations and two-way texting from your clinic number.",
   },
   {
+    icon: AtSign,
+    name: "Gmail / Google Workspace",
+    detail: "Connect the clinic's Gmail so patient emails sync into the inbox and replies send from your own address.",
+  },
+  {
     icon: Mail,
-    name: "Email (Resend)",
-    detail: "Campaigns, automations and transactional email from your domain.",
+    name: "Email campaigns (Resend)",
+    detail: "Bulk campaigns, drip automations and transactional email sent from your verified domain.",
   },
 ];
 
@@ -200,6 +219,32 @@ export default function SettingsPage() {
             }
           />
         ))}
+      </div>
+
+      <h2 className="mb-4 mt-8 text-lg font-semibold text-ink-900">Website &amp; widget</h2>
+      <div className="space-y-4">
+        <ConnCard
+          icon={Globe}
+          name="Website chat widget"
+          detail="Drop a chat bubble on your WordPress, Wix or any website. New conversations flow into the inbox and your AI agent can answer 24/7. Paste the snippet before the closing </body> tag."
+          badge={<StatusBadge status="Not connected" tone="gray" />}
+          action={
+            <button
+              onClick={() =>
+                toast('Embed snippet copied: <script src="https://cdn.pydental.ai/widget.js" data-clinic="YOUR_CLINIC_ID"></script>', "success")
+              }
+              className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50"
+            >
+              Copy embed code
+            </button>
+          }
+        />
+        <ConnCard
+          icon={Globe}
+          name="WordPress plugin"
+          detail="Prefer a plugin? Install the Pydental plugin on WordPress to add the widget, booking form and lead capture without touching code."
+          badge={<StatusBadge status="Planned" tone="gray" />}
+        />
       </div>
     </>
   );
