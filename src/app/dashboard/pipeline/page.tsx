@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Plus, TrendingUp, CircleDollarSign, Hourglass, Bot, Pencil, Check, X, Trash2 } from "lucide-react";
 import { PageHeader, DemoBanner, ChannelBadge, StatCard } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
-import { fetchAgents, fetchFollowUps, enrollFollowUp, type AiAgent } from "@/lib/db";
+import { fetchAgents, fetchFollowUps, enrollFollowUp, fetchStageAgents, setStageAgentDb, type AiAgent } from "@/lib/db";
 import { pipeline as initialPipeline, formatMoney, type PipelineStage, type Deal } from "@/lib/mock-data";
 
 export default function PipelinePage() {
@@ -31,6 +31,10 @@ export default function PipelinePage() {
       if (first && defaultAgent) setStageAgents((prev) => (prev[first.id] ? prev : { ...prev, [first.id]: defaultAgent.id }));
     });
     fetchFollowUps().then(setFollowUps);
+    // Saved stage→agent assignments win over the auto-selected default.
+    fetchStageAgents().then((saved) => {
+      if (Object.keys(saved).length) setStageAgents((prev) => ({ ...prev, ...saved }));
+    });
   }, []);
 
   function agentLabel(agentId: string | undefined): string | null {
@@ -82,6 +86,7 @@ export default function PipelinePage() {
   // Reassign every deal currently in a stage when its agent changes.
   function setStageAgent(stageId: string, agentId: string) {
     setStageAgents((prev) => ({ ...prev, [stageId]: agentId }));
+    setStageAgentDb(stageId, agentId || null);
     const owner = agentLabel(agentId);
     if (!owner) return;
     setStages((prev) =>

@@ -663,3 +663,150 @@ export async function saveWorkflow(
 export async function deleteWorkflow(id: string): Promise<void> {
   await supabase.from("workflows").delete().eq("id", id);
 }
+
+// ---------------------------------------------- clinical chart modules (0006)
+
+export type ToothCondition = "healthy" | "planned" | "completed" | "watch" | "missing";
+
+export async function fetchToothMarks(patientId: string): Promise<Record<number, ToothCondition>> {
+  try {
+    const { data, error } = await supabase.from("tooth_chart_marks").select("tooth, condition").eq("patient_id", patientId);
+    if (error || !data) return {};
+    return Object.fromEntries(data.map((r) => [r.tooth, r.condition as ToothCondition]));
+  } catch {
+    return {};
+  }
+}
+
+export async function setToothMark(patientId: string, tooth: number, condition: ToothCondition): Promise<void> {
+  try {
+    await supabase
+      .from("tooth_chart_marks")
+      .upsert({ patient_id: patientId, tooth, condition, updated_at: new Date().toISOString() }, { onConflict: "patient_id,tooth" });
+  } catch {
+    /* demo mode — keep local state only */
+  }
+}
+
+export interface LedgerAdjustment {
+  id: string;
+  date: string;
+  description: string;
+  amount: number;
+}
+
+export async function fetchLedgerAdjustments(patientId: string): Promise<LedgerAdjustment[]> {
+  try {
+    const { data, error } = await supabase.from("ledger_adjustments").select("*").eq("patient_id", patientId).order("date");
+    if (error || !data) return [];
+    return data.map((r) => ({ id: r.id, date: r.date, description: r.description ?? "", amount: Number(r.amount) }));
+  } catch {
+    return [];
+  }
+}
+
+export async function addLedgerAdjustment(patientId: string, adj: Omit<LedgerAdjustment, "id">): Promise<{ ok: boolean; id?: string; message: string }> {
+  const { data, error } = await supabase
+    .from("ledger_adjustments")
+    .insert({ patient_id: patientId, date: adj.date, description: adj.description, amount: adj.amount })
+    .select("id")
+    .single();
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, id: data?.id, message: "Adjustment saved." };
+}
+
+export interface ClaimRecord {
+  id: string;
+  carrier: string;
+  procedures: string;
+  billed: number;
+  estInsurance: number;
+  status: "Draft" | "Sent" | "Received" | "Paid";
+}
+
+export async function fetchClaims(patientId: string): Promise<ClaimRecord[]> {
+  try {
+    const { data, error } = await supabase.from("insurance_claims").select("*").eq("patient_id", patientId).order("created_at", { ascending: false });
+    if (error || !data) return [];
+    return data.map((r) => ({ id: r.id, carrier: r.carrier, procedures: r.procedures ?? "", billed: Number(r.billed), estInsurance: Number(r.est_insurance), status: r.status }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createClaim(patientId: string, c: Omit<ClaimRecord, "id">): Promise<{ ok: boolean; id?: string; message: string }> {
+  const { data, error } = await supabase
+    .from("insurance_claims")
+    .insert({ patient_id: patientId, carrier: c.carrier, procedures: c.procedures, billed: c.billed, est_insurance: c.estInsurance, status: c.status })
+    .select("id")
+    .single();
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, id: data?.id, message: "Claim created." };
+}
+
+export async function updateClaimStatus(id: string, status: ClaimRecord["status"]): Promise<void> {
+  try {
+    await supabase.from("insurance_claims").update({ status }).eq("id", id);
+  } catch {
+    /* demo mode */
+  }
+}
+
+export interface PrescriptionRecord {
+  id: string;
+  drug: string;
+  sig: string;
+  quantity: string;
+  refills: number;
+  date: string;
+  status: "Active" | "Sent to pharmacy" | "Completed";
+}
+
+export async function fetchPrescriptions(patientId: string): Promise<PrescriptionRecord[]> {
+  try {
+    const { data, error } = await supabase.from("prescriptions").select("*").eq("patient_id", patientId).order("created_at", { ascending: false });
+    if (error || !data) return [];
+    return data.map((r) => ({ id: r.id, drug: r.drug, sig: r.sig ?? "", quantity: r.quantity ?? "", refills: r.refills ?? 0, date: r.date, status: r.status }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createPrescription(patientId: string, rx: Omit<PrescriptionRecord, "id">): Promise<{ ok: boolean; id?: string; message: string }> {
+  const { data, error } = await supabase
+    .from("prescriptions")
+    .insert({ patient_id: patientId, drug: rx.drug, sig: rx.sig, quantity: rx.quantity, refills: rx.refills, status: rx.status, date: rx.date })
+    .select("id")
+    .single();
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, id: data?.id, message: "Prescription saved." };
+}
+
+export async function deletePrescription(id: string): Promise<void> {
+  try {
+    await supabase.from("prescriptions").delete().eq("id", id);
+  } catch {
+    /* demo mode */
+  }
+}
+
+// ------------------------------------------------ pipeline stage agents (0006)
+
+export async function fetchStageAgents(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.from("pipeline_stage_agents").select("stage_id, agent_id").not("agent_id", "is", null);
+    return Object.fromEntries((data ?? []).map((r) => [r.stage_id, r.agent_id]));
+  } catch {
+    return {};
+  }
+}
+
+export async function setStageAgentDb(stageId: string, agentId: string | null): Promise<void> {
+  try {
+    await supabase
+      .from("pipeline_stage_agents")
+      .upsert({ stage_id: stageId, agent_id: agentId, updated_at: new Date().toISOString() }, { onConflict: "stage_id" });
+  } catch {
+    /* demo mode */
+  }
+}

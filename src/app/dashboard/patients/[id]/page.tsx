@@ -24,7 +24,22 @@ import { Card, DemoBanner, StatusBadge, Avatar } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { NewAppointmentModal } from "@/components/dashboard/create-modals";
 import { toast } from "@/components/toast";
-import { fetchPatientBundle, addDocument, addPayment, type PatientBundle } from "@/lib/db";
+import {
+  fetchPatientBundle,
+  addDocument,
+  addPayment,
+  fetchToothMarks,
+  setToothMark,
+  fetchLedgerAdjustments,
+  addLedgerAdjustment,
+  fetchClaims,
+  createClaim,
+  updateClaimStatus,
+  fetchPrescriptions,
+  createPrescription,
+  deletePrescription,
+  type PatientBundle,
+} from "@/lib/db";
 import { formatMoney } from "@/lib/mock-data";
 
 function categoryFor(name: string): string {
@@ -145,12 +160,16 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
   const [adjustModal, setAdjustModal] = useState(false);
   const seededRef = useRef<string | null>(null);
 
-  // Seed the clinical modules once per patient from their chart data.
+  // Seed the clinical modules once per patient. Live charts load from Supabase;
+  // demo charts fall back to data derived from the patient's plan.
   useEffect(() => {
     if (bundle === "loading" || !bundle) return;
     if (seededRef.current === bundle.patient.id) return;
     seededRef.current = bundle.patient.id;
+    const live = bundle.source === "live";
+    const pid = bundle.patient.id;
 
+    // Tooth chart — plan-derived defaults, overlaid with any saved marks.
     const teeth: Record<number, ToothCondition> = {};
     bundle.plans.forEach((pl) =>
       pl.procedures.forEach((pr) => {
@@ -161,25 +180,24 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
         }
       })
     );
-    setToothState(teeth);
+    if (live) {
+      fetchToothMarks(pid).then((saved) => setToothState({ ...teeth, ...saved }));
+      fetchClaims(pid).then(setClaims);
+      fetchPrescriptions(pid).then(setPrescriptions);
+      fetchLedgerAdjustments(pid).then(setLedgerAdj);
+      return;
+    }
 
+    setToothState(teeth);
     const claimsSeed: Claim[] = [];
     const realIns = bundle.insurance.filter((i) => i.carrier && i.carrier !== "—" && i.annualMax > 0);
     const billableProcs = bundle.plans.flatMap((pl) => pl.procedures).filter((pr) => pr.status !== "Planned");
     if (realIns.length && billableProcs.length) {
       const billed = billableProcs.reduce((s, p) => s + p.fee, 0);
       const codes = billableProcs.slice(0, 3).map((p) => p.code).join(", ") + (billableProcs.length > 3 ? ` +${billableProcs.length - 3}` : "");
-      claimsSeed.push({
-        id: "claim-seed-1",
-        carrier: realIns[0].carrier,
-        procedures: codes,
-        billed,
-        estInsurance: Math.round(billed * 0.5),
-        status: "Sent",
-      });
+      claimsSeed.push({ id: "claim-seed-1", carrier: realIns[0].carrier, procedures: codes, billed, estInsurance: Math.round(billed * 0.5), status: "Sent" });
     }
     setClaims(claimsSeed);
-
     setPrescriptions(
       bundle.plans.length
         ? [{ id: "rx-seed-1", drug: "Amoxicillin 500mg", sig: "1 capsule three times daily for 7 days", quantity: "21", refills: 0, date: todayISO(), status: "Sent to pharmacy" }]
@@ -188,22 +206,26 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
     setLedgerAdj([]);
   }, [bundle]);
 
+  const isLive = bundle !== "loading" && !!bundle && bundle.source === "live";
+  const patientId = bundle !== "loading" && bundle ? bundle.patient.id : "";
+
   function cycleTooth(n: number) {
-    setToothState((prev) => {
-      const cur = prev[n] ?? "healthy";
-      const next = CONDITION_ORDER[(CONDITION_ORDER.indexOf(cur) + 1) % CONDITION_ORDER.length];
-      return { ...prev, [n]: next };
-    });
+    const cur = toothState[n] ?? "healthy";
+    const next = CONDITION_ORDER[(CONDITION_ORDER.indexOf(cur) + 1) % CONDITION_ORDER.length];
+    setToothState((prev) => ({ ...prev, [n]: next }));
+    if (isLive) setToothMark(patientId, n, next);
   }
 
   function advanceClaim(id: string) {
+    let newStatus: Claim["status"] | null = null;
     setClaims((prev) =>
       prev.map((c) => {
         if (c.id !== id) return c;
-        const i = CLAIM_FLOW.indexOf(c.status);
-        return { ...c, status: CLAIM_FLOW[Math.min(i + 1, CLAIM_FLOW.length - 1)] };
+        newStatus = CLAIM_FLOW[Math.min(CLAIM_FLOW.indexOf(c.status) + 1, CLAIM_FLOW.length - 1)];
+        return { ...c, status: newStatus };
       })
     );
+    if (isLive && newStatus) updateClaimStatus(id, newStatus);
   }
 
   async function onUpload(files: FileList | null) {
@@ -751,7 +773,10 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
                   <div className="flex shrink-0 items-center gap-2">
                     <StatusBadge status={rx.status} tone={rxTone[rx.status]} />
                     <button
-                      onClick={() => setPrescriptions((prev) => prev.filter((x) => x.id !== rx.id))}
+                      onClick={() => {
+                        setPrescriptions((prev) => prev.filter((x) => x.id !== rx.id));
+                        if (isLive) deletePrescription(rx.id);
+                      }}
                       className="rounded-lg p-1.5 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500"
                       title="Delete prescription"
                     >
@@ -771,8 +796,13 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
         <WritePrescriptionModal
           patientName={patient.name}
           onClose={() => setRxModal(false)}
-          onSave={(rx) => {
-            setPrescriptions((prev) => [{ ...rx, id: `rx-${Date.now()}` }, ...prev]);
+          onSave={async (rx) => {
+            let id = `rx-${Date.now()}`;
+            if (isLive) {
+              const res = await createPrescription(patientId, rx);
+              if (res.id) id = res.id;
+            }
+            setPrescriptions((prev) => [{ ...rx, id }, ...prev]);
             toast(`Prescription for ${rx.drug} added to ${patient.name}'s chart.`);
           }}
         />
@@ -782,8 +812,13 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
           carriers={pInsurance.filter((i) => i.carrier && i.carrier !== "—").map((i) => i.carrier)}
           procedures={pPlans.flatMap((pl) => pl.procedures)}
           onClose={() => setClaimModal(false)}
-          onSave={(c) => {
-            setClaims((prev) => [{ ...c, id: `claim-${Date.now()}` }, ...prev]);
+          onSave={async (c) => {
+            let id = `claim-${Date.now()}`;
+            if (isLive) {
+              const res = await createClaim(patientId, c);
+              if (res.id) id = res.id;
+            }
+            setClaims((prev) => [{ ...c, id }, ...prev]);
             toast(`Claim to ${c.carrier} created for ${formatMoney(c.billed)}.`);
           }}
         />
@@ -791,8 +826,13 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
       {adjustModal && (
         <AdjustmentModal
           onClose={() => setAdjustModal(false)}
-          onSave={(adj) => {
-            setLedgerAdj((prev) => [...prev, { ...adj, id: `adj-${Date.now()}` }]);
+          onSave={async (adj) => {
+            let id = `adj-${Date.now()}`;
+            if (isLive) {
+              const res = await addLedgerAdjustment(patientId, adj);
+              if (res.id) id = res.id;
+            }
+            setLedgerAdj((prev) => [...prev, { ...adj, id }]);
             toast(`Adjustment recorded on ${patient.name}'s account.`);
           }}
         />
