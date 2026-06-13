@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Users,
   CalendarClock,
@@ -47,7 +47,7 @@ export default function ReportsPage() {
   const acceptanceRate = allDeals.length ? Math.round((accepted.length / allDeals.length) * 100) : 0;
 
   // New patients (and pipeline leads) grouped by the channel they came from.
-  const bySource = useMemo(() => {
+  const bySource = (() => {
     const counts: Record<string, number> = {};
     allDeals.forEach((d) => {
       counts[d.source] = (counts[d.source] ?? 0) + 1;
@@ -56,16 +56,16 @@ export default function ReportsPage() {
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
       .map(([key, count]) => ({ key, count, pct: Math.round((count / total) * 100) }));
-  }, [allDeals]);
+  })();
 
   // Voice-call outcomes for the agent-performance panel.
-  const callOutcomes = useMemo(() => {
+  const callOutcomes = (() => {
     const counts: Record<string, number> = {};
     voiceCalls.forEach((c) => {
       counts[c.outcome] = (counts[c.outcome] ?? 0) + 1;
     });
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  }, []);
+  })();
 
   const newPatients = patients.filter((p) => p.status === "New").length;
   const recallDue = patients.filter((p) => p.recallDue).length;

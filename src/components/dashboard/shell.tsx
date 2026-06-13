@@ -15,6 +15,7 @@ import {
   Workflow,
   CalendarDays,
   Users,
+  Stethoscope,
   BarChart3,
   Settings,
   Sparkles,
@@ -107,6 +108,17 @@ const nav: NavItem[] = [
       { href: "/dashboard/patients", label: "Roster" },
       { href: "/dashboard/patients#appointments", label: "Appointments" },
       { href: "/dashboard/patients#recall", label: "Recall worklist" },
+    ],
+  },
+  {
+    href: "/dashboard/clinical",
+    label: "Patient chart",
+    icon: Stethoscope,
+    children: [
+      { href: "/dashboard/clinical", label: "Tooth chart" },
+      { href: "/dashboard/clinical/ledger", label: "Account / Ledger" },
+      { href: "/dashboard/clinical/claims", label: "Insurance claims" },
+      { href: "/dashboard/clinical/rx", label: "Prescriptions" },
     ],
   },
   {
