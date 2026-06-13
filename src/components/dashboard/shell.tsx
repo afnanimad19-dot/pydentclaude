@@ -12,6 +12,8 @@ import {
   Bot,
   Camera,
   KanbanSquare,
+  Workflow,
+  CalendarDays,
   Users,
   Settings,
   Sparkles,
@@ -86,6 +88,16 @@ const nav: NavItem[] = [
     ],
   },
   { href: "/dashboard/pipeline", label: "Pipeline", icon: KanbanSquare },
+  {
+    href: "/dashboard/workflows",
+    label: "Workflows",
+    icon: Workflow,
+    children: [
+      { href: "/dashboard/workflows", label: "My workflows" },
+      { href: "/dashboard/workflows/builder", label: "Canvas builder" },
+    ],
+  },
+  { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDays },
   {
     href: "/dashboard/patients",
     label: "Patients",

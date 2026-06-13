@@ -19,6 +19,15 @@ import {
 
 export type DataSource = "live" | "demo";
 
+// Some networks leave a failed connection hanging instead of rejecting —
+// race every primary query against a timeout so the demo fallback engages.
+function withTimeout<T>(p: PromiseLike<T>, ms = 6000): Promise<T> {
+  return Promise.race([
+    Promise.resolve(p),
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("db timeout")), ms)),
+  ]);
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function rowToPatient(r: any): Patient {
   return {
@@ -57,7 +66,7 @@ function rowToAppointment(r: any, patientName: string): Appointment {
 
 export async function fetchPatients(): Promise<{ patients: Patient[]; source: DataSource }> {
   try {
-    const { data, error } = await supabase.from("patients").select("*").order("name");
+    const { data, error } = await withTimeout(supabase.from("patients").select("*").order("name"));
     if (error || !data) throw error ?? new Error("no data");
     return { patients: data.map(rowToPatient), source: "live" };
   } catch {
@@ -67,10 +76,9 @@ export async function fetchPatients(): Promise<{ patients: Patient[]; source: Da
 
 export async function fetchAppointments(): Promise<{ appointments: Appointment[]; source: DataSource }> {
   try {
-    const { data, error } = await supabase
-      .from("appointments")
-      .select("*, patients(name)")
-      .order("date");
+    const { data, error } = await withTimeout(
+      supabase.from("appointments").select("*, patients(name)").order("date")
+    );
     if (error || !data) throw error ?? new Error("no data");
     return {
       appointments: data.map((r) => rowToAppointment(r, r.patients?.name ?? "Unknown")),
@@ -93,7 +101,7 @@ export interface PatientBundle {
 
 export async function fetchPatientBundle(id: string): Promise<PatientBundle | null> {
   try {
-    const { data: p, error } = await supabase.from("patients").select("*").eq("id", id).single();
+    const { data: p, error } = await withTimeout(supabase.from("patients").select("*").eq("id", id).single());
     if (error || !p) throw error ?? new Error("not found");
 
     const [apts, plans, docs, ins, pays] = await Promise.all([
@@ -287,7 +295,7 @@ function agentToRow(input: Omit<AiAgent, "id" | "vapiAssistantId">): Record<stri
 
 export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSource }> {
   try {
-    const { data, error } = await supabase.from("agents").select("*").order("created_at");
+    const { data, error } = await withTimeout(supabase.from("agents").select("*").order("created_at"));
     if (error || !data) throw error ?? new Error("no data");
     return { agents: data.map(rowToAgent), source: "live" };
   } catch {
@@ -474,7 +482,7 @@ export interface WaTemplate {
 
 export async function fetchWaTemplates(): Promise<{ templates: WaTemplate[]; source: DataSource }> {
   try {
-    const { data, error } = await supabase.from("wa_templates").select("*").order("created_at", { ascending: false });
+    const { data, error } = await withTimeout(supabase.from("wa_templates").select("*").order("created_at", { ascending: false }));
     if (error || !data) throw error ?? new Error("no data");
     return {
       templates: data.map((r) => ({
@@ -574,4 +582,84 @@ export async function addPayment(patientId: string, amount: number, method: stri
   });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Payment recorded." };
+}
+
+// ------------------------------------------------------------------ workflows
+
+export interface WorkflowNode {
+  id: string;
+  type: "trigger" | "message" | "condition" | "agent" | "wait" | "action" | "handoff";
+  title: string;
+  detail: string;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  channel: string;
+  status: "Live" | "Paused" | "Draft";
+  nodes: WorkflowNode[];
+  triggeredToday: number;
+}
+
+export async function fetchWorkflows(): Promise<{ workflows: Workflow[]; source: DataSource }> {
+  try {
+    const { data, error } = await withTimeout(supabase.from("workflows").select("*").order("created_at"));
+    if (error || !data) throw error ?? new Error("no data");
+    return {
+      workflows: data.map((r) => ({
+        id: r.id,
+        name: r.name,
+        channel: r.channel,
+        status: r.status,
+        nodes: r.nodes ?? [],
+        triggeredToday: r.triggered_today ?? 0,
+      })),
+      source: "live",
+    };
+  } catch {
+    return { workflows: [], source: "demo" };
+  }
+}
+
+export async function fetchWorkflow(id: string): Promise<Workflow | null> {
+  try {
+    const { data, error } = await supabase.from("workflows").select("*").eq("id", id).single();
+    if (error || !data) return null;
+    return {
+      id: data.id,
+      name: data.name,
+      channel: data.channel,
+      status: data.status,
+      nodes: data.nodes ?? [],
+      triggeredToday: data.triggered_today ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveWorkflow(
+  w: Omit<Workflow, "id" | "triggeredToday">,
+  id?: string
+): Promise<{ ok: boolean; message: string; id?: string }> {
+  if (id) {
+    const { error } = await supabase
+      .from("workflows")
+      .update({ name: w.name, channel: w.channel, status: w.status, nodes: w.nodes, updated_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) return { ok: false, message: error.message };
+    return { ok: true, message: "Workflow saved.", id };
+  }
+  const { data, error } = await supabase
+    .from("workflows")
+    .insert({ name: w.name, channel: w.channel, status: w.status, nodes: w.nodes })
+    .select("id")
+    .single();
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Workflow created.", id: data?.id };
+}
+
+export async function deleteWorkflow(id: string): Promise<void> {
+  await supabase.from("workflows").delete().eq("id", id);
 }

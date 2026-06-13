@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge, Avatar, StatCard } from "@/components/ui";
 import { NewCampaignModal } from "@/components/dashboard/create-modals";
-import { toast } from "@/components/toast";
 import { broadcasts, botFlows, conversations, type BotNode } from "@/lib/mock-data";
 
 type Tab = "chats" | "broadcasts" | "bots";
@@ -50,11 +49,7 @@ export default function WhatsAppPage() {
         subtitle="Two-way chats, broadcast campaigns and automation flows on WhatsApp Business."
         actions={
           <button
-            onClick={() =>
-              tab === "bots"
-                ? toast("The drag-and-drop flow builder (canvas + template gallery) is the next big update — your existing flows keep running meanwhile.", "info")
-                : setModalOpen(true)
-            }
+            onClick={() => (tab === "bots" ? router.push("/dashboard/workflows") : setModalOpen(true))}
             className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
           >
             <Plus className="h-4 w-4" />
@@ -194,10 +189,10 @@ export default function WhatsAppPage() {
                 })}
               </div>
               <button
-                onClick={() => toast("Flow editing opens in the drag-and-drop canvas — coming in the next update.", "info")}
+                onClick={() => router.push("/dashboard/workflows")}
                 className="mt-4 rounded-xl border border-ink-200 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50"
               >
-                Edit flow
+                Open in Workflows
               </button>
             </Card>
           ))}
