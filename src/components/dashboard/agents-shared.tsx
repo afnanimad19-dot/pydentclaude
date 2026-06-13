@@ -10,6 +10,7 @@ import {
   PhoneCall,
   Plus,
   MessageCircle,
+  MessageSquare,
   BookOpen,
   Send,
   Sparkles,
@@ -83,11 +84,12 @@ const ABILITIES_BY_ROLE: Record<string, ("canBook" | "canReschedule" | "canCance
   "Knowledge base": ["canBook", "canReschedule", "canCancel"],
 };
 
-const CHAT_CHANNELS = ["whatsapp", "instagram", "sms", "email"] as const;
+const CHAT_CHANNELS = ["whatsapp", "instagram", "messenger", "sms", "email"] as const;
 
 const CHANNEL_ICONS: Record<string, typeof MessageCircle> = {
   whatsapp: MessageCircle,
   instagram: Camera,
+  messenger: MessageSquare,
   sms: MessageSquareText,
   email: Mail,
 };
@@ -347,11 +349,12 @@ export function AgentHubView() {
 
         <Card className="p-6">
           <h2 className="flex items-center gap-2 font-semibold text-ink-900">
-            <MessageCircle className="h-5 w-5 text-brand-500" /> Chat — default agent per channel
+            <MessageCircle className="h-5 w-5 text-brand-500" /> Chat routing rules — one agent per channel
           </h2>
           <p className="mt-1 text-sm text-ink-500">
-            When a new message arrives on a channel, this agent answers automatically. Turn it off to
-            route everything to your team instead.
+            Set a condition for each channel: <em>if a message comes from WhatsApp → this agent, from
+            Instagram → that agent</em>, and so on. The chosen agent answers automatically and you can
+            change it any time. Turn a channel off to route it to your team instead.
           </p>
           <div className="mt-5 space-y-2.5">
             {CHAT_CHANNELS.map((ch) => {

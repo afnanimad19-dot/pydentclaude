@@ -2,7 +2,7 @@
 // whole product can be explored end-to-end before any live integration
 // (OpenDental, WhatsApp Business, Twilio, Retell) is connected.
 
-export type Channel = "whatsapp" | "sms" | "email" | "voice";
+export type Channel = "whatsapp" | "instagram" | "messenger" | "sms" | "email" | "voice";
 
 export interface Patient {
   id: string;
@@ -208,6 +208,22 @@ export const conversations: Conversation[] = [
     ],
   },
   {
+    id: "c7", channel: "instagram", patientId: "lead-ig-1", patientName: "Chloe Bennett",
+    preview: "Do you do veneers? Saw your before/after reel 😍", time: "10:24 AM", unread: 2, assignedTo: null, tags: ["instagram-dm", "cosmetic", "new-lead"],
+    messages: [
+      { id: "m15", direction: "inbound", author: "Chloe Bennett", body: "Hi! Do you do veneers? Saw your before/after reel 😍", time: "10:22 AM" },
+      { id: "m16", direction: "inbound", author: "Chloe Bennett", body: "And roughly how much for the full set?", time: "10:24 AM" },
+    ],
+  },
+  {
+    id: "c8", channel: "messenger", patientId: "lead-fb-1", patientName: "Daniel Foster",
+    preview: "Are you open this Saturday? My kid chipped a tooth", time: "Yesterday", unread: 1, assignedTo: null, tags: ["facebook", "emergency", "new-lead"],
+    messages: [
+      { id: "m17", direction: "inbound", author: "Daniel Foster", body: "Are you open this Saturday? My kid chipped a tooth at soccer", time: "Yesterday 6:02 PM" },
+      { id: "m18", direction: "outbound", author: "FAQ Bot", byBot: true, body: "So sorry to hear that! We're open Saturday 9 AM–2 PM and keep emergency slots free. Want me to reserve one for your son?", time: "Yesterday 6:02 PM" },
+    ],
+  },
+  {
     id: "c6", channel: "sms", patientId: "p2", patientName: "James Carter",
     preview: "Ok I'll call back next week about the balance", time: "Mon", unread: 0, assignedTo: "Billing", tags: ["billing", "recall-due"],
     messages: [
@@ -378,6 +394,8 @@ export const todayStats = {
 
 export const channelMeta: Record<Channel, { label: string; color: string; bg: string }> = {
   whatsapp: { label: "WhatsApp", color: "#22c55e", bg: "#22c55e26" },
+  instagram: { label: "Instagram", color: "#ec4899", bg: "#ec489926" },
+  messenger: { label: "Messenger", color: "#0084ff", bg: "#0084ff26" },
   sms: { label: "SMS", color: "#3b82f6", bg: "#3b82f626" },
   email: { label: "Email", color: "#a855f7", bg: "#a855f726" },
   voice: { label: "Voice", color: "#f97316", bg: "#f9731626" },

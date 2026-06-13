@@ -15,11 +15,29 @@ export default function PipelinePage() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
   const [dragOverStage, setDragOverStage] = useState<string | null>(null);
+  // Which AI agent owns each stage — a deal entering the stage is handed to it.
+  const [stageAgents, setStageAgents] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    fetchAgents().then((r) => setAgents(r.agents));
+    fetchAgents().then((r) => {
+      setAgents(r.agents);
+      // Pre-select a sensible default agent for the first ("New lead") stage so
+      // brand-new contacts are picked up automatically.
+      const first = initialPipeline[0];
+      const defaultAgent =
+        r.agents.find((a) => a.kind === "chat" && a.status === "Live" && (a.role === "Receptionist" || a.role === "Appointment setter")) ??
+        r.agents.find((a) => a.kind === "chat" && a.status === "Live") ??
+        r.agents.find((a) => a.kind === "chat");
+      if (first && defaultAgent) setStageAgents((prev) => (prev[first.id] ? prev : { ...prev, [first.id]: defaultAgent.id }));
+    });
     fetchFollowUps().then(setFollowUps);
   }, []);
+
+  function agentLabel(agentId: string | undefined): string | null {
+    if (!agentId) return null;
+    const a = agents.find((x) => x.id === agentId);
+    return a ? `${a.name} (AI)` : null;
+  }
 
   const allDeals = stages.flatMap((s) => s.deals);
   const totalValue = allDeals.reduce((sum, d) => sum + d.value, 0);
@@ -36,10 +54,11 @@ export default function PipelinePage() {
   }
 
   function addDeal(deal: Omit<Deal, "id" | "daysInStage">, stageId: string) {
+    const owner = agentLabel(stageAgents[stageId]) ?? deal.owner;
     setStages((prev) =>
       prev.map((s) =>
         s.id === stageId
-          ? { ...s, deals: [{ ...deal, id: `local-${Date.now()}`, daysInStage: 0 }, ...s.deals] }
+          ? { ...s, deals: [{ ...deal, owner, id: `local-${Date.now()}`, daysInStage: 0 }, ...s.deals] }
           : s
       )
     );
@@ -54,8 +73,20 @@ export default function PipelinePage() {
         return { ...s, deals: s.deals.filter((d) => d.id !== dealId) };
       });
       if (!moved) return prev;
-      return without.map((s) => (s.id === toStageId ? { ...s, deals: [{ ...moved!, daysInStage: 0 }, ...s.deals] } : s));
+      // Entering a stage hands the deal to that stage's agent (if one is set).
+      const owner = agentLabel(stageAgents[toStageId]) ?? moved.owner;
+      return without.map((s) => (s.id === toStageId ? { ...s, deals: [{ ...moved!, owner, daysInStage: 0 }, ...s.deals] } : s));
     });
+  }
+
+  // Reassign every deal currently in a stage when its agent changes.
+  function setStageAgent(stageId: string, agentId: string) {
+    setStageAgents((prev) => ({ ...prev, [stageId]: agentId }));
+    const owner = agentLabel(agentId);
+    if (!owner) return;
+    setStages((prev) =>
+      prev.map((s) => (s.id === stageId ? { ...s, deals: s.deals.map((d) => ({ ...d, owner })) } : s))
+    );
   }
 
   function renameStage(id: string) {
@@ -76,10 +107,10 @@ export default function PipelinePage() {
       {dealModal && (
         <AddDealModal stages={stages} onClose={() => setDealModal(false)} onAdd={addDeal} />
       )}
-      <DemoBanner context="Lifecycle stages are editable — rename, add or remove them to match how your clinic works." />
+      <DemoBanner context="Lifecycle stages are editable — rename, add or remove them, and assign an AI agent to each stage so deals are handed over automatically as they move." />
       <PageHeader
         title="Pipeline"
-        subtitle="Every lead's lifecycle, from first message to paying patient. Move deals between stages with the stage menu on each card."
+        subtitle="Every lead's lifecycle, from first message to paying patient. Each stage can own an AI agent — when a deal moves in, that agent takes over the conversation. Drag cards between stages or use the menu on each card."
         actions={
           <>
             <button
@@ -104,11 +135,11 @@ export default function PipelinePage() {
         <StatCard icon={Hourglass} label="Avg time to schedule" value="4.2 days" hint="from first contact" accent="amber" />
       </div>
 
-      <div className="flex gap-4 overflow-x-auto pb-4">
+      <div className="flex gap-5 overflow-x-auto pb-4">
         {stages.map((stage) => {
           const stageValue = stage.deals.reduce((sum, d) => sum + d.value, 0);
           return (
-            <div key={stage.id} className="w-72 shrink-0">
+            <div key={stage.id} className="w-80 shrink-0">
               <div className="mb-3 flex items-center justify-between gap-2 px-1">
                 {renaming === stage.id ? (
                   <div className="flex flex-1 items-center gap-1">
@@ -152,6 +183,21 @@ export default function PipelinePage() {
                     <span className="text-xs font-medium text-ink-400">{formatMoney(stageValue)}</span>
                   </>
                 )}
+              </div>
+              {/* Agent assigned to this stage — deals entering it are handed over automatically */}
+              <div className="mb-3 flex items-center gap-2 rounded-xl border border-ink-100 bg-surface px-2.5 py-2">
+                <Bot className="h-3.5 w-3.5 shrink-0 text-brand-500" />
+                <select
+                  value={stageAgents[stage.id] ?? ""}
+                  onChange={(e) => setStageAgent(stage.id, e.target.value)}
+                  className="w-full bg-transparent text-xs font-medium text-ink-700 outline-none"
+                  title="AI agent for this stage"
+                >
+                  <option value="">No agent — manual handling</option>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name} — {a.role}</option>
+                  ))}
+                </select>
               </div>
               <div
                 onDragOver={(e) => {

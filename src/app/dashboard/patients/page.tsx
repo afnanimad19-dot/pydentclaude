@@ -48,6 +48,8 @@ export default function PatientsPage() {
   const [activeFolder, setActiveFolder] = useState<string | "all">("all");
   const [newFolderName, setNewFolderName] = useState("");
   const [addingFolder, setAddingFolder] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkFolder, setBulkFolder] = useState("");
 
   const refresh = useCallback(() => {
     fetchPatients().then((r) => {
@@ -77,11 +79,46 @@ export default function PatientsPage() {
     await movePatientToFolder(patientId, folderId || null);
   }
 
+  function toggleSelect(patientId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(patientId)) next.delete(patientId);
+      else next.add(patientId);
+      return next;
+    });
+  }
+
+  async function bulkMove() {
+    if (!bulkFolder || selected.size === 0) return;
+    const ids = [...selected];
+    setFolderMap((prev) => {
+      const next = { ...prev };
+      for (const id of ids) next[id] = bulkFolder;
+      return next;
+    });
+    await Promise.all(ids.map((id) => movePatientToFolder(id, bulkFolder)));
+    const folderName = folders.find((f) => f.id === bulkFolder)?.name ?? "folder";
+    toast(`Moved ${ids.length} patient${ids.length > 1 ? "s" : ""} to “${folderName}”.`);
+    setSelected(new Set());
+    setBulkFolder("");
+  }
+
   useEffect(() => {
     refresh();
   }, [refresh]);
 
   const recallDue = patients.filter((p) => p.recallDue);
+  const visible = patients.filter((p) => activeFolder === "all" || folderMap[p.id] === activeFolder);
+  const allVisibleSelected = visible.length > 0 && visible.every((p) => selected.has(p.id));
+
+  function toggleSelectAll() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) visible.forEach((p) => next.delete(p.id));
+      else visible.forEach((p) => next.add(p.id));
+      return next;
+    });
+  }
 
   return (
     <>
@@ -191,15 +228,54 @@ export default function PatientsPage() {
       </div>
 
       <Card className="mt-4 overflow-hidden">
-        <div className="border-b border-ink-200 px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-200 px-5 py-4">
           <h2 className="font-semibold text-ink-900">
             {activeFolder === "all" ? "Patient roster" : `Folder: ${folders.find((f) => f.id === activeFolder)?.name}`}
           </h2>
+          {selected.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-3 py-2">
+              <span className="text-sm font-medium text-brand-800 dark:text-brand-300">
+                {selected.size} selected
+              </span>
+              <select
+                value={bulkFolder}
+                onChange={(e) => setBulkFolder(e.target.value)}
+                className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs text-ink-700 outline-none"
+              >
+                <option value="">Move to folder…</option>
+                {folders.map((f) => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
+                ))}
+              </select>
+              <button
+                onClick={bulkMove}
+                disabled={!bulkFolder}
+                className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                Move
+              </button>
+              <button
+                onClick={() => setSelected(new Set())}
+                className="rounded-lg px-2 py-1.5 text-xs font-medium text-ink-500 hover:text-ink-800"
+              >
+                Clear
+              </button>
+            </div>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-ink-200 bg-ink-50 text-xs font-semibold uppercase tracking-wide text-ink-500">
               <tr>
+                <th className="w-10 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={toggleSelectAll}
+                    className="h-4 w-4 cursor-pointer accent-brand-600"
+                    title="Select all"
+                  />
+                </th>
                 <th className="px-5 py-3">Patient</th>
                 <th className="px-4 py-3">Contact</th>
                 <th className="px-4 py-3">Insurance</th>
@@ -211,8 +287,19 @@ export default function PatientsPage() {
               </tr>
             </thead>
             <tbody>
-              {patients.filter((p) => activeFolder === "all" || folderMap[p.id] === activeFolder).map((p) => (
-                <tr key={p.id} className="border-b border-ink-100 last:border-0 hover:bg-ink-50/60">
+              {visible.map((p) => (
+                <tr
+                  key={p.id}
+                  className={`border-b border-ink-100 last:border-0 hover:bg-ink-50/60 ${selected.has(p.id) ? "bg-brand-50/50" : ""}`}
+                >
+                  <td className="px-4 py-3.5">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(p.id)}
+                      onChange={() => toggleSelect(p.id)}
+                      className="h-4 w-4 cursor-pointer accent-brand-600"
+                    />
+                  </td>
                   <td className="px-5 py-3.5">
                     <Link href={`/dashboard/patients/${p.id}`} className="flex items-center gap-3">
                       <Avatar name={p.name} size="sm" />

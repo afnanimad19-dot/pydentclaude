@@ -15,6 +15,7 @@ import {
   Workflow,
   CalendarDays,
   Users,
+  BarChart3,
   Settings,
   Sparkles,
   Search,
@@ -106,6 +107,16 @@ const nav: NavItem[] = [
       { href: "/dashboard/patients", label: "Roster" },
       { href: "/dashboard/patients#appointments", label: "Appointments" },
       { href: "/dashboard/patients#recall", label: "Recall worklist" },
+    ],
+  },
+  {
+    href: "/dashboard/reports",
+    label: "Reports",
+    icon: BarChart3,
+    children: [
+      { href: "/dashboard/reports", label: "Practice analytics" },
+      { href: "/dashboard/reports#production", label: "Production" },
+      { href: "/dashboard/reports#channels", label: "Channels & agents" },
     ],
   },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
@@ -268,7 +279,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
         </header>
-        <main className="mx-auto max-w-7xl p-6">{children}</main>
+        <main className={`mx-auto p-6 ${pathname.startsWith("/dashboard/pipeline") ? "max-w-none" : "max-w-7xl"}`}>{children}</main>
         <Toaster />
       </div>
     </div>
