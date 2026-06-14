@@ -15,8 +15,9 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge, Avatar, StatCard } from "@/components/ui";
+import { Modal } from "@/components/modal";
 import { NewCampaignModal } from "@/components/dashboard/create-modals";
-import { broadcasts, botFlows, conversations, type BotNode } from "@/lib/mock-data";
+import { broadcasts, botFlows, conversations, type BotNode, type Broadcast } from "@/lib/mock-data";
 
 type Tab = "chats" | "broadcasts" | "bots";
 
@@ -38,10 +39,12 @@ export default function WhatsAppPage() {
   const tab: Tab = urlTab === "broadcasts" || urlTab === "bots" ? urlTab : "chats";
   const setTab = (t: Tab) => router.replace(`/dashboard/whatsapp?tab=${t}`, { scroll: false });
   const [modalOpen, setModalOpen] = useState(false);
+  const [selected, setSelected] = useState<Broadcast | null>(null);
   const waConversations = conversations.filter((c) => c.channel === "whatsapp");
 
   return (
     <>
+      {selected && <BroadcastDetail broadcast={selected} onClose={() => setSelected(null)} />}
       <NewCampaignModal open={modalOpen} onClose={() => setModalOpen(false)} channel="WhatsApp" />
       <DemoBanner context="WhatsApp Business is not connected yet — these are sample chats, broadcasts and flows." />
       <PageHeader
@@ -126,13 +129,18 @@ export default function WhatsAppPage() {
                 <th className="px-4 py-3 text-right">Replied</th>
                 <th className="px-4 py-3 text-right">Booked</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {broadcasts
                 .filter((b) => b.channel === "whatsapp")
                 .map((b) => (
-                  <tr key={b.id} className="border-b border-ink-100 last:border-0 hover:bg-ink-50/60">
+                  <tr
+                    key={b.id}
+                    onClick={() => setSelected(b)}
+                    className="cursor-pointer border-b border-ink-100 last:border-0 hover:bg-ink-50/60"
+                  >
                     <td className="px-5 py-4">
                       <p className="font-medium text-ink-900">{b.name}</p>
                       <p className="text-xs text-ink-400">{b.status === "Sent" ? `Sent ${b.sentAt}` : b.status === "Scheduled" ? `Scheduled for ${b.sentAt}` : "Not sent yet"}</p>
@@ -144,6 +152,9 @@ export default function WhatsAppPage() {
                     <td className="px-4 py-4 text-right font-semibold text-emerald-600">{b.booked || "—"}</td>
                     <td className="px-4 py-4">
                       <StatusBadge status={b.status} tone={statusTone[b.status]} />
+                    </td>
+                    <td className="px-4 py-4 text-right">
+                      <span className="text-xs font-medium text-brand-600 dark:text-brand-300">View →</span>
                     </td>
                   </tr>
                 ))}
@@ -199,5 +210,74 @@ export default function WhatsAppPage() {
         </div>
       )}
     </>
+  );
+}
+
+function BroadcastDetail({ broadcast: b, onClose }: { broadcast: Broadcast; onClose: () => void }) {
+  const base = Math.max(b.recipients, 1);
+  const pct = (n: number) => Math.round((n / base) * 100);
+  const funnel = [
+    { label: "Recipients", value: b.recipients, color: "bg-ink-400" },
+    { label: "Delivered", value: b.delivered, color: "bg-blue-500" },
+    { label: "Read", value: b.read, color: "bg-violet-500" },
+    { label: "Replied", value: b.replied, color: "bg-amber-500" },
+    { label: "Booked", value: b.booked, color: "bg-emerald-500" },
+  ];
+
+  return (
+    <Modal open onClose={onClose} title={b.name} subtitle={`${b.audience} · ${b.channel.toUpperCase()}`}>
+      <div className="grid gap-5">
+        {/* Status + timing */}
+        <div className="flex flex-wrap items-center gap-3">
+          <StatusBadge status={b.status} tone={statusTone[b.status]} />
+          <span className="text-sm text-ink-500">
+            {b.status === "Sent" ? `Sent ${b.sentAt}` : b.status === "Scheduled" ? `Scheduled for ${b.sentAt}` : "Not sent yet"}
+          </span>
+        </div>
+
+        {/* Headline numbers */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-xl border border-ink-100 px-4 py-3">
+            <p className="text-xs text-ink-400">Delivery rate</p>
+            <p className="mt-1 text-2xl font-semibold text-ink-900">{pct(b.delivered)}%</p>
+          </div>
+          <div className="rounded-xl border border-ink-100 px-4 py-3">
+            <p className="text-xs text-ink-400">Read rate</p>
+            <p className="mt-1 text-2xl font-semibold text-ink-900">{pct(b.read)}%</p>
+          </div>
+          <div className="rounded-xl border border-ink-100 px-4 py-3">
+            <p className="text-xs text-ink-400">Booked</p>
+            <p className="mt-1 text-2xl font-semibold text-emerald-600">{b.booked}</p>
+          </div>
+        </div>
+
+        {/* Funnel */}
+        <div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-400">Delivery funnel</p>
+          <div className="space-y-2.5">
+            {funnel.map((f) => (
+              <div key={f.label}>
+                <div className="mb-1 flex items-center justify-between text-sm">
+                  <span className="font-medium text-ink-800">{f.label}</span>
+                  <span className="text-ink-500">{f.value.toLocaleString()} · {pct(f.value)}%</span>
+                </div>
+                <div className="h-2.5 overflow-hidden rounded-full bg-ink-100">
+                  <div className={`h-full rounded-full ${f.color}`} style={{ width: `${pct(f.value)}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Template that was sent */}
+        <div className="rounded-xl border border-ink-200 bg-ink-50/60 p-4">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Template sent</p>
+            <code className="rounded-md bg-surface px-2 py-0.5 font-mono text-xs text-ink-600">{b.template}</code>
+          </div>
+          <p className="mt-2.5 rounded-lg bg-surface p-3 text-sm leading-relaxed text-ink-800">{b.message}</p>
+        </div>
+      </div>
+    </Modal>
   );
 }

@@ -95,6 +95,8 @@ export interface Broadcast {
   booked: number;
   status: "Sent" | "Scheduled" | "Draft" | "Sending";
   sentAt: string;
+  template: string;
+  message: string;
 }
 
 export interface EmailCampaign {
@@ -279,11 +281,11 @@ export const voiceCalls: VoiceCall[] = [
 ];
 
 export const broadcasts: Broadcast[] = [
-  { id: "b1", channel: "whatsapp", name: "June recall — 6 months overdue", audience: "Recall due > 180 days (214 patients)", recipients: 214, delivered: 209, read: 182, replied: 64, booked: 31, status: "Sent", sentAt: "2026-06-08" },
-  { id: "b2", channel: "whatsapp", name: "Whitening promo — Father's Day", audience: "Active patients, age 25–60 (486)", recipients: 486, delivered: 480, read: 391, replied: 47, booked: 18, status: "Sent", sentAt: "2026-06-05" },
-  { id: "b3", channel: "sms", name: "Unconfirmed appts — next 48h", audience: "Tomorrow + Friday unconfirmed (12)", recipients: 12, delivered: 12, read: 0, replied: 9, booked: 9, status: "Sent", sentAt: "2026-06-10" },
-  { id: "b4", channel: "whatsapp", name: "Hurricane closure notice", audience: "All active patients (1,240)", recipients: 0, delivered: 0, read: 0, replied: 0, booked: 0, status: "Draft", sentAt: "—" },
-  { id: "b5", channel: "sms", name: "Insurance benefits expiring — use it or lose it", audience: "Remaining benefits > $500 (167)", recipients: 167, delivered: 0, read: 0, replied: 0, booked: 0, status: "Scheduled", sentAt: "2026-06-15" },
+  { id: "b1", channel: "whatsapp", name: "June recall — 6 months overdue", audience: "Recall due > 180 days (214 patients)", recipients: 214, delivered: 209, read: 182, replied: 64, booked: 31, status: "Sent", sentAt: "2026-06-08 09:00", template: "recall_cleaning_reminder", message: "Hi {{1}}, it's been {{2}} months since your last visit at Bright Smile Dental. We have openings this week — want me to book you in?" },
+  { id: "b2", channel: "whatsapp", name: "Whitening promo — Father's Day", audience: "Active patients, age 25–60 (486)", recipients: 486, delivered: 480, read: 391, replied: 47, booked: 18, status: "Sent", sentAt: "2026-06-05 10:30", template: "whitening_promo_june", message: "Hi {{1}}! ✨ This month only: professional whitening for $199 (reg. $350). Limited slots available." },
+  { id: "b3", channel: "sms", name: "Unconfirmed appts — next 48h", audience: "Tomorrow + Friday unconfirmed (12)", recipients: 12, delivered: 12, read: 0, replied: 9, booked: 9, status: "Sent", sentAt: "2026-06-10 08:00", template: "appt_confirm_48h", message: "Reminder: your appointment is coming up. Reply C to confirm or R to reschedule." },
+  { id: "b4", channel: "whatsapp", name: "Hurricane closure notice", audience: "All active patients (1,240)", recipients: 0, delivered: 0, read: 0, replied: 0, booked: 0, status: "Draft", sentAt: "—", template: "clinic_closure_notice", message: "Hi {{1}}, due to the storm warning Bright Smile Dental will be closed {{2}}. We'll reach out to rebook any affected visits." },
+  { id: "b5", channel: "sms", name: "Insurance benefits expiring — use it or lose it", audience: "Remaining benefits > $500 (167)", recipients: 167, delivered: 0, read: 0, replied: 0, booked: 0, status: "Scheduled", sentAt: "2026-06-15 09:00", template: "benefits_expiring", message: "Hi {{1}}, you still have ${{2}} of dental benefits that expire Dec 31. Want to use them before they reset?" },
 ];
 
 export const emailCampaigns: EmailCampaign[] = [
