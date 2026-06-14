@@ -295,7 +295,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
         </header>
-        <main className={`mx-auto p-6 ${pathname.startsWith("/dashboard/pipeline") ? "max-w-none" : "max-w-7xl"}`}>{children}</main>
+        <main className="w-full px-5 py-5">{children}</main>
         <Toaster />
       </div>
     </div>

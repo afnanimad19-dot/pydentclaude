@@ -89,7 +89,7 @@ export function StatusBadge({
   tone,
 }: {
   status: string;
-  tone: "green" | "amber" | "red" | "gray" | "blue";
+  tone: "green" | "amber" | "red" | "gray" | "blue" | "violet";
 }) {
   const tones = {
     green: "bg-emerald-500/15 text-emerald-600",
@@ -97,6 +97,7 @@ export function StatusBadge({
     red: "bg-red-500/15 text-red-600",
     gray: "bg-ink-100 text-ink-600",
     blue: "bg-blue-500/15 text-blue-600",
+    violet: "bg-violet-500/15 text-violet-500",
   };
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tones[tone]}`}>
