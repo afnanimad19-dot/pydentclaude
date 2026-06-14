@@ -810,3 +810,64 @@ export async function setStageAgentDb(stageId: string, agentId: string | null): 
     /* demo mode */
   }
 }
+
+// ------------------------------------------------ whatsapp connection (0007)
+
+export interface WhatsappConfig {
+  displayNumber: string;
+  phoneNumberId: string;
+  wabaId: string;
+  accessToken: string;
+  verifyToken: string;
+  pin: string;
+  connected: boolean;
+}
+
+export const emptyWhatsappConfig: WhatsappConfig = {
+  displayNumber: "",
+  phoneNumberId: "",
+  wabaId: "",
+  accessToken: "",
+  verifyToken: "",
+  pin: "",
+  connected: false,
+};
+
+export async function fetchWhatsappConfig(): Promise<WhatsappConfig> {
+  try {
+    const { data } = await supabase.from("whatsapp_config").select("*").eq("workspace", "default").maybeSingle();
+    if (!data) return emptyWhatsappConfig;
+    return {
+      displayNumber: data.display_number ?? "",
+      phoneNumberId: data.phone_number_id ?? "",
+      wabaId: data.waba_id ?? "",
+      accessToken: data.access_token ?? "",
+      verifyToken: data.verify_token ?? "",
+      pin: data.pin ?? "",
+      connected: !!data.connected,
+    };
+  } catch {
+    return emptyWhatsappConfig;
+  }
+}
+
+export async function saveWhatsappConfig(c: WhatsappConfig): Promise<{ ok: boolean; message: string }> {
+  // "Connected" means the essential routing credentials are present.
+  const connected = !!(c.phoneNumberId && c.accessToken && c.verifyToken);
+  const { error } = await supabase.from("whatsapp_config").upsert(
+    {
+      workspace: "default",
+      display_number: c.displayNumber,
+      phone_number_id: c.phoneNumberId,
+      waba_id: c.wabaId,
+      access_token: c.accessToken,
+      verify_token: c.verifyToken,
+      pin: c.pin,
+      connected,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "workspace" }
+  );
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: connected ? "WhatsApp connected." : "Saved. Add the Phone Number ID, Access Token and Verify Token to connect." };
+}

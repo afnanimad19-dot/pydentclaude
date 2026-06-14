@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
   Database,
@@ -20,11 +21,17 @@ import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { fetchPatients } from "@/lib/db";
 import { toast } from "@/components/toast";
 
-const channelIntegrations = [
+const channelIntegrations: {
+  icon: typeof Database;
+  name: string;
+  detail: string;
+  href?: string;
+}[] = [
   {
     icon: MessageCircle,
     name: "WhatsApp Business",
     detail: "Meta Cloud API — connect your clinic's WhatsApp number for two-way chat, template broadcasts and chatbot flows.",
+    href: "/dashboard/settings/whatsapp",
   },
   {
     icon: Camera,
@@ -210,12 +217,21 @@ export default function SettingsPage() {
             detail={i.detail}
             badge={<StatusBadge status="Not connected" tone="gray" />}
             action={
-              <button
-                onClick={() => toast(`${i.name}: the guided connection wizard ships with the channel-webhook update — your platform keys are already configured.`, "info")}
-                className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50"
-              >
-                Connect
-              </button>
+              i.href ? (
+                <Link
+                  href={i.href}
+                  className="shrink-0 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+                >
+                  Set up
+                </Link>
+              ) : (
+                <button
+                  onClick={() => toast(`${i.name}: the guided connection wizard ships with the channel-webhook update — your platform keys are already configured.`, "info")}
+                  className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50"
+                >
+                  Connect
+                </button>
+              )
             }
           />
         ))}

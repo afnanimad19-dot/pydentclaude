@@ -43,6 +43,14 @@ Keys/values to collect: `META_APP_ID`, `META_APP_SECRET`, `META_VERIFY_TOKEN`
 (you choose this), plus each clinic's `WABA_ID` / page tokens (collected in-app
 during their onboarding).
 
+**In-app:** clinics now enter their WhatsApp credentials at
+**Settings → WhatsApp Business → Set up** (`/dashboard/settings/whatsapp`):
+Phone Number ID, WABA ID, Access Token, a Verify Token they choose, and the
+two-step PIN. That page also shows the **Webhook Callback URL** to paste into
+Meta — it points at the live endpoint `/api/whatsapp/webhook`, which already
+answers Meta's verification handshake. (Inbound message → Inbox routing is the
+next build; the endpoint currently 200-acks and has a TODO for HMAC + parsing.)
+
 **WhatsApp template approval**: marketing/broadcast templates must be approved by
 Meta before sending — already tracked in the WhatsApp → Templates screen.
 
@@ -120,6 +128,8 @@ GOOGLE_OAUTH_CLIENT_SECRET=
 META_APP_ID=
 META_APP_SECRET=
 META_VERIFY_TOKEN=
+WHATSAPP_VERIFY_TOKEN=   # optional platform-wide override; otherwise the per-clinic token from Settings is used
+ENCRYPTION_KEY=          # 64 hex chars — encrypt stored WhatsApp access tokens (AES-256-GCM) before real launch
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 RESEND_API_KEY=
