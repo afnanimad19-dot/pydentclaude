@@ -871,3 +871,102 @@ export async function saveWhatsappConfig(c: WhatsappConfig): Promise<{ ok: boole
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: connected ? "WhatsApp connected." : "Saved. Add the Phone Number ID, Access Token and Verify Token to connect." };
 }
+
+// ---------------------------------------------------- live whatsapp inbox (0008)
+
+export interface WaConversation {
+  id: string;
+  contactPhone: string;
+  contactName: string;
+  lastMessage: string;
+  lastTime: string;
+  unread: number;
+  assignedAgentId: string | null;
+  lifecycle: string;
+}
+
+export interface WaMessage {
+  id: string;
+  direction: "inbound" | "outbound";
+  author: string;
+  body: string;
+  byBot: boolean;
+  createdAt: string;
+}
+
+export async function fetchWaConversations(): Promise<WaConversation[]> {
+  try {
+    const { data } = await supabase.from("wa_conversations").select("*").order("last_time", { ascending: false });
+    return (data ?? []).map((r) => ({
+      id: r.id,
+      contactPhone: r.contact_phone,
+      contactName: r.contact_name || r.contact_phone,
+      lastMessage: r.last_message ?? "",
+      lastTime: r.last_time,
+      unread: r.unread ?? 0,
+      assignedAgentId: r.assigned_agent_id ?? null,
+      lifecycle: r.lifecycle ?? "New Lead",
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchWaMessages(conversationId: string): Promise<WaMessage[]> {
+  try {
+    const { data } = await supabase
+      .from("wa_messages")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true });
+    return (data ?? []).map((r) => ({
+      id: r.id,
+      direction: r.direction,
+      author: r.author ?? "",
+      body: r.body ?? "",
+      byBot: !!r.by_bot,
+      createdAt: r.created_at,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function markWaRead(conversationId: string): Promise<void> {
+  try {
+    await supabase.from("wa_conversations").update({ unread: 0 }).eq("id", conversationId);
+  } catch {
+    /* demo */
+  }
+}
+
+export async function assignWaAgent(conversationId: string, agentId: string | null): Promise<void> {
+  try {
+    await supabase.from("wa_conversations").update({ assigned_agent_id: agentId }).eq("id", conversationId);
+  } catch {
+    /* demo */
+  }
+}
+
+export async function setWaLifecycle(conversationId: string, lifecycle: string): Promise<void> {
+  try {
+    await supabase.from("wa_conversations").update({ lifecycle }).eq("id", conversationId);
+  } catch {
+    /* demo */
+  }
+}
+
+export async function sendWaReply(conversationId: string, phone: string, text: string, author: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/whatsapp/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId, phone, text, author }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error ?? "send failed" };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "send failed" };
+  }
+}
