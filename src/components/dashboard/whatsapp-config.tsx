@@ -1,11 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { MessageCircle, Copy, Check, ExternalLink } from "lucide-react";
+import { MessageCircle, Copy, Check, ExternalLink, Activity, RefreshCw } from "lucide-react";
 import { Card, StatusBadge } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
-import { fetchWhatsappConfig, saveWhatsappConfig, emptyWhatsappConfig, type WhatsappConfig } from "@/lib/db";
+import {
+  fetchWhatsappConfig,
+  saveWhatsappConfig,
+  emptyWhatsappConfig,
+  fetchWaWebhookEvents,
+  fetchWaConversations,
+  type WhatsappConfig,
+  type WaWebhookEvent,
+} from "@/lib/db";
+
+const fmt = (iso: string) => (iso && iso.length >= 16 ? `${iso.slice(5, 10)} ${iso.slice(11, 16)}` : iso || "");
 
 const SETUP_STEPS = [
   { title: "Create a Meta app", body: "At developers.facebook.com → My Apps → Create App (Business type). Add the WhatsApp product." },
@@ -21,6 +31,8 @@ export function WhatsAppConfigForm() {
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("https://your-site.netlify.app/api/whatsapp/webhook");
+  const [events, setEvents] = useState<WaWebhookEvent[]>([]);
+  const [convoCount, setConvoCount] = useState(0);
 
   useEffect(() => {
     fetchWhatsappConfig().then((c) => {
@@ -28,6 +40,17 @@ export function WhatsAppConfigForm() {
       setLoading(false);
       if (typeof window !== "undefined") setWebhookUrl(`${window.location.origin}/api/whatsapp/webhook`);
     });
+  }, []);
+
+  function refreshDiagnostics() {
+    fetchWaWebhookEvents().then(setEvents);
+    fetchWaConversations().then((c) => setConvoCount(c.length));
+  }
+
+  useEffect(() => {
+    refreshDiagnostics();
+    const t = setInterval(refreshDiagnostics, 6000);
+    return () => clearInterval(t);
   }, []);
 
   function set<K extends keyof WhatsappConfig>(k: K, v: WhatsappConfig[K]) {
@@ -134,6 +157,44 @@ export function WhatsAppConfigForm() {
           </a>
         </Card>
       </div>
+
+      {/* Webhook diagnostics — confirms whether Meta is actually calling us */}
+      <Card className="mt-6 p-6">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="flex items-center gap-2 font-semibold text-ink-900">
+            <Activity className="h-5 w-5 text-brand-500" /> Webhook activity
+          </h2>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-ink-500">{convoCount} live conversation{convoCount === 1 ? "" : "s"}</span>
+            <button onClick={refreshDiagnostics} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+              <RefreshCw className="h-3.5 w-3.5" /> Refresh
+            </button>
+          </div>
+        </div>
+        <p className="mt-1 text-sm text-ink-500">
+          The last 15 times Meta called your webhook. To create an inbound message,
+          <strong className="text-ink-700"> reply from your phone</strong> to a message you received — sending a template
+          <em> out</em> only produces a delivery status, which won&apos;t appear in the inbox.
+        </p>
+        <div className="mt-4 divide-y divide-ink-100 rounded-xl border border-ink-100">
+          {events.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-ink-400">
+              No webhook calls recorded yet. If you just subscribed to the <code>messages</code> field, reply from your phone and watch this list.
+            </p>
+          ) : (
+            events.map((e) => (
+              <div key={e.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+                <span className="text-ink-800">{e.summary}</span>
+                <span className="shrink-0 text-xs text-ink-400">{fmt(e.createdAt)}</span>
+              </div>
+            ))
+          )}
+        </div>
+        <p className="mt-3 text-xs text-ink-400">
+          Tip: if you see “Delivery status update” but never “Stored inbound message”, Meta is reaching us but you haven&apos;t replied yet —
+          or the <code>messages</code> field isn&apos;t subscribed. If you see nothing at all, the callback URL or subscription isn&apos;t set in Meta.
+        </p>
+      </Card>
     </>
   );
 }

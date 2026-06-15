@@ -27,8 +27,10 @@ export async function GET(req: NextRequest) {
   const challenge = p.get("hub.challenge");
   const expected = await expectedVerifyToken();
   if (mode === "subscribe" && token && expected && token === expected) {
+    await logEvent("✅ Webhook verified by Meta (verify token matched).");
     return new NextResponse(challenge ?? "", { status: 200 });
   }
+  await logEvent("⚠️ Verification attempt failed — verify token did not match.");
   return new NextResponse("Verification failed", { status: 403 });
 }
 
@@ -45,9 +47,18 @@ function signatureValid(raw: string, header: string | null): boolean {
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+async function logEvent(summary: string) {
+  try {
+    await supabase.from("wa_webhook_events").insert({ summary: summary.slice(0, 300) });
+  } catch {
+    /* table may not exist yet */
+  }
+}
+
 export async function POST(req: NextRequest) {
   const raw = await req.text();
   if (!signatureValid(raw, req.headers.get("x-hub-signature-256"))) {
+    await logEvent("⚠️ Rejected POST — invalid X-Hub-Signature-256 (check META_APP_SECRET).");
     // Don't process spoofed payloads, but still 200 so Meta doesn't hammer retries.
     return NextResponse.json({ received: true });
   }
@@ -56,10 +67,13 @@ export async function POST(req: NextRequest) {
   try {
     payload = JSON.parse(raw);
   } catch {
+    await logEvent("Received POST with an unparseable body.");
     return NextResponse.json({ received: true });
   }
 
   try {
+    let handled = 0;
+    let statuses = 0;
     for (const entry of payload.entry ?? []) {
       for (const change of entry.changes ?? []) {
         const value = change.value ?? {};
@@ -67,11 +81,17 @@ export async function POST(req: NextRequest) {
         const contacts: any[] = value.contacts ?? [];
         for (const m of value.messages ?? []) {
           await handleInbound(m, contacts);
+          handled++;
         }
+        statuses += (value.statuses ?? []).length;
       }
     }
+    if (handled > 0) await logEvent(`✅ Stored ${handled} inbound message(s).`);
+    else if (statuses > 0) await logEvent(`Delivery status update (${statuses}) — outbound only, nothing to show in the inbox.`);
+    else await logEvent("Webhook called, but no inbound messages in the payload.");
   } catch (e) {
     console.error("wa webhook error", e);
+    await logEvent(`Error while processing: ${e instanceof Error ? e.message : "unknown"}`);
   }
 
   return NextResponse.json({ received: true });

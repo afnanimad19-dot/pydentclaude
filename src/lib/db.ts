@@ -970,3 +970,18 @@ export async function sendWaReply(conversationId: string, phone: string, text: s
     return { ok: false, error: e instanceof Error ? e.message : "send failed" };
   }
 }
+
+export interface WaWebhookEvent {
+  id: string;
+  summary: string;
+  createdAt: string;
+}
+
+export async function fetchWaWebhookEvents(): Promise<WaWebhookEvent[]> {
+  try {
+    const { data } = await supabase.from("wa_webhook_events").select("*").order("created_at", { ascending: false }).limit(15);
+    return (data ?? []).map((r) => ({ id: r.id, summary: r.summary ?? "", createdAt: r.created_at }));
+  } catch {
+    return [];
+  }
+}
