@@ -884,6 +884,7 @@ export interface WaConversation {
   assignedAgentId: string | null;
   lifecycle: string;
   status: string;
+  patientId: string | null;
 }
 
 export interface WaMessage {
@@ -908,6 +909,7 @@ export async function fetchWaConversations(): Promise<WaConversation[]> {
       assignedAgentId: r.assigned_agent_id ?? null,
       lifecycle: r.lifecycle ?? "New Lead",
       status: r.status ?? "open",
+      patientId: r.patient_id ?? null,
     }));
   } catch {
     return [];

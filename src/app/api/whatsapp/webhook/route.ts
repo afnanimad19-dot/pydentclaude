@@ -103,6 +103,29 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ received: true });
 }
 
+// Find an existing patient by phone (digit match) or create a new "New" lead
+// sourced from WhatsApp, so inbound contacts populate the CRM automatically.
+async function resolvePatient(phone: string, name: string): Promise<string | null> {
+  const digits = phone.replace(/\D/g, "");
+  try {
+    const { data: pts } = await supabase.from("patients").select("id, phone");
+    const match = (pts ?? []).find((p: any) => {
+      const d = String(p.phone ?? "").replace(/\D/g, "");
+      return d.length >= 7 && (d === digits || d.endsWith(digits.slice(-9)) || digits.endsWith(d.slice(-9)));
+    });
+    if (match) return match.id;
+    const { data: created, error } = await supabase
+      .from("patients")
+      .insert({ name: name || `+${phone}`, phone: `+${phone}`, status: "New", source_channel: "whatsapp", source_agent: "WhatsApp inbox" })
+      .select("id")
+      .single();
+    if (error) return null;
+    return created?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function handleInbound(m: any, contacts: any[]) {
   const phone: string = m.from;
   if (!phone) return;
@@ -125,9 +148,11 @@ async function handleInbound(m: any, contacts: any[]) {
       .update({ contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: (convo.unread ?? 0) + 1 })
       .eq("id", conversationId);
   } else {
+    // New conversation → auto-capture the lead into the CRM (Patients).
+    const patientId = await resolvePatient(phone, name);
     const { data: created } = await supabase
       .from("wa_conversations")
-      .insert({ contact_phone: phone, contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: 1 })
+      .insert({ contact_phone: phone, contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: 1, patient_id: patientId })
       .select("id")
       .single();
     conversationId = created!.id;

@@ -10,6 +10,7 @@ import {
   fetchAssignments,
   assignAgent,
   fetchChannelDefaults,
+  fetchPatients,
   fetchWaConversations,
   fetchWaMessages,
   markWaRead,
@@ -22,7 +23,7 @@ import {
   type WaConversation,
   type WaMessage,
 } from "@/lib/db";
-import { conversations, channelMeta, patients, type Channel, type Message } from "@/lib/mock-data";
+import { conversations, channelMeta, patients as mockPatients, type Channel, type Message, type Patient } from "@/lib/mock-data";
 
 const ME = "Dana Reyes";
 let _seq = 0;
@@ -91,6 +92,7 @@ export default function InboxPage() {
   const [liveAssign, setLiveAssign] = useState<Record<string, string | null>>({});
   const [liveStage, setLiveStage] = useState<Record<string, string>>({});
   const [liveStatus, setLiveStatus] = useState<Record<string, string>>({});
+  const [livePatients, setLivePatients] = useState<Patient[]>([]);
 
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [channelDefaults, setChannelDefaults] = useState<ChannelDefault[]>([]);
@@ -115,6 +117,7 @@ export default function InboxPage() {
       const id = activeIdRef.current;
       if (cs.some((c) => c.id === id)) fetchWaMessages(id).then(setLiveMessages);
     });
+    fetchPatients().then((r) => setLivePatients(r.patients));
   }, []);
 
   // Poll live conversations + active thread every 7s.
@@ -148,6 +151,7 @@ export default function InboxPage() {
       unread: c.unread,
       lifecycle: liveStage[c.id] ?? c.lifecycle,
       tags: ["whatsapp"],
+      patientId: c.patientId ?? undefined,
     }));
     const demo: UnifiedConvo[] = conversations.map((c) => ({
       id: c.id,
@@ -198,7 +202,7 @@ export default function InboxPage() {
 
   const active = unified.find((u) => u.id === activeId) ?? unified[0];
   const demoConvo = active && !active.live ? conversations.find((c) => c.id === active.id) : undefined;
-  const patient = active?.patientId ? patients.find((p) => p.id === active.patientId) : undefined;
+  const patient = active?.patientId ? [...livePatients, ...mockPatients].find((p) => p.id === active.patientId) : undefined;
 
   // Active thread (normalized).
   const thread: { id: string; direction: "inbound" | "outbound"; author: string; body: string; time: string; byBot?: boolean }[] = active?.live
