@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   MessageCircle,
@@ -17,6 +17,8 @@ import {
 import { Card, PageHeader, DemoBanner, StatusBadge, Avatar, StatCard } from "@/components/ui";
 import { Modal } from "@/components/modal";
 import { NewCampaignModal } from "@/components/dashboard/create-modals";
+import { BroadcastWizard } from "@/components/dashboard/broadcast-wizard";
+import { fetchWaBroadcasts, fetchWaBroadcastRecipients, type WaBroadcast, type WaBroadcastRecipient } from "@/lib/db";
 import { broadcasts, botFlows, conversations, type BotNode, type Broadcast } from "@/lib/mock-data";
 
 type Tab = "chats" | "broadcasts" | "bots";
@@ -29,7 +31,7 @@ const nodeStyle: Record<BotNode["type"], { icon: typeof Zap; chip: string; label
   handoff: { icon: UserRound, chip: "bg-rose-500/15 text-rose-600", label: "Handoff" },
 };
 
-const statusTone = { Sent: "green", Sending: "blue", Scheduled: "blue", Draft: "gray", Live: "green", Paused: "amber" } as const;
+const statusTone = { Sent: "green", Sending: "blue", Scheduled: "blue", Draft: "gray", Live: "green", Paused: "amber", Failed: "red" } as const;
 
 export default function WhatsAppPage() {
   const router = useRouter();
@@ -39,12 +41,20 @@ export default function WhatsAppPage() {
   const tab: Tab = urlTab === "broadcasts" || urlTab === "bots" ? urlTab : "chats";
   const setTab = (t: Tab) => router.replace(`/dashboard/whatsapp?tab=${t}`, { scroll: false });
   const [modalOpen, setModalOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [selected, setSelected] = useState<Broadcast | null>(null);
+  const [liveBroadcasts, setLiveBroadcasts] = useState<WaBroadcast[]>([]);
+  const [selectedLive, setSelectedLive] = useState<WaBroadcast | null>(null);
   const waConversations = conversations.filter((c) => c.channel === "whatsapp");
+
+  const loadLive = useCallback(() => { fetchWaBroadcasts().then(setLiveBroadcasts); }, []);
+  useEffect(() => { loadLive(); }, [loadLive]);
 
   return (
     <>
+      {wizardOpen && <BroadcastWizard onClose={() => setWizardOpen(false)} onDone={loadLive} />}
       {selected && <BroadcastDetail broadcast={selected} onClose={() => setSelected(null)} />}
+      {selectedLive && <LiveBroadcastDetail broadcast={selectedLive} onClose={() => setSelectedLive(null)} />}
       <NewCampaignModal open={modalOpen} onClose={() => setModalOpen(false)} channel="WhatsApp" />
       <DemoBanner context="WhatsApp Business is not connected yet — these are sample chats, broadcasts and flows." />
       <PageHeader
@@ -52,7 +62,7 @@ export default function WhatsAppPage() {
         subtitle="Two-way chats, broadcast campaigns and automation flows on WhatsApp Business."
         actions={
           <button
-            onClick={() => (tab === "bots" ? router.push("/dashboard/workflows") : setModalOpen(true))}
+            onClick={() => (tab === "bots" ? router.push("/dashboard/workflows") : tab === "broadcasts" ? setWizardOpen(true) : setModalOpen(true))}
             className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
           >
             <Plus className="h-4 w-4" />
@@ -133,6 +143,21 @@ export default function WhatsAppPage() {
               </tr>
             </thead>
             <tbody>
+              {liveBroadcasts.map((b) => (
+                <tr key={b.id} onClick={() => setSelectedLive(b)} className="cursor-pointer border-b border-ink-100 last:border-0 hover:bg-ink-50/60">
+                  <td className="px-5 py-4">
+                    <p className="flex items-center gap-1.5 font-medium text-ink-900">{b.name} <span className="rounded bg-emerald-500/15 px-1 text-[9px] font-semibold uppercase text-emerald-600">live</span></p>
+                    <p className="text-xs text-ink-400">{b.status === "Sent" ? `Sent ${(b.sentAt ?? "").slice(0, 16).replace("T", " ")}` : b.status === "Scheduled" ? `Scheduled ${(b.scheduledFor ?? "").slice(0, 16).replace("T", " ")}` : b.status} · {b.templateName}</p>
+                  </td>
+                  <td className="px-4 py-4 text-ink-600">{b.folderName || "All patients"}</td>
+                  <td className="px-4 py-4 text-right text-ink-800">{b.sent || "—"}</td>
+                  <td className="px-4 py-4 text-right text-ink-800">{b.read || "—"}</td>
+                  <td className="px-4 py-4 text-right text-rose-500">{b.failed || "—"}</td>
+                  <td className="px-4 py-4 text-right font-semibold text-ink-800">{b.recipients}</td>
+                  <td className="px-4 py-4"><StatusBadge status={b.status} tone={statusTone[b.status]} /></td>
+                  <td className="px-4 py-4 text-right"><span className="text-xs font-medium text-brand-600 dark:text-brand-300">View →</span></td>
+                </tr>
+              ))}
               {broadcasts
                 .filter((b) => b.channel === "whatsapp")
                 .map((b) => (
@@ -276,6 +301,70 @@ function BroadcastDetail({ broadcast: b, onClose }: { broadcast: Broadcast; onCl
             <code className="rounded-md bg-surface px-2 py-0.5 font-mono text-xs text-ink-600">{b.template}</code>
           </div>
           <p className="mt-2.5 rounded-lg bg-surface p-3 text-sm leading-relaxed text-ink-800">{b.message}</p>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function LiveBroadcastDetail({ broadcast: b, onClose }: { broadcast: WaBroadcast; onClose: () => void }) {
+  const [recipients, setRecipients] = useState<WaBroadcastRecipient[]>([]);
+  useEffect(() => { fetchWaBroadcastRecipients(b.id).then(setRecipients); }, [b.id]);
+
+  const base = Math.max(b.recipients, 1);
+  const pct = (n: number) => Math.round((n / base) * 100);
+  const funnel = [
+    { label: "Recipients", value: b.recipients, color: "bg-ink-400" },
+    { label: "Sent", value: b.sent, color: "bg-blue-500" },
+    { label: "Delivered", value: b.delivered, color: "bg-violet-500" },
+    { label: "Read", value: b.read, color: "bg-emerald-500" },
+    { label: "Failed", value: b.failed, color: "bg-rose-500" },
+  ];
+
+  return (
+    <Modal open onClose={onClose} title={b.name} subtitle={`${b.folderName || "All patients"} · template ${b.templateName}`}>
+      <div className="grid gap-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <StatusBadge status={b.status} tone={statusTone[b.status]} />
+          <span className="text-sm text-ink-500">
+            {b.status === "Sent" ? `Sent ${(b.sentAt ?? "").slice(0, 16).replace("T", " ")}` : b.status === "Scheduled" ? `Scheduled for ${(b.scheduledFor ?? "").slice(0, 16).replace("T", " ")}` : b.status}
+          </span>
+        </div>
+
+        <div>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-400">Delivery funnel</p>
+          <div className="space-y-2.5">
+            {funnel.map((f) => (
+              <div key={f.label}>
+                <div className="mb-1 flex items-center justify-between text-sm">
+                  <span className="font-medium text-ink-800">{f.label}</span>
+                  <span className="text-ink-500">{f.value.toLocaleString()} · {pct(f.value)}%</span>
+                </div>
+                <div className="h-2.5 overflow-hidden rounded-full bg-ink-100">
+                  <div className={`h-full rounded-full ${f.color}`} style={{ width: `${pct(f.value)}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">Recipients</p>
+          <div className="max-h-56 divide-y divide-ink-100 overflow-y-auto rounded-xl border border-ink-100">
+            {recipients.length === 0 ? (
+              <p className="px-4 py-6 text-center text-sm text-ink-400">No per-recipient records.</p>
+            ) : (
+              recipients.map((r) => (
+                <div key={r.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+                  <span className="min-w-0">
+                    <span className="font-medium text-ink-900">{r.name || `+${r.phone}`}</span>
+                    {r.error && <span className="ml-2 text-xs text-rose-500">{r.error}</span>}
+                  </span>
+                  <StatusBadge status={r.status} tone={r.status === "failed" ? "red" : r.status === "read" ? "green" : "blue"} />
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </Modal>

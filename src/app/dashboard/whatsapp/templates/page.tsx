@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Plus, Image as ImageIcon, Video, FileText, Phone, Link2, MessageSquare, Trash2 } from "lucide-react";
+import { Plus, Image as ImageIcon, Video, FileText, Phone, Link2, MessageSquare, Trash2, Send, RefreshCw } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, inputCls } from "@/components/modal";
-import { fetchWaTemplates, createWaTemplate, type WaTemplate, type WaTemplateButton, type DataSource } from "@/lib/db";
+import { toast } from "@/components/toast";
+import { fetchWaTemplates, createWaTemplate, submitTemplateForApproval, syncTemplateStatuses, type WaTemplate, type WaTemplateButton, type DataSource } from "@/lib/db";
 
 const statusTone = { Draft: "gray", "Pending approval": "amber", Approved: "green", Rejected: "red" } as const;
 
@@ -25,6 +26,24 @@ export default function WaTemplatesPage() {
   }, [refresh]);
 
   const visible = filter === "all" ? templates : templates.filter((t) => t.status === filter);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  async function submit(id: string) {
+    setBusyId(id);
+    const res = await submitTemplateForApproval(id);
+    setBusyId(null);
+    toast(res.ok ? "Submitted to Meta — approval usually takes a few minutes. Use ‘Sync from Meta’ to refresh." : `Submit failed: ${res.error}`, res.ok ? "success" : "info");
+    if (res.ok) refresh();
+  }
+
+  async function sync() {
+    setSyncing(true);
+    const res = await syncTemplateStatuses();
+    setSyncing(false);
+    toast(res.ok ? `Synced ${res.updated ?? 0} template(s) from Meta.` : `Sync failed: ${res.error}`, res.ok ? "success" : "info");
+    if (res.ok) refresh();
+  }
 
   return (
     <>
@@ -44,12 +63,21 @@ export default function WaTemplatesPage() {
         title="WhatsApp Templates"
         subtitle="Message templates must be approved by Meta before they can be broadcast. Build, submit, track approval — then use them in broadcasts."
         actions={
-          <button
-            onClick={() => setModalOpen(true)}
-            className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-          >
-            <Plus className="h-4 w-4" /> New template
-          </button>
+          <>
+            <button
+              onClick={sync}
+              disabled={syncing}
+              className="flex items-center gap-2 rounded-xl border border-ink-200 bg-surface px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} /> Sync from Meta
+            </button>
+            <button
+              onClick={() => setModalOpen(true)}
+              className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
+              <Plus className="h-4 w-4" /> New template
+            </button>
+          </>
         }
       />
 
@@ -107,6 +135,21 @@ export default function WaTemplatesPage() {
                   </div>
                 )}
               </div>
+              {(t.status === "Draft" || t.status === "Rejected") && (
+                <button
+                  onClick={() => submit(t.id)}
+                  disabled={busyId === t.id}
+                  className="mt-3 flex items-center justify-center gap-1.5 rounded-xl bg-brand-600 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+                >
+                  <Send className="h-3.5 w-3.5" /> {busyId === t.id ? "Submitting…" : "Submit for approval"}
+                </button>
+              )}
+              {t.status === "Pending approval" && (
+                <p className="mt-3 rounded-xl bg-amber-500/10 py-2 text-center text-xs font-medium text-amber-600">Awaiting Meta approval — sync to refresh.</p>
+              )}
+              {t.status === "Approved" && (
+                <p className="mt-3 rounded-xl bg-emerald-500/10 py-2 text-center text-xs font-medium text-emerald-600">Approved — ready to broadcast.</p>
+              )}
             </Card>
           ))}
         </div>

@@ -997,3 +997,112 @@ export async function fetchWaWebhookEvents(): Promise<WaWebhookEvent[]> {
     return [];
   }
 }
+
+// ------------------------------------------------ whatsapp template actions (Meta)
+
+export async function submitTemplateForApproval(templateId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/whatsapp/templates/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ templateId }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error ?? "submit failed" };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "submit failed" };
+  }
+}
+
+export async function syncTemplateStatuses(): Promise<{ ok: boolean; updated?: number; error?: string }> {
+  try {
+    const res = await fetch("/api/whatsapp/templates/sync", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error ?? "sync failed" };
+    return { ok: true, updated: data.updated };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "sync failed" };
+  }
+}
+
+// ----------------------------------------------------------- whatsapp broadcasts
+
+export interface WaBroadcast {
+  id: string;
+  name: string;
+  folderName: string;
+  templateName: string;
+  language: string;
+  status: "Draft" | "Scheduled" | "Sending" | "Sent" | "Failed";
+  scheduledFor: string | null;
+  sentAt: string | null;
+  recipients: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+}
+
+export async function fetchWaBroadcasts(): Promise<WaBroadcast[]> {
+  try {
+    const { data } = await supabase.from("wa_broadcasts").select("*").order("created_at", { ascending: false });
+    return (data ?? []).map((r) => ({
+      id: r.id,
+      name: r.name,
+      folderName: r.folder_name ?? "",
+      templateName: r.template_name,
+      language: r.language,
+      status: r.status,
+      scheduledFor: r.scheduled_for,
+      sentAt: r.sent_at,
+      recipients: r.recipients ?? 0,
+      sent: r.sent ?? 0,
+      delivered: r.delivered ?? 0,
+      read: r.read ?? 0,
+      failed: r.failed ?? 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export interface WaBroadcastRecipient {
+  id: string;
+  name: string;
+  phone: string;
+  status: string;
+  error: string;
+}
+
+export async function fetchWaBroadcastRecipients(broadcastId: string): Promise<WaBroadcastRecipient[]> {
+  try {
+    const { data } = await supabase.from("wa_broadcast_recipients").select("*").eq("broadcast_id", broadcastId).order("created_at");
+    return (data ?? []).map((r) => ({ id: r.id, name: r.name ?? "", phone: r.phone, status: r.status, error: r.error ?? "" }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createBroadcast(payload: {
+  name: string;
+  folderId: string | null;
+  folderName: string;
+  templateName: string;
+  language: string;
+  sendNow: boolean;
+  scheduledFor: string | null;
+}): Promise<{ ok: boolean; error?: string; sent?: number; failed?: number; recipients?: number; scheduled?: boolean }> {
+  try {
+    const res = await fetch("/api/whatsapp/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error ?? "broadcast failed" };
+    return { ok: true, sent: data.sent, failed: data.failed, recipients: data.recipients, scheduled: data.scheduled };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "broadcast failed" };
+  }
+}
