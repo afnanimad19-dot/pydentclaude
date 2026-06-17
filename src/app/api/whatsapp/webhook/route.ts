@@ -135,6 +135,9 @@ async function handleInbound(m: any, contacts: any[]) {
 
   await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "inbound", author: name, body, wa_message_id: m.id ?? null });
 
+  // A human has taken over this conversation ("Assign to me") — never auto-reply.
+  if (convo?.status === "human") return;
+
   // Decide which agent (if any) answers: conversation override, else WhatsApp Agent-Hub default.
   let agentId: string | null = convo?.assigned_agent_id ?? null;
   if (!agentId) {

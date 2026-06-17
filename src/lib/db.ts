@@ -883,6 +883,7 @@ export interface WaConversation {
   unread: number;
   assignedAgentId: string | null;
   lifecycle: string;
+  status: string;
 }
 
 export interface WaMessage {
@@ -906,9 +907,18 @@ export async function fetchWaConversations(): Promise<WaConversation[]> {
       unread: r.unread ?? 0,
       assignedAgentId: r.assigned_agent_id ?? null,
       lifecycle: r.lifecycle ?? "New Lead",
+      status: r.status ?? "open",
     }));
   } catch {
     return [];
+  }
+}
+
+export async function setWaStatus(conversationId: string, status: string): Promise<void> {
+  try {
+    await supabase.from("wa_conversations").update({ status }).eq("id", conversationId);
+  } catch {
+    /* demo */
   }
 }
 

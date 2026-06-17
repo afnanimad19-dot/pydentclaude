@@ -15,6 +15,7 @@ import {
   markWaRead,
   assignWaAgent,
   setWaLifecycle,
+  setWaStatus,
   sendWaReply,
   type AiAgent,
   type ChannelDefault,
@@ -89,11 +90,13 @@ export default function InboxPage() {
   const [liveMessages, setLiveMessages] = useState<WaMessage[]>([]);
   const [liveAssign, setLiveAssign] = useState<Record<string, string | null>>({});
   const [liveStage, setLiveStage] = useState<Record<string, string>>({});
+  const [liveStatus, setLiveStatus] = useState<Record<string, string>>({});
 
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [channelDefaults, setChannelDefaults] = useState<ChannelDefault[]>([]);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
   const activeIdRef = useRef(activeId);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
 
@@ -108,6 +111,7 @@ export default function InboxPage() {
       setLiveConvos(cs);
       setLiveAssign((prev) => ({ ...Object.fromEntries(cs.map((c) => [c.id, c.assignedAgentId])), ...prev }));
       setLiveStage((prev) => ({ ...Object.fromEntries(cs.map((c) => [c.id, c.lifecycle])), ...prev }));
+      setLiveStatus((prev) => ({ ...Object.fromEntries(cs.map((c) => [c.id, c.status])), ...prev }));
       const id = activeIdRef.current;
       if (cs.some((c) => c.id === id)) fetchWaMessages(id).then(setLiveMessages);
     });
@@ -203,22 +207,29 @@ export default function InboxPage() {
       ? [...demoConvo.messages, ...(extraMessages[active!.id] ?? [])]
       : [];
 
-  const hubDefault = active ? channelDefaults.find((d) => d.channel === active.channel && d.enabled && d.agentId) : undefined;
+  const humanHandled = !!active?.live && liveStatus[active.id] === "human";
+  const hubDefault = active && !humanHandled ? channelDefaults.find((d) => d.channel === active.channel && d.enabled && d.agentId) : undefined;
   const activeAgentId = active?.live ? liveAssign[active.id] ?? null : demoAssignments[active?.id ?? ""] ?? null;
-  const assignedAgent = agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.id === hubDefault?.agentId) ?? null;
+  const assignedAgent = humanHandled ? null : agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.id === hubDefault?.agentId) ?? null;
   const windowClosed = active?.channel === "whatsapp" && thread.length > 0 && thread[thread.length - 1].direction === "outbound";
 
   async function send() {
     if (!draft.trim() || !active) return;
     const text = draft.trim();
-    setDraft("");
+    setSendError(null);
     if (active.live && active.phone) {
       setSending(true);
       const res = await sendWaReply(active.id, active.phone, text, ME);
       setSending(false);
-      if (!res.ok) { toast(res.error ?? "Send failed", "info"); return; }
+      if (!res.ok) {
+        // Keep the text so it can be retried, and show why it failed (often the 24h window).
+        setSendError(res.error ?? "Send failed — the message was not delivered.");
+        return;
+      }
+      setDraft("");
       fetchWaMessages(active.id).then(setLiveMessages);
     } else {
+      setDraft("");
       const msg: Message = { id: nextId("local"), direction: "outbound", author: ME, body: text, time: "Just now" };
       setExtraMessages((prev) => ({ ...prev, [active.id]: [...(prev[active.id] ?? []), msg] }));
     }
@@ -227,8 +238,13 @@ export default function InboxPage() {
   function assignAgentForActive(agentId: string) {
     if (!active) return;
     if (active.live) {
+      // Handing (back) to an AI agent re-opens the conversation for auto-replies.
       setLiveAssign((prev) => ({ ...prev, [active.id]: agentId || null }));
+      setLiveStatus((prev) => ({ ...prev, [active.id]: "open" }));
+      setMineSet((prev) => { const n = new Set(prev); n.delete(active.id); return n; });
       assignWaAgent(active.id, agentId || null);
+      setWaStatus(active.id, "open");
+      if (agentId) toast(`Handed back to ${agents.find((a) => a.id === agentId)?.name ?? "the agent"} — AI will reply again.`);
     } else {
       setDemoAssignments((prev) => ({ ...prev, [active.id]: agentId }));
       if (agentId) assignAgent(active.id, agentId);
@@ -238,8 +254,15 @@ export default function InboxPage() {
   function assignToMe() {
     if (!active) return;
     setMineSet((prev) => new Set(prev).add(active.id));
-    if (active.live) { setLiveAssign((prev) => ({ ...prev, [active.id]: null })); assignWaAgent(active.id, null); }
-    else setDemoAssignments((prev) => { const n = { ...prev }; delete n[active.id]; return n; });
+    if (active.live) {
+      // Mark the conversation human-handled so the webhook stops auto-replying.
+      setLiveAssign((prev) => ({ ...prev, [active.id]: null }));
+      setLiveStatus((prev) => ({ ...prev, [active.id]: "human" }));
+      assignWaAgent(active.id, null);
+      setWaStatus(active.id, "human");
+    } else {
+      setDemoAssignments((prev) => { const n = { ...prev }; delete n[active.id]; return n; });
+    }
     toast(`${active.name}'s conversation is assigned to you — the AI agent steps back until you hand it back.`);
   }
 
@@ -363,7 +386,10 @@ export default function InboxPage() {
           <div className="flex items-center gap-3">
             <Avatar name={active.name} size="sm" />
             <div>
-              <p className="flex items-center gap-2 text-sm font-semibold text-ink-900">{active.name} <StatusBadge status={active.lifecycle} tone={stageTone(active.lifecycle)} /></p>
+              <p className="flex items-center gap-2 text-sm font-semibold text-ink-900">
+                {active.name} <StatusBadge status={active.lifecycle} tone={stageTone(active.lifecycle)} />
+                {humanHandled && <StatusBadge status="You" tone="blue" />}
+              </p>
               <p className="text-xs text-ink-400">via {channelMeta[active.channel].label}{active.phone ? ` · +${active.phone}` : ""}</p>
             </div>
           </div>
@@ -371,11 +397,15 @@ export default function InboxPage() {
             <select value={active.lifecycle} onChange={(e) => setStage(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none" title="Lifecycle stage">
               {LIFECYCLE.map((l) => <option key={l.key} value={l.key}>{l.key}</option>)}
             </select>
-            <select value={activeAgentId ?? ""} onChange={(e) => assignAgentForActive(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none" title="Assign an AI agent">
-              <option value="">{hubDefault ? `Hub default — ${agents.find((a) => a.id === hubDefault.agentId)?.name ?? "agent"}` : "No AI agent"}</option>
+            <select value={humanHandled ? "" : activeAgentId ?? ""} onChange={(e) => assignAgentForActive(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none" title="Assign an AI agent">
+              <option value="">{humanHandled ? "No AI — you're handling it" : hubDefault ? `Hub default — ${agents.find((a) => a.id === hubDefault.agentId)?.name ?? "agent"}` : "No AI agent"}</option>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
             </select>
-            <button onClick={assignToMe} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"><UserCheck className="h-3.5 w-3.5" /> Assign to me</button>
+            {humanHandled ? (
+              <button onClick={() => assignAgentForActive("")} className="flex items-center gap-1.5 rounded-lg border border-brand-300 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-100 dark:text-brand-300"><Bot className="h-3.5 w-3.5" /> Hand back to AI</button>
+            ) : (
+              <button onClick={assignToMe} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"><UserCheck className="h-3.5 w-3.5" /> Assign to me</button>
+            )}
           </div>
         </div>
 
@@ -400,6 +430,11 @@ export default function InboxPage() {
             </div>
           )}
           {aiError && <p className="mb-2 text-xs text-amber-600">{aiError}</p>}
+          {sendError && (
+            <p className="mb-2 rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">
+              Not delivered: {sendError}
+            </p>
+          )}
           <div className="flex items-end gap-2">
             <button onClick={() => toast("Template picker opens here — choose an approved WhatsApp/Email template.", "info")} title="Insert a template" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><FileText className="h-5 w-5" /></button>
             <textarea value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} rows={2} placeholder={`Reply on ${channelMeta[active.channel].label}…`} className="flex-1 resize-none rounded-xl border border-ink-200 bg-surface px-3.5 py-2.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400" />
