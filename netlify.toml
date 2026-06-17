@@ -1,0 +1,5 @@
+# Ensures Netlify finds the scheduled function in netlify/functions.
+# Build settings are managed in the Netlify UI; this only declares the
+# functions directory (additive, safe).
+[functions]
+  directory = "netlify/functions"

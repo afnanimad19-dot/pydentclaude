@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Netlify functions run in their own (Node/Deno) runtime, not the Next app.
+    "netlify/**",
   ]),
 ]);
 
