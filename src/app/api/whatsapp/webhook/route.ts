@@ -89,11 +89,14 @@ export async function POST(req: NextRequest) {
           await handleInbound(m, contacts);
           handled++;
         }
-        statuses += (value.statuses ?? []).length;
+        for (const s of value.statuses ?? []) {
+          await handleStatus(s);
+          statuses++;
+        }
       }
     }
     if (handled > 0) await logEvent(`✅ Stored ${handled} inbound message(s).`);
-    else if (statuses > 0) await logEvent(`Delivery status update (${statuses}) — outbound only, nothing to show in the inbox.`);
+    else if (statuses > 0) await logEvent(`Delivery status update (${statuses}) — broadcast delivered/read counts updated.`);
     else await logEvent("Webhook called, but no inbound messages in the payload.");
   } catch (e) {
     console.error("wa webhook error", e);
@@ -124,6 +127,42 @@ async function resolvePatient(phone: string, name: string): Promise<string | nul
   } catch {
     return null;
   }
+}
+
+// Delivery status updates (sent → delivered → read, or failed) for outbound
+// messages. We match by the Meta message id stored when we sent each broadcast
+// recipient, advance its status, and roll the totals up onto the broadcast.
+const STATUS_RANK: Record<string, number> = { queued: 0, sent: 1, delivered: 2, read: 3, failed: 1 };
+
+async function handleStatus(s: any) {
+  const msgId = s?.id;
+  if (!msgId) return;
+  const newStatus: string = s.status;
+  if (!(newStatus in STATUS_RANK)) return;
+
+  const { data: rec } = await supabase.from("wa_broadcast_recipients").select("id, broadcast_id, status").eq("wa_message_id", msgId).maybeSingle();
+  if (!rec) return; // not a broadcast message (e.g. an inbox reply) — ignore for now
+
+  // Only advance forward in the funnel; 'failed' always wins.
+  if (newStatus === "failed" || (STATUS_RANK[newStatus] ?? 0) > (STATUS_RANK[rec.status] ?? 0)) {
+    const error = newStatus === "failed" ? s.errors?.[0]?.title ?? s.errors?.[0]?.message ?? "Failed" : undefined;
+    await supabase.from("wa_broadcast_recipients").update(error ? { status: newStatus, error } : { status: newStatus }).eq("id", rec.id);
+  }
+  await recomputeBroadcast(rec.broadcast_id);
+}
+
+async function recomputeBroadcast(broadcastId: string) {
+  const { data: recs } = await supabase.from("wa_broadcast_recipients").select("status").eq("broadcast_id", broadcastId);
+  const c = { sent: 0, delivered: 0, read: 0, failed: 0 };
+  for (const r of recs ?? []) {
+    if (r.status === "failed") c.failed++;
+    else {
+      c.sent++;
+      if (r.status === "delivered" || r.status === "read") c.delivered++;
+      if (r.status === "read") c.read++;
+    }
+  }
+  await supabase.from("wa_broadcasts").update({ sent: c.sent, delivered: c.delivered, read: c.read, failed: c.failed }).eq("id", broadcastId);
 }
 
 async function handleInbound(m: any, contacts: any[]) {

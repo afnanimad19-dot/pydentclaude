@@ -48,7 +48,11 @@ export default function WhatsAppPage() {
   const waConversations = conversations.filter((c) => c.channel === "whatsapp");
 
   const loadLive = useCallback(() => { fetchWaBroadcasts().then(setLiveBroadcasts); }, []);
-  useEffect(() => { loadLive(); }, [loadLive]);
+  useEffect(() => {
+    loadLive();
+    const t = setInterval(loadLive, 10000);
+    return () => clearInterval(t);
+  }, [loadLive]);
 
   return (
     <>
@@ -309,16 +313,35 @@ function BroadcastDetail({ broadcast: b, onClose }: { broadcast: Broadcast; onCl
 
 function LiveBroadcastDetail({ broadcast: b, onClose }: { broadcast: WaBroadcast; onClose: () => void }) {
   const [recipients, setRecipients] = useState<WaBroadcastRecipient[]>([]);
-  useEffect(() => { fetchWaBroadcastRecipients(b.id).then(setRecipients); }, [b.id]);
+  useEffect(() => {
+    const load = () => fetchWaBroadcastRecipients(b.id).then(setRecipients);
+    load();
+    const t = setInterval(load, 6000);
+    return () => clearInterval(t);
+  }, [b.id]);
 
-  const base = Math.max(b.recipients, 1);
+  // Compute the funnel from per-recipient status so delivered/read update live.
+  const stats = recipients.reduce(
+    (a, r) => {
+      if (r.status === "failed") a.failed++;
+      else {
+        a.sent++;
+        if (r.status === "delivered" || r.status === "read") a.delivered++;
+        if (r.status === "read") a.read++;
+      }
+      return a;
+    },
+    { sent: 0, delivered: 0, read: 0, failed: 0 }
+  );
+  const totals = recipients.length ? { recipients: recipients.length, ...stats } : { recipients: b.recipients, sent: b.sent, delivered: b.delivered, read: b.read, failed: b.failed };
+  const base = Math.max(totals.recipients, 1);
   const pct = (n: number) => Math.round((n / base) * 100);
   const funnel = [
-    { label: "Recipients", value: b.recipients, color: "bg-ink-400" },
-    { label: "Sent", value: b.sent, color: "bg-blue-500" },
-    { label: "Delivered", value: b.delivered, color: "bg-violet-500" },
-    { label: "Read", value: b.read, color: "bg-emerald-500" },
-    { label: "Failed", value: b.failed, color: "bg-rose-500" },
+    { label: "Recipients", value: totals.recipients, color: "bg-ink-400" },
+    { label: "Sent", value: totals.sent, color: "bg-blue-500" },
+    { label: "Delivered", value: totals.delivered, color: "bg-violet-500" },
+    { label: "Read", value: totals.read, color: "bg-emerald-500" },
+    { label: "Failed", value: totals.failed, color: "bg-rose-500" },
   ];
 
   return (
