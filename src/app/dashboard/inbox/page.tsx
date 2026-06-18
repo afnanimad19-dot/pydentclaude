@@ -143,7 +143,7 @@ export default function InboxPage() {
     const live: UnifiedConvo[] = liveConvos.map((c) => ({
       id: c.id,
       live: true,
-      channel: "whatsapp",
+      channel: (["whatsapp", "instagram", "messenger", "sms", "email", "voice"].includes(c.channel) ? c.channel : "whatsapp") as Channel,
       name: c.contactName,
       phone: c.contactPhone,
       preview: c.lastMessage,
@@ -221,9 +221,9 @@ export default function InboxPage() {
     if (!draft.trim() || !active) return;
     const text = draft.trim();
     setSendError(null);
-    if (active.live && active.phone) {
+    if (active.live) {
       setSending(true);
-      const res = await sendWaReply(active.id, active.phone, text, ME);
+      const res = await sendWaReply(active.id, text, ME);
       setSending(false);
       if (!res.ok) {
         // Keep the text so it can be retried, and show why it failed (often the 24h window).
@@ -299,8 +299,8 @@ export default function InboxPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "AI request failed");
-      if (active.live && active.phone) {
-        await sendWaReply(active.id, active.phone, data.reply, `${agent.name} (AI)`);
+      if (active.live) {
+        await sendWaReply(active.id, data.reply, `${agent.name} (AI)`);
         fetchWaMessages(active.id).then(setLiveMessages);
       } else {
         const msg: Message = { id: nextId("ai"), direction: "outbound", author: `${agent.name} (AI)`, byBot: true, body: data.reply, time: "Just now" };

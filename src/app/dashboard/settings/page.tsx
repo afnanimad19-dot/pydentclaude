@@ -34,8 +34,8 @@ import { toast } from "@/components/toast";
 
 const channelIntegrations: { icon: typeof Database; name: string; detail: string; href?: string }[] = [
   { icon: MessageCircle, name: "WhatsApp Business", detail: "Meta Cloud API — connect your clinic's WhatsApp number for two-way chat, template broadcasts and chatbot flows.", href: "/dashboard/settings?tab=whatsapp" },
-  { icon: Camera, name: "Instagram (Meta)", detail: "Reply to Instagram DMs and story replies straight from the inbox. Connects through your Meta business account." },
-  { icon: MessageSquare, name: "Facebook Messenger (Meta)", detail: "Connect your Facebook Page so Messenger conversations land in the same inbox. (Facebook & Meta are the same login.)" },
+  { icon: Camera, name: "Instagram (Meta)", detail: "Reply to Instagram DMs straight from the inbox. Connects through your Meta app's Page token.", href: "/dashboard/settings?tab=whatsapp" },
+  { icon: MessageSquare, name: "Facebook Messenger (Meta)", detail: "Connect your Facebook Page so Messenger conversations land in the same inbox. (Facebook & Meta are the same login.)", href: "/dashboard/settings?tab=whatsapp" },
   { icon: MessageSquareText, name: "SMS (Twilio)", detail: "Reminders, confirmations and two-way texting from your clinic number." },
   { icon: AtSign, name: "Gmail / Google Workspace", detail: "Connect the clinic's Gmail so patient emails sync into the inbox and replies send from your own address." },
   { icon: Mail, name: "Email campaigns (Resend)", detail: "Bulk campaigns, drip automations and transactional email sent from your verified domain." },

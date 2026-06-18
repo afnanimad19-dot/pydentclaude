@@ -1,20 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { sendWhatsAppText } from "@/lib/wa-send";
+import { sendByChannel } from "@/lib/wa-send";
 
-// Sends an agent/human reply from the inbox into a live WhatsApp conversation.
+// Sends an agent/human reply from the inbox into a live conversation, routing to
+// the right API (WhatsApp Cloud API or Messenger/Instagram Send API) by channel.
 export async function POST(req: NextRequest) {
-  const { conversationId, phone, text, author } = (await req.json()) as {
+  const { conversationId, text, author } = (await req.json()) as {
     conversationId?: string;
-    phone?: string;
     text?: string;
     author?: string;
   };
-  if (!conversationId || !phone || !text?.trim()) {
-    return NextResponse.json({ error: "conversationId, phone and text are required." }, { status: 400 });
+  if (!conversationId || !text?.trim()) {
+    return NextResponse.json({ error: "conversationId and text are required." }, { status: 400 });
   }
 
-  const sent = await sendWhatsAppText(phone, text.trim());
+  const { data: convo } = await supabase.from("wa_conversations").select("channel, contact_phone").eq("id", conversationId).maybeSingle();
+  if (!convo) return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
+
+  const sent = await sendByChannel(convo.channel ?? "whatsapp", convo.contact_phone, text.trim());
   if (!sent.ok) return NextResponse.json({ error: sent.error }, { status: 502 });
 
   await supabase.from("wa_messages").insert({

@@ -132,6 +132,27 @@ export function WhatsAppConfigForm() {
               Subscribe to the <strong className="text-ink-600">messages</strong> webhook field. The platform <code>META_APP_SECRET</code> (set in Netlify) verifies each inbound request.
             </p>
           </Card>
+
+          <Card className="p-6">
+            <h2 className="font-semibold text-ink-900">Facebook &amp; Instagram (Messenger)</h2>
+            <p className="mt-1 text-sm text-ink-500">
+              Same Meta app and webhook. Add the <strong>messages</strong>/<strong>messaging_postbacks</strong> fields for your Page (and Instagram) in Meta → your app → Messenger / Instagram → Webhooks, then paste a <strong>Page access token</strong> below.
+            </p>
+            <div className="mt-5 grid gap-4">
+              <Field label="Page Access Token">
+                <input className={inputCls} type="password" placeholder="EAAG… (Page token, not the WhatsApp token)" value={cfg.pageAccessToken} onChange={(e) => set("pageAccessToken", e.target.value)} />
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Facebook Page ID">
+                  <input className={inputCls} placeholder="1029xxxxxxxxxxx" value={cfg.pageId} onChange={(e) => set("pageId", e.target.value)} />
+                </Field>
+                <Field label="Instagram account ID (optional)">
+                  <input className={inputCls} placeholder="1784xxxxxxxxxxx" value={cfg.igId} onChange={(e) => set("igId", e.target.value)} />
+                </Field>
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-ink-400">Replies to Messenger and Instagram DMs are sent with this Page token. Save with the button above.</p>
+          </Card>
         </div>
 
         <Card className="h-fit p-6">

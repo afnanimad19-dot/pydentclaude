@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabase } from "@/lib/supabase";
 import { generateAgentReply } from "@/lib/agent-reply";
-import { sendWhatsAppText } from "@/lib/wa-send";
+import { sendByChannel, fetchMetaUserName } from "@/lib/wa-send";
 
 // Meta calls this endpoint:
 //  1. GET  — verification handshake when you save the webhook (echo hub.challenge).
@@ -80,24 +80,36 @@ export async function POST(req: NextRequest) {
   try {
     let handled = 0;
     let statuses = 0;
-    for (const entry of payload.entry ?? []) {
-      for (const change of entry.changes ?? []) {
-        const value = change.value ?? {};
-        if (value.messaging_product !== "whatsapp") continue;
-        const contacts: any[] = value.contacts ?? [];
-        for (const m of value.messages ?? []) {
-          await handleInbound(m, contacts);
-          handled++;
+    const obj = payload.object;
+
+    if (obj === "whatsapp_business_account") {
+      for (const entry of payload.entry ?? []) {
+        for (const change of entry.changes ?? []) {
+          const value = change.value ?? {};
+          if (value.messaging_product !== "whatsapp") continue;
+          const contacts: any[] = value.contacts ?? [];
+          for (const m of value.messages ?? []) {
+            await handleWhatsApp(m, contacts);
+            handled++;
+          }
+          for (const s of value.statuses ?? []) {
+            await handleStatus(s);
+            statuses++;
+          }
         }
-        for (const s of value.statuses ?? []) {
-          await handleStatus(s);
-          statuses++;
+      }
+    } else if (obj === "page" || obj === "instagram") {
+      const channel = obj === "page" ? "messenger" : "instagram";
+      for (const entry of payload.entry ?? []) {
+        for (const ev of entry.messaging ?? []) {
+          if (await handleMessaging(channel, ev)) handled++;
         }
       }
     }
-    if (handled > 0) await logEvent(`✅ Stored ${handled} inbound message(s).`);
+
+    if (handled > 0) await logEvent(`✅ Stored ${handled} inbound ${obj === "page" ? "Messenger" : obj === "instagram" ? "Instagram" : "WhatsApp"} message(s).`);
     else if (statuses > 0) await logEvent(`Delivery status update (${statuses}) — broadcast delivered/read counts updated.`);
-    else await logEvent("Webhook called, but no inbound messages in the payload.");
+    else await logEvent(`Webhook called (${obj ?? "unknown"}), but no inbound messages to store.`);
   } catch (e) {
     console.error("wa webhook error", e);
     await logEvent(`Error while processing: ${e instanceof Error ? e.message : "unknown"}`);
@@ -106,23 +118,30 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ received: true });
 }
 
-// Find an existing patient by phone (digit match) or create a new "New" lead
-// sourced from WhatsApp, so inbound contacts populate the CRM automatically.
-async function resolvePatient(phone: string, name: string): Promise<string | null> {
-  const digits = phone.replace(/\D/g, "");
+// Auto-capture a lead into the CRM. WhatsApp matches an existing patient by phone;
+// Messenger/Instagram create a new contact (no phone to match on).
+async function resolveLead(channel: string, contactId: string, name: string): Promise<string | null> {
   try {
-    const { data: pts } = await supabase.from("patients").select("id, phone");
-    const match = (pts ?? []).find((p: any) => {
-      const d = String(p.phone ?? "").replace(/\D/g, "");
-      return d.length >= 7 && (d === digits || d.endsWith(digits.slice(-9)) || digits.endsWith(d.slice(-9)));
-    });
-    if (match) return match.id;
-    const { data: created, error } = await supabase
+    if (channel === "whatsapp") {
+      const digits = contactId.replace(/\D/g, "");
+      const { data: pts } = await supabase.from("patients").select("id, phone");
+      const match = (pts ?? []).find((p: any) => {
+        const d = String(p.phone ?? "").replace(/\D/g, "");
+        return d.length >= 7 && (d === digits || d.endsWith(digits.slice(-9)) || digits.endsWith(d.slice(-9)));
+      });
+      if (match) return match.id;
+      const { data: created } = await supabase
+        .from("patients")
+        .insert({ name: name || `+${contactId}`, phone: `+${contactId}`, status: "New", source_channel: "whatsapp", source_agent: "WhatsApp inbox" })
+        .select("id")
+        .single();
+      return created?.id ?? null;
+    }
+    const { data: created } = await supabase
       .from("patients")
-      .insert({ name: name || `+${phone}`, phone: `+${phone}`, status: "New", source_channel: "whatsapp", source_agent: "WhatsApp inbox" })
+      .insert({ name: name || `${channel} user`, phone: "", status: "New", source_channel: channel, source_agent: `${channel} inbox` })
       .select("id")
       .single();
-    if (error) return null;
     return created?.id ?? null;
   } catch {
     return null;
@@ -165,20 +184,37 @@ async function recomputeBroadcast(broadcastId: string) {
   await supabase.from("wa_broadcasts").update({ sent: c.sent, delivered: c.delivered, read: c.read, failed: c.failed }).eq("id", broadcastId);
 }
 
-async function handleInbound(m: any, contacts: any[]) {
+// WhatsApp inbound adapter.
+async function handleWhatsApp(m: any, contacts: any[]) {
   const phone: string = m.from;
   if (!phone) return;
   const name = contacts.find((c) => c.wa_id === phone)?.profile?.name || phone;
   const body: string = m.text?.body ?? `[${m.type ?? "message"}]`;
+  await storeInbound("whatsapp", phone, name, body, m.id ?? null);
+}
 
-  // Dedupe by Meta message id.
-  if (m.id) {
-    const { data: existing } = await supabase.from("wa_messages").select("id").eq("wa_message_id", m.id).maybeSingle();
+// Messenger / Instagram inbound adapter (Messenger Platform event format).
+// Returns true if it stored a real inbound message.
+async function handleMessaging(channel: string, ev: any): Promise<boolean> {
+  if (!ev?.message || ev.message.is_echo) return false; // ignore echoes, delivery/read receipts
+  const senderId: string = ev.sender?.id;
+  if (!senderId) return false;
+  const body: string = ev.message.text ?? (ev.message.attachments?.length ? "[attachment]" : "[message]");
+  const mid: string | null = ev.message.mid ?? null;
+  const name = (await fetchMetaUserName(senderId)) ?? `${channel === "instagram" ? "Instagram" : "Messenger"} user`;
+  await storeInbound(channel, senderId, name, body, mid);
+  return true;
+}
+
+// Generic inbound handler shared by every channel.
+async function storeInbound(channel: string, contactId: string, name: string, body: string, mid: string | null) {
+  // Dedupe by message id.
+  if (mid) {
+    const { data: existing } = await supabase.from("wa_messages").select("id").eq("wa_message_id", mid).maybeSingle();
     if (existing) return;
   }
 
-  // Upsert conversation by phone.
-  const { data: convo } = await supabase.from("wa_conversations").select("*").eq("contact_phone", phone).maybeSingle();
+  const { data: convo } = await supabase.from("wa_conversations").select("*").eq("contact_phone", contactId).eq("channel", channel).maybeSingle();
   let conversationId: string;
   if (convo) {
     conversationId = convo.id;
@@ -187,33 +223,31 @@ async function handleInbound(m: any, contacts: any[]) {
       .update({ contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: (convo.unread ?? 0) + 1 })
       .eq("id", conversationId);
   } else {
-    // New conversation → auto-capture the lead into the CRM (Patients).
-    const patientId = await resolvePatient(phone, name);
+    const patientId = await resolveLead(channel, contactId, name);
     const { data: created } = await supabase
       .from("wa_conversations")
-      .insert({ contact_phone: phone, contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: 1, patient_id: patientId })
+      .insert({ contact_phone: contactId, channel, contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: 1, patient_id: patientId })
       .select("id")
       .single();
     conversationId = created!.id;
   }
 
-  await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "inbound", author: name, body, wa_message_id: m.id ?? null });
+  await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "inbound", author: name, body, wa_message_id: mid });
 
-  // A human has taken over this conversation ("Assign to me") — never auto-reply.
+  // A human has taken over ("Assign to me") — never auto-reply.
   if (convo?.status === "human") return;
 
-  // Decide which agent (if any) answers: conversation override, else WhatsApp Agent-Hub default.
+  // Conversation override, else the Agent-Hub default for this channel.
   let agentId: string | null = convo?.assigned_agent_id ?? null;
   if (!agentId) {
-    const { data: def } = await supabase.from("channel_defaults").select("agent_id, enabled").eq("channel", "whatsapp").maybeSingle();
+    const { data: def } = await supabase.from("channel_defaults").select("agent_id, enabled").eq("channel", channel).maybeSingle();
     if (def?.enabled && def.agent_id) agentId = def.agent_id;
   }
-  if (!agentId) return; // no agent → leave for a human
+  if (!agentId) return;
 
   const { data: agent } = await supabase.from("agents").select("*").eq("id", agentId).maybeSingle();
   if (!agent || agent.status === "Paused") return;
 
-  // Recent thread for context.
   const { data: history } = await supabase
     .from("wa_messages")
     .select("direction, body")
@@ -231,7 +265,7 @@ async function handleInbound(m: any, contacts: any[]) {
   });
   if (!result.reply) return;
 
-  const sent = await sendWhatsAppText(phone, result.reply);
+  const sent = await sendByChannel(channel, contactId, result.reply);
   await supabase.from("wa_messages").insert({
     conversation_id: conversationId,
     direction: "outbound",

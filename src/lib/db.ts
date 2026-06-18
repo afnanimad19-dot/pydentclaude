@@ -821,6 +821,9 @@ export interface WhatsappConfig {
   verifyToken: string;
   pin: string;
   connected: boolean;
+  pageId: string;
+  pageAccessToken: string;
+  igId: string;
 }
 
 export const emptyWhatsappConfig: WhatsappConfig = {
@@ -831,6 +834,9 @@ export const emptyWhatsappConfig: WhatsappConfig = {
   verifyToken: "",
   pin: "",
   connected: false,
+  pageId: "",
+  pageAccessToken: "",
+  igId: "",
 };
 
 export async function fetchWhatsappConfig(): Promise<WhatsappConfig> {
@@ -845,6 +851,9 @@ export async function fetchWhatsappConfig(): Promise<WhatsappConfig> {
       verifyToken: data.verify_token ?? "",
       pin: data.pin ?? "",
       connected: !!data.connected,
+      pageId: data.page_id ?? "",
+      pageAccessToken: data.page_access_token ?? "",
+      igId: data.ig_id ?? "",
     };
   } catch {
     return emptyWhatsappConfig;
@@ -864,6 +873,9 @@ export async function saveWhatsappConfig(c: WhatsappConfig): Promise<{ ok: boole
       verify_token: c.verifyToken,
       pin: c.pin,
       connected,
+      page_id: c.pageId,
+      page_access_token: c.pageAccessToken,
+      ig_id: c.igId,
       updated_at: new Date().toISOString(),
     },
     { onConflict: "workspace" }
@@ -885,6 +897,7 @@ export interface WaConversation {
   lifecycle: string;
   status: string;
   patientId: string | null;
+  channel: string;
 }
 
 export interface WaMessage {
@@ -910,6 +923,7 @@ export async function fetchWaConversations(): Promise<WaConversation[]> {
       lifecycle: r.lifecycle ?? "New Lead",
       status: r.status ?? "open",
       patientId: r.patient_id ?? null,
+      channel: r.channel ?? "whatsapp",
     }));
   } catch {
     return [];
@@ -968,12 +982,12 @@ export async function setWaLifecycle(conversationId: string, lifecycle: string):
   }
 }
 
-export async function sendWaReply(conversationId: string, phone: string, text: string, author: string): Promise<{ ok: boolean; error?: string }> {
+export async function sendWaReply(conversationId: string, text: string, author: string): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch("/api/whatsapp/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId, phone, text, author }),
+      body: JSON.stringify({ conversationId, text, author }),
     });
     const data = await res.json();
     if (!res.ok) return { ok: false, error: data.error ?? "send failed" };
