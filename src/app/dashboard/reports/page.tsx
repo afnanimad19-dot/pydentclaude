@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard } from "@/components/ui";
 import { ConversationsChart, RevenueChart } from "@/components/dashboard/charts";
-import { fetchPatients, fetchAppointments, type DataSource } from "@/lib/db";
+import { fetchPatients, fetchAppointments, fetchWaConversations, type DataSource } from "@/lib/db";
 import {
   patients as mockPatients,
   appointments as mockAppointments,
@@ -31,6 +31,7 @@ export default function ReportsPage() {
   const [patients, setPatients] = useState<Patient[]>(mockPatients);
   const [appointments, setAppointments] = useState<Appointment[]>(mockAppointments);
   const [source, setSource] = useState<DataSource>("demo");
+  const [liveLeadCount, setLiveLeadCount] = useState(0);
 
   useEffect(() => {
     fetchPatients().then((r) => {
@@ -38,6 +39,7 @@ export default function ReportsPage() {
       setSource(r.source);
     });
     fetchAppointments().then((r) => setAppointments(r.appointments));
+    fetchWaConversations().then((c) => setLiveLeadCount(c.length));
   }, []);
 
   const allDeals = pipeline.flatMap((s) => s.deals);
@@ -52,6 +54,8 @@ export default function ReportsPage() {
     allDeals.forEach((d) => {
       counts[d.source] = (counts[d.source] ?? 0) + 1;
     });
+    // Fold in live WhatsApp leads captured from the inbox.
+    if (liveLeadCount) counts.whatsapp = (counts.whatsapp ?? 0) + liveLeadCount;
     const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
@@ -148,6 +152,7 @@ export default function ReportsPage() {
         <Card className="p-5">
           <h2 className="flex items-center gap-2 font-semibold text-ink-900"><Bot className="h-4 w-4 text-brand-500" /> AI contribution</h2>
           <ul className="mt-4 space-y-3 text-sm">
+            <li className="flex items-center justify-between"><span className="text-ink-600">Live WhatsApp leads</span><span className="font-semibold text-emerald-600">{liveLeadCount}</span></li>
             <li className="flex items-center justify-between"><span className="text-ink-600">Leads handled by agents</span><span className="font-semibold text-ink-900">{allDeals.filter((d) => d.owner.includes("AI")).length}/{allDeals.length}</span></li>
             <li className="flex items-center justify-between"><span className="text-ink-600">Recall-due patients</span><span className="font-semibold text-ink-900">{recallDue}</span></li>
             <li className="flex items-center justify-between"><span className="text-ink-600">Bookings via broadcasts</span><span className="font-semibold text-ink-900">{totalBroadcastBooked}</span></li>

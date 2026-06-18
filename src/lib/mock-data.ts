@@ -297,38 +297,33 @@ export const emailCampaigns: EmailCampaign[] = [
 
 export const pipeline: PipelineStage[] = [
   {
-    id: "s1", name: "New lead",
+    id: "new-lead", name: "New Lead",
     deals: [
       { id: "d1", patientName: "Karen Phillips", treatment: "Invisalign consult", value: 4800, source: "whatsapp", owner: "Front Desk", daysInStage: 1 },
       { id: "d2", patientName: "Tom Becker", treatment: "New patient exam", value: 350, source: "voice", owner: "Ava (AI)", daysInStage: 0 },
       { id: "d3", patientName: "Nina Alvarez", treatment: "Emergency — toothache", value: 600, source: "sms", owner: "Front Desk", daysInStage: 0 },
-    ],
-  },
-  {
-    id: "s2", name: "Contacted",
-    deals: [
-      { id: "d4", patientName: "Sofia Lopez", treatment: "Recall cleaning", value: 220, source: "voice", owner: "Leo (AI)", daysInStage: 2 },
-      { id: "d5", patientName: "Mark Johnson", treatment: "Veneers consult", value: 9600, source: "email", owner: "Dr. Gomez", daysInStage: 4 },
-    ],
-  },
-  {
-    id: "s3", name: "Consult booked",
-    deals: [
-      { id: "d6", patientName: "Robert Kim", treatment: "Implant #30", value: 4200, source: "email", owner: "Dr. Gomez", daysInStage: 6 },
       { id: "d7", patientName: "Emily Tran", treatment: "New patient exam + FMX", value: 420, source: "voice", owner: "Ava (AI)", daysInStage: 1 },
     ],
   },
   {
-    id: "s4", name: "Treatment presented",
+    id: "hot-lead", name: "Hot Lead",
     deals: [
+      { id: "d5", patientName: "Mark Johnson", treatment: "Veneers consult", value: 9600, source: "email", owner: "Dr. Gomez", daysInStage: 4 },
+      { id: "d6", patientName: "Robert Kim", treatment: "Implant #30", value: 4200, source: "email", owner: "Dr. Gomez", daysInStage: 6 },
       { id: "d8", patientName: "Patricia Wells", treatment: "Full-arch restoration", value: 18500, source: "referral", owner: "Dr. Patel", daysInStage: 9 },
-      { id: "d9", patientName: "Luis Mendoza", treatment: "Crown #14 + filling", value: 1650, source: "whatsapp", owner: "Front Desk", daysInStage: 3 },
     ],
   },
   {
-    id: "s5", name: "Accepted / scheduled",
+    id: "payment", name: "Payment",
     deals: [
+      { id: "d9", patientName: "Luis Mendoza", treatment: "Crown #14 + filling", value: 1650, source: "whatsapp", owner: "Front Desk", daysInStage: 3 },
       { id: "d10", patientName: "Aisha Williams", treatment: "Crown seat #19", value: 1280, source: "sms", owner: "Front Desk", daysInStage: 2 },
+    ],
+  },
+  {
+    id: "customer", name: "Customer",
+    deals: [
+      { id: "d4", patientName: "Sofia Lopez", treatment: "Recall cleaning", value: 220, source: "voice", owner: "Leo (AI)", daysInStage: 2 },
       { id: "d11", patientName: "James Carter", treatment: "Recall cleaning", value: 220, source: "voice", owner: "Leo (AI)", daysInStage: 1 },
     ],
   },

@@ -1,10 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Plus, TrendingUp, CircleDollarSign, Hourglass, Bot, Pencil, Check, X, Trash2 } from "lucide-react";
 import { PageHeader, DemoBanner, ChannelBadge, StatCard } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
-import { fetchAgents, fetchFollowUps, enrollFollowUp, fetchStageAgents, setStageAgentDb, type AiAgent } from "@/lib/db";
+import {
+  fetchAgents,
+  fetchFollowUps,
+  enrollFollowUp,
+  fetchStageAgents,
+  setStageAgentDb,
+  fetchWaConversations,
+  setWaLifecycle,
+  assignWaAgent,
+  setWaStatus,
+  type AiAgent,
+  type WaConversation,
+} from "@/lib/db";
 import { pipeline as initialPipeline, formatMoney, type PipelineStage, type Deal } from "@/lib/mock-data";
 
 export default function PipelinePage() {
@@ -17,6 +29,15 @@ export default function PipelinePage() {
   const [dragOverStage, setDragOverStage] = useState<string | null>(null);
   // Which AI agent owns each stage — a deal entering the stage is handed to it.
   const [stageAgents, setStageAgents] = useState<Record<string, string>>({});
+  // Live WhatsApp leads, placed by their lifecycle stage.
+  const [liveLeads, setLiveLeads] = useState<WaConversation[]>([]);
+
+  const loadLeads = useCallback(() => { fetchWaConversations().then(setLiveLeads); }, []);
+  useEffect(() => {
+    loadLeads();
+    const t = setInterval(loadLeads, 10000);
+    return () => clearInterval(t);
+  }, [loadLeads]);
 
   useEffect(() => {
     fetchAgents().then((r) => {
@@ -43,7 +64,24 @@ export default function PipelinePage() {
     return a ? `${a.name} (AI)` : null;
   }
 
-  const allDeals = stages.flatMap((s) => s.deals);
+  const liveIds = new Set(liveLeads.map((l) => l.id));
+  function liveAsDeal(l: WaConversation): Deal {
+    return {
+      id: l.id,
+      patientName: l.contactName,
+      treatment: l.lastMessage ? (l.lastMessage.length > 40 ? `${l.lastMessage.slice(0, 40)}…` : l.lastMessage) : "WhatsApp lead",
+      value: 0,
+      source: "whatsapp",
+      owner: agentLabel(l.assignedAgentId ?? undefined) ?? "WhatsApp",
+      daysInStage: 0,
+    };
+  }
+  // Demo deals (local) + live WhatsApp leads matched to this stage by name.
+  function dealsForStage(stage: PipelineStage): Deal[] {
+    return [...liveLeads.filter((l) => l.lifecycle === stage.name).map(liveAsDeal), ...stage.deals];
+  }
+
+  const allDeals = stages.flatMap((s) => dealsForStage(s));
   const totalValue = allDeals.reduce((sum, d) => sum + d.value, 0);
 
   const followUpAgent =
@@ -69,6 +107,22 @@ export default function PipelinePage() {
   }
 
   function moveDeal(dealId: string, toStageId: string) {
+    const toStage = stages.find((s) => s.id === toStageId);
+    if (!toStage) return;
+
+    // Live WhatsApp lead → persist the new lifecycle, and hand it to the stage's agent.
+    if (liveIds.has(dealId)) {
+      setLiveLeads((prev) => prev.map((l) => (l.id === dealId ? { ...l, lifecycle: toStage.name } : l)));
+      setWaLifecycle(dealId, toStage.name);
+      const agentId = stageAgents[toStageId];
+      if (agentId) {
+        setLiveLeads((prev) => prev.map((l) => (l.id === dealId ? { ...l, assignedAgentId: agentId, status: "open" } : l)));
+        assignWaAgent(dealId, agentId);
+        setWaStatus(dealId, "open");
+      }
+      return;
+    }
+
     setStages((prev) => {
       let moved: Deal | undefined;
       const without = prev.map((s) => {
@@ -112,10 +166,10 @@ export default function PipelinePage() {
       {dealModal && (
         <AddDealModal stages={stages} onClose={() => setDealModal(false)} onAdd={addDeal} />
       )}
-      <DemoBanner context="Lifecycle stages are editable — rename, add or remove them, and assign an AI agent to each stage so deals are handed over automatically as they move." />
+      <DemoBanner context="Live WhatsApp leads appear here automatically by lifecycle stage. Move a lead and it updates everywhere (inbox + pipeline); each stage can own an AI agent that takes over when a lead moves in." />
       <PageHeader
         title="Pipeline"
-        subtitle="Every lead's lifecycle, from first message to paying patient. Each stage can own an AI agent — when a deal moves in, that agent takes over the conversation. Drag cards between stages or use the menu on each card."
+        subtitle="Every lead's lifecycle, from first message to paying patient. Live WhatsApp leads flow in automatically. Drag cards between stages or use the menu on each card."
         actions={
           <>
             <button
@@ -142,7 +196,8 @@ export default function PipelinePage() {
 
       <div className="flex gap-5 overflow-x-auto pb-4">
         {stages.map((stage) => {
-          const stageValue = stage.deals.reduce((sum, d) => sum + d.value, 0);
+          const deals = dealsForStage(stage);
+          const stageValue = deals.reduce((sum, d) => sum + d.value, 0);
           return (
             <div key={stage.id} className="w-80 shrink-0">
               <div className="mb-3 flex items-center justify-between gap-2 px-1">
@@ -167,7 +222,7 @@ export default function PipelinePage() {
                     <h2 className="flex items-center gap-1.5 text-sm font-semibold text-ink-900">
                       {stage.name}{" "}
                       <span className="rounded-full bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-500">
-                        {stage.deals.length}
+                        {deals.length}
                       </span>
                       <button
                         onClick={() => {
@@ -179,7 +234,7 @@ export default function PipelinePage() {
                       >
                         <Pencil className="h-3 w-3" />
                       </button>
-                      {stage.deals.length === 0 && (
+                      {deals.length === 0 && (
                         <button onClick={() => removeStage(stage.id)} className="rounded p-0.5 text-ink-300 hover:text-rose-500" title="Remove empty stage">
                           <Trash2 className="h-3 w-3" />
                         </button>
@@ -220,7 +275,7 @@ export default function PipelinePage() {
                   dragOverStage === stage.id ? "bg-brand-500/15 ring-2 ring-brand-400" : "bg-ink-100/60"
                 }`}
               >
-                {stage.deals.map((deal) => (
+                {deals.map((deal) => (
                   <div
                     key={deal.id}
                     draggable
