@@ -20,7 +20,9 @@ import {
 import { pipeline as initialPipeline, formatMoney, type PipelineStage, type Deal } from "@/lib/mock-data";
 
 export default function PipelinePage() {
-  const [stages, setStages] = useState<PipelineStage[]>(initialPipeline);
+  // Start from the lifecycle stage definitions with no demo deals — live WhatsApp
+  // leads (and anything you add) fill them.
+  const [stages, setStages] = useState<PipelineStage[]>(() => initialPipeline.map((s) => ({ ...s, deals: [] })));
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [followUps, setFollowUps] = useState<Record<string, string>>({});
   const [dealModal, setDealModal] = useState(false);
@@ -83,6 +85,8 @@ export default function PipelinePage() {
 
   const allDeals = stages.flatMap((s) => dealsForStage(s));
   const totalValue = allDeals.reduce((sum, d) => sum + d.value, 0);
+  const customerCount = stages.filter((s) => s.name === "Customer").reduce((n, s) => n + dealsForStage(s).length, 0);
+  const newLeadCount = stages.filter((s) => s.name === "New Lead").reduce((n, s) => n + dealsForStage(s).length, 0);
 
   const followUpAgent =
     agents.find((a) => a.role === "Follow-up" && a.status === "Live") ??
@@ -190,8 +194,8 @@ export default function PipelinePage() {
 
       <div className="mb-6 grid gap-4 md:grid-cols-3">
         <StatCard icon={CircleDollarSign} label="Pipeline value" value={formatMoney(totalValue)} hint={`${allDeals.length} open opportunities`} accent="brand" />
-        <StatCard icon={TrendingUp} label="Accepted this month" value="$23,400" hint="61% case acceptance" accent="green" />
-        <StatCard icon={Hourglass} label="Avg time to schedule" value="4.2 days" hint="from first contact" accent="amber" />
+        <StatCard icon={TrendingUp} label="Customers" value={String(customerCount)} hint="converted leads" accent="green" />
+        <StatCard icon={Hourglass} label="New leads" value={String(newLeadCount)} hint="awaiting first response" accent="amber" />
       </div>
 
       <div className="flex gap-5 overflow-x-auto pb-4">

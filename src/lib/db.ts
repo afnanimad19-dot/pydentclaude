@@ -3,12 +3,6 @@
 
 import { supabase } from "./supabase";
 import {
-  patients as mockPatients,
-  appointments as mockAppointments,
-  treatmentPlans as mockPlans,
-  patientDocuments as mockDocs,
-  insurancePolicies as mockInsurance,
-  payments as mockPayments,
   type Patient,
   type Appointment,
   type TreatmentPlan,
@@ -70,7 +64,7 @@ export async function fetchPatients(): Promise<{ patients: Patient[]; source: Da
     if (error || !data) throw error ?? new Error("no data");
     return { patients: data.map(rowToPatient), source: "live" };
   } catch {
-    return { patients: mockPatients, source: "demo" };
+    return { patients: [], source: "live" };
   }
 }
 
@@ -85,7 +79,7 @@ export async function fetchAppointments(): Promise<{ appointments: Appointment[]
       source: "live",
     };
   } catch {
-    return { appointments: mockAppointments, source: "demo" };
+    return { appointments: [], source: "live" };
   }
 }
 
@@ -164,18 +158,7 @@ export async function fetchPatientBundle(id: string): Promise<PatientBundle | nu
       source: "live",
     };
   } catch {
-    // Demo fallback (mock ids like "p1")
-    const patient = mockPatients.find((p) => p.id === id);
-    if (!patient) return null;
-    return {
-      patient,
-      appointments: mockAppointments.filter((a) => a.patientId === id),
-      plans: mockPlans.filter((t) => t.patientId === id),
-      documents: mockDocs.filter((d) => d.patientId === id),
-      insurance: mockInsurance.filter((i) => i.patientId === id),
-      payments: mockPayments.filter((p2) => p2.patientId === id),
-      source: "demo",
-    };
+    return null;
   }
 }
 

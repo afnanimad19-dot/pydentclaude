@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash, FileText, ChevronDown, RefreshCw } from "lucide-react";
+import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash, FileText, ChevronDown, RefreshCw, ArrowDown } from "lucide-react";
 import { Card, ChannelBadge, Avatar, StatusBadge } from "@/components/ui";
 import { toast } from "@/components/toast";
 import {
@@ -76,7 +76,7 @@ export default function InboxPage() {
   const [view, setView] = useState<"all" | "mine" | "unassigned">("all");
   const [lifecycleFilter, setLifecycleFilter] = useState<string | null>(null);
   const [unrepliedOnly, setUnrepliedOnly] = useState(false);
-  const [activeId, setActiveId] = useState<string>(conversations[0].id);
+  const [activeId, setActiveId] = useState<string>(conversations[0]?.id ?? "");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -101,6 +101,20 @@ export default function InboxPage() {
   const [sendError, setSendError] = useState<string | null>(null);
   const activeIdRef = useRef(activeId);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+
+  // Scroll the thread to the latest message; show a "jump to latest" button when
+  // the user has scrolled up to read history.
+  const threadRef = useRef<HTMLDivElement>(null);
+  const [showJump, setShowJump] = useState(false);
+  function scrollToBottom() {
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }
+  function onThreadScroll() {
+    const el = threadRef.current;
+    if (!el) return;
+    setShowJump(el.scrollHeight - el.scrollTop - el.clientHeight > 120);
+  }
 
   useEffect(() => {
     fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "chat")));
@@ -210,6 +224,12 @@ export default function InboxPage() {
     : demoConvo
       ? [...demoConvo.messages, ...(extraMessages[active!.id] ?? [])]
       : [];
+
+  // Always open on the latest message; re-scroll as new ones arrive.
+  useEffect(() => {
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight; // onScroll then clears the jump button
+  }, [activeId, thread.length]);
 
   const humanHandled = !!active?.live && liveStatus[active.id] === "human";
   const hubDefault = active && !humanHandled ? channelDefaults.find((d) => d.channel === active.channel && d.enabled && d.agentId) : undefined;
@@ -413,7 +433,8 @@ export default function InboxPage() {
           </div>
         </div>
 
-        <div className="flex-1 space-y-4 overflow-y-auto bg-ink-50/40 p-5">
+        <div className="relative flex-1 overflow-hidden">
+        <div ref={threadRef} onScroll={onThreadScroll} className="h-full space-y-4 overflow-y-auto bg-ink-50/40 p-5">
           {thread.length === 0 && <p className="py-10 text-center text-sm text-ink-400">No messages yet.</p>}
           {thread.map((m) => (
             <div key={m.id} className={`flex ${m.direction === "outbound" ? "justify-end" : "justify-start"}`}>
@@ -423,6 +444,16 @@ export default function InboxPage() {
               </div>
             </div>
           ))}
+        </div>
+        {showJump && (
+          <button
+            onClick={scrollToBottom}
+            title="Jump to latest"
+            className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white shadow-lg hover:bg-brand-700"
+          >
+            <ArrowDown className="h-3.5 w-3.5" /> Latest
+          </button>
+        )}
         </div>
 
         <div className="border-t border-ink-200 p-4">

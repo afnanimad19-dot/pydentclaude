@@ -166,74 +166,7 @@ export const appointments: Appointment[] = [
   { id: "a5", aptNum: 5016, patientId: "p6", patientName: "Daniel Osei", provider: "Hygiene — Kelly", operatory: "Op 4", procedure: "Perio Maintenance", date: "2026-09-09", time: "10:00", durationMin: 50, status: "Scheduled", confirmedVia: "sms" },
 ];
 
-export const conversations: Conversation[] = [
-  {
-    id: "c1", channel: "whatsapp", patientId: "p1", patientName: "Maria Hernandez",
-    preview: "Perfect, see you Friday at 9!", time: "9:42 AM", unread: 0, assignedTo: "Front Desk", tags: ["confirmation"],
-    messages: [
-      { id: "m1", direction: "outbound", author: "Recall Bot", byBot: true, body: "Hi Maria! 👋 This is Bright Smile Dental. You're due for your cleaning — Dr. Patel has Friday Jun 12 at 9:00 AM open. Want me to book it?", time: "Yesterday 4:10 PM" },
-      { id: "m2", direction: "inbound", author: "Maria Hernandez", body: "Yes please, that works for me", time: "Yesterday 6:31 PM" },
-      { id: "m3", direction: "outbound", author: "Recall Bot", byBot: true, body: "You're booked ✅ Friday Jun 12, 9:00 AM with Dr. Patel. Reply RESCHEDULE anytime if plans change.", time: "Yesterday 6:31 PM" },
-      { id: "m4", direction: "inbound", author: "Maria Hernandez", body: "Perfect, see you Friday at 9!", time: "9:42 AM" },
-    ],
-  },
-  {
-    id: "c2", channel: "voice", patientId: "p7", patientName: "Emily Tran",
-    preview: "Call summary: New patient booked for Jun 12, 4:00 PM", time: "9:15 AM", unread: 1, assignedTo: null, tags: ["new-patient", "voice-agent"],
-    messages: [
-      { id: "m5", direction: "inbound", author: "Ava (Voice Agent)", byBot: true, body: "📞 Inbound call handled by Ava (3m 12s). Caller asked about new-patient availability and insurance. Outcome: booked New Patient Exam + FMX for Jun 12, 4:00 PM with Dr. Patel. Verified Delta Dental PPO.", time: "9:15 AM" },
-    ],
-  },
-  {
-    id: "c3", channel: "sms", patientId: "p3", patientName: "Aisha Williams",
-    preview: "Can I move it to 3pm instead?", time: "8:58 AM", unread: 2, assignedTo: null, tags: ["reschedule"],
-    messages: [
-      { id: "m6", direction: "outbound", author: "Reminder Bot", byBot: true, body: "Reminder: crown seat appointment tomorrow Jun 13 at 2:30 PM with Dr. Gomez. Reply C to confirm or R to reschedule.", time: "8:00 AM" },
-      { id: "m7", direction: "inbound", author: "Aisha Williams", body: "R", time: "8:57 AM" },
-      { id: "m8", direction: "inbound", author: "Aisha Williams", body: "Can I move it to 3pm instead?", time: "8:58 AM" },
-    ],
-  },
-  {
-    id: "c4", channel: "email", patientId: "p4", patientName: "Robert Kim",
-    preview: "Re: Your implant consult — financing options", time: "Yesterday", unread: 0, assignedTo: "Dr. Gomez", tags: ["treatment-plan", "high-value"],
-    messages: [
-      { id: "m9", direction: "outbound", author: "Dr. Gomez", body: "Hi Robert, ahead of your consult on Jun 18 I've attached the treatment plan options for the implant at #30, including the financing breakdown we discussed. Happy to walk through it on a quick call.", time: "Yesterday 2:20 PM" },
-      { id: "m10", direction: "inbound", author: "Robert Kim", body: "Thanks Dr. Gomez. The 12-month plan looks doable. I'll bring my questions on the 18th.", time: "Yesterday 5:47 PM" },
-    ],
-  },
-  {
-    id: "c5", channel: "whatsapp", patientId: "p8", patientName: "Luis Mendoza",
-    preview: "What are your Saturday hours?", time: "Yesterday", unread: 1, assignedTo: null, tags: ["question"],
-    messages: [
-      { id: "m11", direction: "inbound", author: "Luis Mendoza", body: "What are your Saturday hours?", time: "Yesterday 7:12 PM" },
-      { id: "m12", direction: "outbound", author: "FAQ Bot", byBot: true, body: "We're open Saturdays 9 AM – 2 PM. Want me to check availability for you this Saturday?", time: "Yesterday 7:12 PM" },
-    ],
-  },
-  {
-    id: "c7", channel: "instagram", patientId: "lead-ig-1", patientName: "Chloe Bennett",
-    preview: "Do you do veneers? Saw your before/after reel 😍", time: "10:24 AM", unread: 2, assignedTo: null, tags: ["instagram-dm", "cosmetic", "new-lead"],
-    messages: [
-      { id: "m15", direction: "inbound", author: "Chloe Bennett", body: "Hi! Do you do veneers? Saw your before/after reel 😍", time: "10:22 AM" },
-      { id: "m16", direction: "inbound", author: "Chloe Bennett", body: "And roughly how much for the full set?", time: "10:24 AM" },
-    ],
-  },
-  {
-    id: "c8", channel: "messenger", patientId: "lead-fb-1", patientName: "Daniel Foster",
-    preview: "Are you open this Saturday? My kid chipped a tooth", time: "Yesterday", unread: 1, assignedTo: null, tags: ["facebook", "emergency", "new-lead"],
-    messages: [
-      { id: "m17", direction: "inbound", author: "Daniel Foster", body: "Are you open this Saturday? My kid chipped a tooth at soccer", time: "Yesterday 6:02 PM" },
-      { id: "m18", direction: "outbound", author: "FAQ Bot", byBot: true, body: "So sorry to hear that! We're open Saturday 9 AM–2 PM and keep emergency slots free. Want me to reserve one for your son?", time: "Yesterday 6:02 PM" },
-    ],
-  },
-  {
-    id: "c6", channel: "sms", patientId: "p2", patientName: "James Carter",
-    preview: "Ok I'll call back next week about the balance", time: "Mon", unread: 0, assignedTo: "Billing", tags: ["billing", "recall-due"],
-    messages: [
-      { id: "m13", direction: "outbound", author: "Billing Bot", byBot: true, body: "Hi James, a friendly note from Bright Smile Dental: you have an open balance of $240.50. You can pay securely here: pay.brightsmile.demo/8821 — or reply HELP to talk to our billing team.", time: "Mon 10:00 AM" },
-      { id: "m14", direction: "inbound", author: "James Carter", body: "Ok I'll call back next week about the balance", time: "Mon 11:34 AM" },
-    ],
-  },
-];
+export const conversations: Conversation[] = [];
 
 export const voiceAgents: VoiceAgent[] = [
   { id: "va1", name: "Ava", role: "Front-desk receptionist — answers, books, reschedules 24/7", voice: "Warm female · US English", language: "English + Spanish", status: "Live", phoneNumber: "+1 (305) 555-0100", callsToday: 23, avgDurationSec: 168, bookingRate: 0.61 },
@@ -296,37 +229,10 @@ export const emailCampaigns: EmailCampaign[] = [
 ];
 
 export const pipeline: PipelineStage[] = [
-  {
-    id: "new-lead", name: "New Lead",
-    deals: [
-      { id: "d1", patientName: "Karen Phillips", treatment: "Invisalign consult", value: 4800, source: "whatsapp", owner: "Front Desk", daysInStage: 1 },
-      { id: "d2", patientName: "Tom Becker", treatment: "New patient exam", value: 350, source: "voice", owner: "Ava (AI)", daysInStage: 0 },
-      { id: "d3", patientName: "Nina Alvarez", treatment: "Emergency — toothache", value: 600, source: "sms", owner: "Front Desk", daysInStage: 0 },
-      { id: "d7", patientName: "Emily Tran", treatment: "New patient exam + FMX", value: 420, source: "voice", owner: "Ava (AI)", daysInStage: 1 },
-    ],
-  },
-  {
-    id: "hot-lead", name: "Hot Lead",
-    deals: [
-      { id: "d5", patientName: "Mark Johnson", treatment: "Veneers consult", value: 9600, source: "email", owner: "Dr. Gomez", daysInStage: 4 },
-      { id: "d6", patientName: "Robert Kim", treatment: "Implant #30", value: 4200, source: "email", owner: "Dr. Gomez", daysInStage: 6 },
-      { id: "d8", patientName: "Patricia Wells", treatment: "Full-arch restoration", value: 18500, source: "referral", owner: "Dr. Patel", daysInStage: 9 },
-    ],
-  },
-  {
-    id: "payment", name: "Payment",
-    deals: [
-      { id: "d9", patientName: "Luis Mendoza", treatment: "Crown #14 + filling", value: 1650, source: "whatsapp", owner: "Front Desk", daysInStage: 3 },
-      { id: "d10", patientName: "Aisha Williams", treatment: "Crown seat #19", value: 1280, source: "sms", owner: "Front Desk", daysInStage: 2 },
-    ],
-  },
-  {
-    id: "customer", name: "Customer",
-    deals: [
-      { id: "d4", patientName: "Sofia Lopez", treatment: "Recall cleaning", value: 220, source: "voice", owner: "Leo (AI)", daysInStage: 2 },
-      { id: "d11", patientName: "James Carter", treatment: "Recall cleaning", value: 220, source: "voice", owner: "Leo (AI)", daysInStage: 1 },
-    ],
-  },
+  { id: "new-lead", name: "New Lead", deals: [] },
+  { id: "hot-lead", name: "Hot Lead", deals: [] },
+  { id: "payment", name: "Payment", deals: [] },
+  { id: "customer", name: "Customer", deals: [] },
 ];
 
 export const botFlows: BotFlow[] = [

@@ -16,12 +16,7 @@ import {
   type DataSource,
   type PatientFolder,
 } from "@/lib/db";
-import {
-  patients as mockPatients,
-  appointments as mockAppointments,
-  type Patient,
-  type Appointment,
-} from "@/lib/mock-data";
+import { type Patient, type Appointment } from "@/lib/mock-data";
 
 const aptTone = { Confirmed: "green", Scheduled: "blue", Unconfirmed: "amber", Completed: "gray", Broken: "red" } as const;
 
@@ -40,8 +35,8 @@ function LiveBanner() {
 export default function PatientsPage() {
   const [patientModal, setPatientModal] = useState(false);
   const [aptModal, setAptModal] = useState(false);
-  const [patients, setPatients] = useState<Patient[]>(mockPatients);
-  const [appointments, setAppointments] = useState<Appointment[]>(mockAppointments);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [source, setSource] = useState<DataSource>("demo");
   const [folders, setFolders] = useState<PatientFolder[]>([]);
   const [folderMap, setFolderMap] = useState<Record<string, string>>({});

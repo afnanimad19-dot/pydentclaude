@@ -235,7 +235,10 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
   await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "inbound", author: name, body, wa_message_id: mid });
 
   // A human has taken over ("Assign to me") — never auto-reply.
-  if (convo?.status === "human") return;
+  if (convo?.status === "human") {
+    await logEvent(`Stored ${channel} message from ${name}. No auto-reply: conversation is assigned to a human.`);
+    return;
+  }
 
   // Conversation override, else the Agent-Hub default for this channel.
   let agentId: string | null = convo?.assigned_agent_id ?? null;
@@ -243,10 +246,20 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
     const { data: def } = await supabase.from("channel_defaults").select("agent_id, enabled").eq("channel", channel).maybeSingle();
     if (def?.enabled && def.agent_id) agentId = def.agent_id;
   }
-  if (!agentId) return;
+  if (!agentId) {
+    await logEvent(`Stored ${channel} message from ${name}. No auto-reply: no agent set for ${channel} (turn one on in AI Agents → Agent Hub).`);
+    return;
+  }
 
   const { data: agent } = await supabase.from("agents").select("*").eq("id", agentId).maybeSingle();
-  if (!agent || agent.status === "Paused") return;
+  if (!agent) {
+    await logEvent(`No auto-reply: assigned agent not found.`);
+    return;
+  }
+  if (agent.status === "Paused") {
+    await logEvent(`No auto-reply: agent "${agent.name}" is Paused.`);
+    return;
+  }
 
   const { data: history } = await supabase
     .from("wa_messages")
@@ -263,9 +276,15 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
     messages: (history ?? []).map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body })),
   });
-  if (!result.reply) return;
+  if (result.error || !result.reply) {
+    await logEvent(`⚠️ AI reply failed (${result.error ?? "empty reply"}). Check OPENROUTER_API_KEY in Netlify.`);
+    return;
+  }
 
   const sent = await sendByChannel(channel, contactId, result.reply);
+  if (!sent.ok) {
+    await logEvent(`⚠️ Generated a reply but sending failed (${sent.error}). Check the access token in Settings → WhatsApp config (it may have expired).`);
+  }
   await supabase.from("wa_messages").insert({
     conversation_id: conversationId,
     direction: "outbound",
@@ -274,5 +293,6 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
     body: result.reply,
     wa_message_id: sent.id ?? null,
   });
+  if (sent.ok) await logEvent(`✅ ${agent.name} auto-replied on ${channel} to ${name}.`);
   await supabase.from("wa_conversations").update({ last_message: result.reply, last_time: new Date().toISOString() }).eq("id", conversationId);
 }
