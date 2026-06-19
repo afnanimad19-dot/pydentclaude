@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabase } from "@/lib/supabase";
-import { generateAgentReply, generateAgentReplyWithBooking, type BookingArgs } from "@/lib/agent-reply";
+import { generateAgentReply, generateAgentReplyWithTools, type BookingArgs } from "@/lib/agent-reply";
 import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPageId } from "@/lib/wa-send";
 import { odForward, getOdConfig } from "@/lib/opendental-gateway";
 
@@ -224,36 +224,54 @@ async function handleMessaging(channel: string, ev: any, pageId?: string): Promi
   return true;
 }
 
-// Books an appointment the agent agreed to: writes it to our Calendar (always)
-// and, if the clinic has Open Dental enabled, forwards it to the local middleware.
+// A) Live open slots — from Open Dental when connected, else from our own calendar
+// (clinic hours 09:00–17:00 minus already-booked times).
+async function getSlots(ws: string | null, args: any): Promise<string> {
+  const date = String(args?.date || "").slice(0, 10);
+  if (!date) return "Ask the patient which date they'd like first.";
+  try {
+    const od = await getOdConfig(ws);
+    if (od?.enabled) {
+      const r = await odForward(ws, "/available-slots", { method: "POST", body: { doctorId: args.doctor || "", serviceId: args.service || "", date } });
+      const slots = (r.data as any)?.slots;
+      if (Array.isArray(slots) && slots.length) return `Open slots on ${date}: ${slots.join(", ")}.`;
+      return `No open slots returned by Open Dental for ${date}.`;
+    }
+  } catch {
+    /* fall through to local availability */
+  }
+  const { data: booked } = await supabase.from("appointments").select("time").eq("workspace_id", ws).eq("date", date).neq("status", "Broken");
+  const taken = new Set((booked ?? []).map((b: any) => String(b.time || "").slice(0, 5)));
+  const open: string[] = [];
+  for (let h = 9; h < 17; h++) for (const m of ["00", "30"]) {
+    const t = `${String(h).padStart(2, "0")}:${m}`;
+    if (!taken.has(t)) open.push(t);
+  }
+  const offer = open.slice(0, 6);
+  return offer.length ? `Open slots on ${date}: ${offer.join(", ")}.` : `Fully booked on ${date} — suggest another day.`;
+}
+
+// Books an appointment: Calendar (always) + Open Dental (if connected). Stores the
+// Open Dental appointment id so reschedule/cancel can target it later.
 async function bookAppointment(ws: string | null, patientId: string | null, name: string, phone: string, args: BookingArgs): Promise<string> {
   const dt = String(args.datetime || "");
   const date = dt.slice(0, 10);
   const time = dt.slice(11, 16) || "09:00";
   if (!date) return "Could not book — no valid date/time was provided.";
 
-  // Always mirror into our Calendar.
-  await supabase.from("appointments").insert({
-    workspace_id: ws,
-    patient_id: patientId,
-    provider: args.doctor || "",
-    procedure: args.service || "Consultation",
-    date,
-    time,
-    status: "Scheduled",
-    confirmed_via: "whatsapp",
-  });
+  const { data: appt } = await supabase
+    .from("appointments")
+    .insert({ workspace_id: ws, patient_id: patientId, provider: args.doctor || "", procedure: args.service || "Consultation", date, time, status: "Scheduled", confirmed_via: "whatsapp" })
+    .select("id")
+    .single();
 
-  // If Open Dental is connected, also create it there (best-effort; the local
-  // middleware maps the service/doctor to Open Dental ids).
   let odNote = "";
   try {
     const od = await getOdConfig(ws);
     if (od?.enabled) {
-      const r = await odForward(ws, "/create-appointment", {
-        method: "POST",
-        body: { name, phone, doctorId: args.doctor || "", serviceId: args.service || "", datetime: dt, consent: true },
-      });
+      const r = await odForward(ws, "/create-appointment", { method: "POST", body: { name, phone, doctorId: args.doctor || "", serviceId: args.service || "", datetime: dt, consent: true } });
+      const extId = (r.data as any)?.appointmentId;
+      if (r.status === 200 && extId && appt?.id) await supabase.from("appointments").update({ external_id: String(extId) }).eq("id", appt.id);
       odNote = r.status === 200 ? " (synced to Open Dental)" : " (Open Dental sync pending)";
     }
   } catch {
@@ -262,6 +280,42 @@ async function bookAppointment(ws: string | null, patientId: string | null, name
 
   await logEvent(`📅 Booked ${args.service || "appointment"} on ${date} ${time} for ${name}${odNote}.`);
   return `Appointment booked: ${args.service || "appointment"}${args.doctor ? ` with ${args.doctor}` : ""} on ${date} at ${time}${odNote}.`;
+}
+
+// B) Reschedule the patient's next appointment.
+async function rescheduleAppt(ws: string | null, patientId: string | null, name: string, args: any): Promise<string> {
+  if (!patientId) return "No patient on file to reschedule.";
+  const dt = String(args?.datetime || "");
+  const date = dt.slice(0, 10);
+  const time = dt.slice(11, 16) || "09:00";
+  if (!date) return "Need a valid new date and time.";
+  const { data: ap } = await supabase.from("appointments").select("id, external_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
+  if (!ap) return "No upcoming appointment found to reschedule.";
+  await supabase.from("appointments").update({ date, time }).eq("id", ap.id);
+  try {
+    const od = await getOdConfig(ws);
+    if (od?.enabled && ap.external_id) await odForward(ws, "/reschedule-appointment", { method: "POST", body: { appointmentId: ap.external_id, datetime: dt } });
+  } catch {
+    /* keep the Calendar change */
+  }
+  await logEvent(`🔁 Rescheduled appointment to ${date} ${time} for ${name}.`);
+  return `Rescheduled to ${date} at ${time}.`;
+}
+
+// B) Cancel the patient's next appointment.
+async function cancelAppt(ws: string | null, patientId: string | null, name: string): Promise<string> {
+  if (!patientId) return "No patient on file.";
+  const { data: ap } = await supabase.from("appointments").select("id, external_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
+  if (!ap) return "No upcoming appointment found to cancel.";
+  await supabase.from("appointments").update({ status: "Broken" }).eq("id", ap.id);
+  try {
+    const od = await getOdConfig(ws);
+    if (od?.enabled && ap.external_id) await odForward(ws, "/cancel-appointment", { method: "POST", body: { appointmentId: ap.external_id } });
+  } catch {
+    /* keep the Calendar change */
+  }
+  await logEvent(`❌ Cancelled appointment for ${name}.`);
+  return "Your appointment has been cancelled.";
 }
 
 // Generic inbound handler shared by every channel.
@@ -350,20 +404,44 @@ async function storeInbound(
     }
   }
 
+  // Give the agent context about any existing upcoming appointment.
+  let apptContext = "";
+  if (convoPatientId) {
+    const { data: ap } = await supabase
+      .from("appointments")
+      .select("date, time, procedure")
+      .eq("workspace_id", ws)
+      .eq("patient_id", convoPatientId)
+      .gte("date", new Date().toISOString().slice(0, 10))
+      .neq("status", "Broken")
+      .order("date")
+      .order("time")
+      .limit(1)
+      .maybeSingle();
+    if (ap) apptContext = ` Existing upcoming appointment: ${ap.procedure} on ${ap.date} at ${ap.time}.`;
+  }
+
   const replyInput = {
     model: agent.model ?? "openai/gpt-4o-mini",
     agentName: agent.name,
     instructions: agent.instructions ?? "",
     knowledgeBase: agent.knowledge_base ?? "",
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
-    patientContext: `Contact name: ${name}. Contact phone: ${contactId}.`,
+    patientContext: `Contact name: ${name}. Contact phone: ${contactId}.${apptContext}`,
     sessionNote,
     messages: (history ?? []).map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body })),
   };
 
-  const result = agent.can_book
-    ? await generateAgentReplyWithBooking(replyInput, (args) => bookAppointment(ws, convoPatientId, name, contactId, args))
-    : await generateAgentReply(replyInput);
+  const useTools = agent.can_book || agent.can_reschedule || agent.can_cancel;
+  const executeTool = async (toolName: string, args: any): Promise<string> => {
+    if (toolName === "get_available_slots") return getSlots(ws, args);
+    if (toolName === "book_appointment") return bookAppointment(ws, convoPatientId, name, contactId, args);
+    if (toolName === "reschedule_appointment") return rescheduleAppt(ws, convoPatientId, name, args);
+    if (toolName === "cancel_appointment") return cancelAppt(ws, convoPatientId, name);
+    return "Unsupported tool.";
+  };
+
+  const result = useTools ? await generateAgentReplyWithTools(replyInput, executeTool) : await generateAgentReply(replyInput);
   if (result.error || !result.reply) {
     await logEvent(`⚠️ AI reply failed (${result.error ?? "empty reply"}). Check OPENROUTER_API_KEY in Netlify.`);
     return;

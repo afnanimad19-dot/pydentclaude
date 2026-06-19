@@ -35,7 +35,9 @@ function buildSystem(input: AgentReplyInput): string {
     instructions,
     knowledgeBase && `KNOWLEDGE BASE (answer only from this; if the answer isn't here, say you'll check with the team):\n${knowledgeBase}`,
     abilities && `You are allowed to: ${abilities}.`,
-    capabilities.canBook && "When the patient has agreed on a specific date AND time, call the book_appointment tool with the service, doctor (if named) and the ISO datetime. After it succeeds, confirm warmly in one sentence. Do not claim an appointment is booked unless the tool succeeded.",
+    capabilities.canBook && "When the patient has agreed on a specific date AND time, call the book_appointment tool. Before offering times, call get_available_slots to fetch real open slots and only offer those. Do not claim an appointment is booked unless the tool succeeded.",
+    capabilities.canReschedule && "To move an existing appointment, confirm the new time then call reschedule_appointment.",
+    capabilities.canCancel && "To cancel an existing appointment, confirm with the patient then call cancel_appointment.",
     patientContext && `PATIENT CONTEXT:\n${patientContext}`,
     sessionNote && `SESSION NOTE:\n${sessionNote}`,
     "Keep replies short (1-3 sentences), warm and professional. Never invent medical advice or diagnosis.",
@@ -70,66 +72,97 @@ export async function generateAgentReply(input: AgentReplyInput): Promise<{ repl
   }
 }
 
-const BOOK_TOOL = {
-  type: "function",
-  function: {
-    name: "book_appointment",
-    description: "Book a dental appointment once the patient has agreed on a specific date and time.",
-    parameters: {
-      type: "object",
-      properties: {
-        service: { type: "string", description: "Service, e.g. cleaning, check-up, consultation, whitening" },
-        doctor: { type: "string", description: "Doctor name if the patient specified one, otherwise empty" },
-        datetime: { type: "string", description: "ISO 8601 date-time, e.g. 2026-06-22T14:00" },
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function toolsFor(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean }): any[] {
+  const tools: any[] = [];
+  if (caps.canBook) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "get_available_slots",
+        description: "Fetch real open appointment times for a service/doctor on a date BEFORE offering times to the patient.",
+        parameters: {
+          type: "object",
+          properties: {
+            service: { type: "string", description: "e.g. cleaning, check-up, consultation, whitening" },
+            doctor: { type: "string", description: "Doctor name if specified, else empty" },
+            date: { type: "string", description: "Date as YYYY-MM-DD" },
+          },
+          required: ["service", "date"],
+        },
       },
-      required: ["service", "datetime"],
-    },
-  },
-};
+    });
+    tools.push({
+      type: "function",
+      function: {
+        name: "book_appointment",
+        description: "Book a dental appointment once the patient has agreed on a specific date and time.",
+        parameters: {
+          type: "object",
+          properties: {
+            service: { type: "string" },
+            doctor: { type: "string" },
+            datetime: { type: "string", description: "ISO 8601 date-time, e.g. 2026-06-22T14:00" },
+          },
+          required: ["service", "datetime"],
+        },
+      },
+    });
+  }
+  if (caps.canReschedule) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "reschedule_appointment",
+        description: "Move the patient's existing appointment to a new date and time.",
+        parameters: { type: "object", properties: { datetime: { type: "string", description: "New ISO date-time" } }, required: ["datetime"] },
+      },
+    });
+  }
+  if (caps.canCancel) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "cancel_appointment",
+        description: "Cancel the patient's existing appointment.",
+        parameters: { type: "object", properties: { reason: { type: "string" } } },
+      },
+    });
+  }
+  return tools;
+}
 
-// Reply with the ability to actually book. `executeBooking` performs the booking
-// (Calendar + Open Dental) and returns a short result string for the model.
-export async function generateAgentReplyWithBooking(
+// Reply with tool-use (slots / book / reschedule / cancel). `executeTool` runs the
+// action against the Calendar + Open Dental and returns a short result string.
+export async function generateAgentReplyWithTools(
   input: AgentReplyInput,
-  executeBooking: (args: BookingArgs) => Promise<string>
-): Promise<{ reply?: string; booked?: boolean; error?: string; status: number }> {
+  executeTool: (name: string, args: any) => Promise<string>
+): Promise<{ reply?: string; error?: string; status: number }> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
   const model = input.model ?? "openai/gpt-4o-mini";
-  const baseMessages = [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-12)];
+  const tools = toolsFor(input.capabilities ?? {});
+  if (tools.length === 0) return generateAgentReply(input);
 
+  const messages: any[] = [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-12)];
   try {
-    const first = await callOpenRouter(apiKey, model, { messages: baseMessages, tools: [BOOK_TOOL], tool_choice: "auto" });
-    const msg = first.choices?.[0]?.message;
-    const toolCalls = msg?.tool_calls;
-
-    if (!toolCalls || toolCalls.length === 0) {
-      return { reply: msg?.content ?? "", booked: false, status: 200 };
-    }
-
-    // Execute each booking tool call, then ask the model to confirm.
-    const toolMessages: Record<string, unknown>[] = [];
-    let booked = false;
-    for (const tc of toolCalls) {
-      if (tc.function?.name !== "book_appointment") {
-        toolMessages.push({ role: "tool", tool_call_id: tc.id, content: "Unsupported tool." });
-        continue;
+    for (let round = 0; round < 4; round++) {
+      const data = await callOpenRouter(apiKey, model, { messages, tools, tool_choice: "auto" });
+      const msg = data.choices?.[0]?.message;
+      if (!msg?.tool_calls?.length) return { reply: msg?.content ?? "", status: 200 };
+      messages.push(msg);
+      for (const tc of msg.tool_calls) {
+        let result: string;
+        try {
+          result = await executeTool(tc.function?.name, JSON.parse(tc.function?.arguments || "{}"));
+        } catch (e) {
+          result = `Error: ${e instanceof Error ? e.message : "failed"}`;
+        }
+        messages.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
-      let result = "Booking failed.";
-      try {
-        const args = JSON.parse(tc.function.arguments || "{}") as BookingArgs;
-        result = await executeBooking(args);
-        booked = true;
-      } catch (e) {
-        result = `Booking failed: ${e instanceof Error ? e.message : "error"}`;
-      }
-      toolMessages.push({ role: "tool", tool_call_id: tc.id, content: result });
     }
-
-    const second = await callOpenRouter(apiKey, model, {
-      messages: [...baseMessages, msg, ...toolMessages],
-    });
-    return { reply: second.choices?.[0]?.message?.content ?? "Your appointment is booked.", booked, status: 200 };
+    const final = await callOpenRouter(apiKey, model, { messages });
+    return { reply: final.choices?.[0]?.message?.content ?? "", status: 200 };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI request failed", status: 502 };
   }
