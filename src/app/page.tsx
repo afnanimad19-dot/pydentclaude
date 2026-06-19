@@ -458,7 +458,7 @@ export default function Home() {
             <SectionTag><Sparkles className="h-3.5 w-3.5" /> Pricing</SectionTag>
             <h2 className="mt-5 text-3xl font-semibold tracking-tight text-white md:text-4xl">Get your package</h2>
             <p className="mx-auto mt-3 max-w-xl text-slate-400">
-              Start free with the demo workspace. Upgrade when you connect your clinic.
+              Create your clinic workspace free. Upgrade when you connect your channels.
             </p>
           </div>
           <div className="mt-12 grid items-stretch gap-5 lg:grid-cols-3">
@@ -490,7 +490,7 @@ export default function Home() {
                   ))}
                 </ul>
                 <Link
-                  href="/dashboard"
+                  href="/signup"
                   className={`mt-7 rounded-xl px-5 py-3 text-center text-sm font-semibold transition-opacity hover:opacity-90 ${
                     p.featured
                       ? "bg-gradient-to-r from-violet-500 to-indigo-500 text-white shadow-lg shadow-violet-600/30"
@@ -517,10 +517,10 @@ export default function Home() {
             </span>
           </h2>
           <Link
-            href="/dashboard"
+            href="/signup"
             className="relative mt-9 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-7 py-3.5 text-sm font-semibold text-white shadow-xl shadow-violet-600/30 transition-opacity hover:opacity-90"
           >
-            Open the demo workspace <ArrowRight className="h-4 w-4" />
+            Create your workspace <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
       </section>
@@ -546,7 +546,7 @@ export default function Home() {
                 <ul className="mt-3 space-y-2 text-slate-500">
                   <li><a href="#features" className="hover:text-white">Features</a></li>
                   <li><a href="#pricing" className="hover:text-white">Pricing</a></li>
-                  <li><Link href="/dashboard" className="hover:text-white">Live demo</Link></li>
+                  <li><Link href="/signup" className="hover:text-white">Get started</Link></li>
                 </ul>
               </div>
               <div>

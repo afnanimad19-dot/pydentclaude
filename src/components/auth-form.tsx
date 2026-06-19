@@ -44,12 +44,6 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
     }
   }
 
-  function continueDemo() {
-    try {
-      sessionStorage.setItem("pydental-demo", "1");
-    } catch {}
-    router.push("/dashboard");
-  }
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-night-950 px-4 text-slate-200">
@@ -71,7 +65,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
           <p className="mt-1 text-sm text-slate-400">
             {mode === "login"
               ? "Log in to your clinic's workspace."
-              : "Free to start — explore with sample data, connect your clinic when ready."}
+              : "Create your clinic's private workspace — your data stays yours."}
           </p>
 
           {error && (
@@ -128,13 +122,6 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
               {busy ? "Please wait…" : mode === "login" ? "Log in" : "Create account"}
             </button>
           </form>
-
-          <button
-            onClick={continueDemo}
-            className="mt-3 w-full rounded-xl border border-white/15 px-5 py-3 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/5"
-          >
-            Continue in demo mode →
-          </button>
 
           <p className="mt-6 text-center text-sm text-slate-400">
             {mode === "login" ? (

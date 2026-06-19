@@ -151,26 +151,19 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Auth guard: allow logged-in users, or explicit demo-mode visitors.
+  // Auth guard: the dashboard requires a logged-in clinic account.
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
         setUserEmail(data.session.user.email ?? null);
         return;
       }
-      let demo = false;
-      try {
-        demo = sessionStorage.getItem("pydental-demo") === "1";
-      } catch {}
-      if (!demo) router.replace("/login");
+      router.replace("/login");
     });
   }, [router]);
 
   async function signOut() {
     await supabase.auth.signOut();
-    try {
-      sessionStorage.removeItem("pydental-demo");
-    } catch {}
     router.push("/login");
   }
 
@@ -294,7 +287,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               </div>
               <button
                 onClick={signOut}
-                title={userEmail ? "Sign out" : "Exit demo / log in"}
+                title="Sign out"
                 className="rounded-xl p-2 text-ink-500 hover:bg-ink-50"
               >
                 <LogOut className="h-4 w-4" />

@@ -281,12 +281,28 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
     .order("created_at", { ascending: true })
     .limit(12);
 
+  // A returning contact (existing conversation, idle for a while) gets a
+  // "welcome back" with a choice instead of starting cold.
+  const RETURNING_MS = 6 * 60 * 60 * 1000; // 6 hours
+  let sessionNote = "";
+  if (convo?.last_time) {
+    const gap = Date.now() - new Date(convo.last_time).getTime();
+    if (gap > RETURNING_MS) {
+      sessionNote =
+        `This is a RETURNING contact who last messaged a while ago — you already know them. ` +
+        `Greet them warmly by name and say it's good to hear from them again. Then offer exactly three choices and ask them to reply with the number: ` +
+        `1) Continue our previous conversation, 2) Check or follow up on your existing appointment, 3) Book a new appointment. Keep it brief and friendly.`;
+    }
+  }
+
   const result = await generateAgentReply({
     model: agent.model ?? "openai/gpt-4o-mini",
     agentName: agent.name,
     instructions: agent.instructions ?? "",
     knowledgeBase: agent.knowledge_base ?? "",
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
+    patientContext: `Contact name: ${name}.`,
+    sessionNote,
     messages: (history ?? []).map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body })),
   });
   if (result.error || !result.reply) {

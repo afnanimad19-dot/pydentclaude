@@ -8,6 +8,7 @@ export interface AgentReplyInput {
   knowledgeBase?: string;
   capabilities?: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean };
   patientContext?: string;
+  sessionNote?: string;
   messages: { role: "user" | "assistant"; content: string }[];
 }
 
@@ -22,6 +23,7 @@ export async function generateAgentReply(input: AgentReplyInput): Promise<{ repl
     knowledgeBase = "",
     capabilities = {},
     patientContext = "",
+    sessionNote = "",
     messages,
   } = input;
 
@@ -39,6 +41,7 @@ export async function generateAgentReply(input: AgentReplyInput): Promise<{ repl
     knowledgeBase && `KNOWLEDGE BASE (answer only from this; if the answer isn't here, say you'll check with the team):\n${knowledgeBase}`,
     abilities && `You are allowed to: ${abilities}.`,
     patientContext && `PATIENT CONTEXT:\n${patientContext}`,
+    sessionNote && `SESSION NOTE:\n${sessionNote}`,
     "Keep replies short (1-3 sentences), warm and professional. Never invent medical advice or diagnosis.",
   ]
     .filter(Boolean)
