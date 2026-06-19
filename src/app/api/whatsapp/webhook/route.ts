@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabase } from "@/lib/supabase";
-import { generateAgentReply } from "@/lib/agent-reply";
+import { generateAgentReply, generateAgentReplyWithBooking, type BookingArgs } from "@/lib/agent-reply";
 import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPageId } from "@/lib/wa-send";
+import { odForward, getOdConfig } from "@/lib/opendental-gateway";
 
 // Meta calls this endpoint:
 //  1. GET  — verification handshake when you save the webhook (echo hub.challenge).
@@ -223,6 +224,46 @@ async function handleMessaging(channel: string, ev: any, pageId?: string): Promi
   return true;
 }
 
+// Books an appointment the agent agreed to: writes it to our Calendar (always)
+// and, if the clinic has Open Dental enabled, forwards it to the local middleware.
+async function bookAppointment(ws: string | null, patientId: string | null, name: string, phone: string, args: BookingArgs): Promise<string> {
+  const dt = String(args.datetime || "");
+  const date = dt.slice(0, 10);
+  const time = dt.slice(11, 16) || "09:00";
+  if (!date) return "Could not book — no valid date/time was provided.";
+
+  // Always mirror into our Calendar.
+  await supabase.from("appointments").insert({
+    workspace_id: ws,
+    patient_id: patientId,
+    provider: args.doctor || "",
+    procedure: args.service || "Consultation",
+    date,
+    time,
+    status: "Scheduled",
+    confirmed_via: "whatsapp",
+  });
+
+  // If Open Dental is connected, also create it there (best-effort; the local
+  // middleware maps the service/doctor to Open Dental ids).
+  let odNote = "";
+  try {
+    const od = await getOdConfig(ws);
+    if (od?.enabled) {
+      const r = await odForward(ws, "/create-appointment", {
+        method: "POST",
+        body: { name, phone, doctorId: args.doctor || "", serviceId: args.service || "", datetime: dt, consent: true },
+      });
+      odNote = r.status === 200 ? " (synced to Open Dental)" : " (Open Dental sync pending)";
+    }
+  } catch {
+    /* keep the Calendar booking even if Open Dental is unreachable */
+  }
+
+  await logEvent(`📅 Booked ${args.service || "appointment"} on ${date} ${time} for ${name}${odNote}.`);
+  return `Appointment booked: ${args.service || "appointment"}${args.doctor ? ` with ${args.doctor}` : ""} on ${date} at ${time}${odNote}.`;
+}
+
 // Generic inbound handler shared by every channel.
 async function storeInbound(
   channel: string,
@@ -241,6 +282,7 @@ async function storeInbound(
 
   const { data: convo } = await supabase.from("wa_conversations").select("*").eq("workspace_id", ws).eq("contact_phone", contactId).eq("channel", channel).maybeSingle();
   let conversationId: string;
+  let convoPatientId: string | null = convo?.patient_id ?? null;
   if (convo) {
     conversationId = convo.id;
     await supabase
@@ -248,10 +290,10 @@ async function storeInbound(
       .update({ contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: (convo.unread ?? 0) + 1 })
       .eq("id", conversationId);
   } else {
-    const patientId = await resolveLead(channel, contactId, name, ws);
+    convoPatientId = await resolveLead(channel, contactId, name, ws);
     const { data: created } = await supabase
       .from("wa_conversations")
-      .insert({ workspace_id: ws, contact_phone: contactId, channel, contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: 1, patient_id: patientId })
+      .insert({ workspace_id: ws, contact_phone: contactId, channel, contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: 1, patient_id: convoPatientId })
       .select("id")
       .single();
     conversationId = created!.id;
@@ -293,9 +335,10 @@ async function storeInbound(
     .order("created_at", { ascending: true })
     .limit(12);
 
-  // A returning contact (existing conversation, idle for a while) gets a
-  // "welcome back" with a choice instead of starting cold.
-  const RETURNING_MS = 6 * 60 * 60 * 1000; // 6 hours
+  // A returning contact (existing conversation, idle past the session window) gets
+  // a "welcome back" with a choice instead of starting cold. Default 15 minutes.
+  const sessionMin = Number(process.env.RETURNING_SESSION_MIN ?? 15);
+  const RETURNING_MS = sessionMin * 60 * 1000;
   let sessionNote = "";
   if (convo?.last_time) {
     const gap = Date.now() - new Date(convo.last_time).getTime();
@@ -307,16 +350,20 @@ async function storeInbound(
     }
   }
 
-  const result = await generateAgentReply({
+  const replyInput = {
     model: agent.model ?? "openai/gpt-4o-mini",
     agentName: agent.name,
     instructions: agent.instructions ?? "",
     knowledgeBase: agent.knowledge_base ?? "",
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
-    patientContext: `Contact name: ${name}.`,
+    patientContext: `Contact name: ${name}. Contact phone: ${contactId}.`,
     sessionNote,
     messages: (history ?? []).map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body })),
-  });
+  };
+
+  const result = agent.can_book
+    ? await generateAgentReplyWithBooking(replyInput, (args) => bookAppointment(ws, convoPatientId, name, contactId, args))
+    : await generateAgentReply(replyInput);
   if (result.error || !result.reply) {
     await logEvent(`⚠️ AI reply failed (${result.error ?? "empty reply"}). Check OPENROUTER_API_KEY in Netlify.`);
     return;
