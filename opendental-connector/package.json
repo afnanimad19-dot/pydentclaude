@@ -1,0 +1,13 @@
+{
+  "name": "pydental-connector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local middleware that runs inside the clinic, next to Open Dental. Exposes ONLY doctor slots + appointment booking to the Pydental gateway. No clinical data leaves the clinic.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

@@ -11,7 +11,6 @@ import {
   PhoneCall,
   CalendarDays,
   Bot,
-  ArrowDownToLine,
   Camera,
   MessageSquare,
   Globe,
@@ -27,6 +26,7 @@ import {
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { WhatsAppConfigForm } from "@/components/dashboard/whatsapp-config";
+import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
 import { ThemeToggle } from "@/components/theme";
 import { fetchPatients } from "@/lib/db";
 import { supabase } from "@/lib/supabase";
@@ -206,12 +206,7 @@ export default function SettingsPage() {
             badge={health === null ? <StatusBadge status="Checking…" tone="gray" /> : health.google ? <StatusBadge status="Ready to connect" tone="blue" /> : <StatusBadge status="Add OAuth env vars" tone="amber" />}
             action={<a href="/api/google/oauth" className="shrink-0 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Connect Google Calendar</a>}
           />
-          <ConnCard
-            icon={ArrowDownToLine}
-            name="OpenDental import"
-            detail="Coming later: clinics that use OpenDental will import their patient structure here with one click — no risk to their live database. Pydental works fully standalone without it."
-            badge={<StatusBadge status="Planned" tone="gray" />}
-          />
+          <OpenDentalConfigCard />
         </div>
       )}
 

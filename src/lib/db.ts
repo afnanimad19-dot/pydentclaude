@@ -1148,3 +1148,48 @@ export async function createBroadcast(payload: {
     return { ok: false, error: e instanceof Error ? e.message : "broadcast failed" };
   }
 }
+
+// ------------------------------------------------------- open dental (gateway)
+
+export interface OpenDentalConfig {
+  clinicApiUrl: string;
+  clinicApiKey: string;
+  enabled: boolean;
+}
+
+export const emptyOpenDentalConfig: OpenDentalConfig = { clinicApiUrl: "", clinicApiKey: "", enabled: false };
+
+export async function fetchOpenDentalConfig(): Promise<OpenDentalConfig> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("opendental_config").select("*").eq("workspace_id", ws).maybeSingle();
+    if (!data) return emptyOpenDentalConfig;
+    return { clinicApiUrl: data.clinic_api_url ?? "", clinicApiKey: data.clinic_api_key ?? "", enabled: !!data.enabled };
+  } catch {
+    return emptyOpenDentalConfig;
+  }
+}
+
+export async function saveOpenDentalConfig(c: OpenDentalConfig): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  const { error } = await supabase.from("opendental_config").upsert(
+    { workspace_id: ws, clinic_api_url: c.clinicApiUrl.trim(), clinic_api_key: c.clinicApiKey.trim(), enabled: c.enabled, updated_at: new Date().toISOString() },
+    { onConflict: "workspace_id" }
+  );
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: c.enabled ? "Open Dental connected." : "Saved." };
+}
+
+// Calls the gateway, which forwards to the clinic's local middleware. Returns
+// scheduling data only — never clinical records.
+export async function odTestConnection(): Promise<{ ok: boolean; doctors?: number; error?: string }> {
+  try {
+    const ws = await getWorkspaceId();
+    const res = await fetch(`/api/opendental/doctors?ws=${ws ?? ""}`);
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data.error ?? "Connection failed" };
+    return { ok: true, doctors: Array.isArray(data.doctors) ? data.doctors.length : 0 };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Connection failed" };
+  }
+}

@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Netlify functions run in their own (Node/Deno) runtime, not the Next app.
     "netlify/**",
+    // The Open Dental connector is a separate Node app installed at the clinic.
+    "opendental-connector/**",
   ]),
 ]);
 
