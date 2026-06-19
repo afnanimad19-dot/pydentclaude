@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabase } from "@/lib/supabase";
 import { generateAgentReply } from "@/lib/agent-reply";
-import { sendByChannel, fetchMetaUserName } from "@/lib/wa-send";
+import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPageId } from "@/lib/wa-send";
 
 // Meta calls this endpoint:
 //  1. GET  — verification handshake when you save the webhook (echo hub.challenge).
@@ -88,8 +88,9 @@ export async function POST(req: NextRequest) {
           const value = change.value ?? {};
           if (value.messaging_product !== "whatsapp") continue;
           const contacts: any[] = value.contacts ?? [];
+          const phoneNumberId: string | undefined = value.metadata?.phone_number_id;
           for (const m of value.messages ?? []) {
-            await handleWhatsApp(m, contacts);
+            await handleWhatsApp(m, contacts, phoneNumberId);
             handled++;
           }
           for (const s of value.statuses ?? []) {
@@ -101,8 +102,9 @@ export async function POST(req: NextRequest) {
     } else if (obj === "page" || obj === "instagram") {
       const channel = obj === "page" ? "messenger" : "instagram";
       for (const entry of payload.entry ?? []) {
+        const pageId: string | undefined = entry.id;
         for (const ev of entry.messaging ?? []) {
-          if (await handleMessaging(channel, ev)) handled++;
+          if (await handleMessaging(channel, ev, pageId)) handled++;
         }
       }
     }
@@ -196,31 +198,41 @@ async function recomputeBroadcast(broadcastId: string) {
   await supabase.from("wa_broadcasts").update({ sent: c.sent, delivered: c.delivered, read: c.read, failed: c.failed }).eq("id", broadcastId);
 }
 
-// WhatsApp inbound adapter.
-async function handleWhatsApp(m: any, contacts: any[]) {
+// WhatsApp inbound adapter — resolves the receiving number's account so the
+// reply is sent from (and stored under) the right clinic.
+async function handleWhatsApp(m: any, contacts: any[], phoneNumberId?: string) {
   const phone: string = m.from;
   if (!phone) return;
   const name = contacts.find((c) => c.wa_id === phone)?.profile?.name || phone;
   const body: string = m.text?.body ?? `[${m.type ?? "message"}]`;
-  await storeInbound("whatsapp", phone, name, body, m.id ?? null);
+  const creds = phoneNumberId ? await getWaCredsByPhoneId(phoneNumberId) : null;
+  await storeInbound("whatsapp", phone, name, body, m.id ?? null, creds?.workspace ?? (await activeWorkspace()), creds ? { wa: { phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken } } : undefined);
 }
 
 // Messenger / Instagram inbound adapter (Messenger Platform event format).
 // Returns true if it stored a real inbound message.
-async function handleMessaging(channel: string, ev: any): Promise<boolean> {
+async function handleMessaging(channel: string, ev: any, pageId?: string): Promise<boolean> {
   if (!ev?.message || ev.message.is_echo) return false; // ignore echoes, delivery/read receipts
   const senderId: string = ev.sender?.id;
   if (!senderId) return false;
   const body: string = ev.message.text ?? (ev.message.attachments?.length ? "[attachment]" : "[message]");
   const mid: string | null = ev.message.mid ?? null;
   const name = (await fetchMetaUserName(senderId)) ?? `${channel === "instagram" ? "Instagram" : "Messenger"} user`;
-  await storeInbound(channel, senderId, name, body, mid);
+  const page = pageId ? await getPageCredsByPageId(pageId) : null;
+  await storeInbound(channel, senderId, name, body, mid, page?.workspace ?? (await activeWorkspace()), page ? { pageToken: page.pageToken } : undefined);
   return true;
 }
 
 // Generic inbound handler shared by every channel.
-async function storeInbound(channel: string, contactId: string, name: string, body: string, mid: string | null) {
-  const ws = await activeWorkspace();
+async function storeInbound(
+  channel: string,
+  contactId: string,
+  name: string,
+  body: string,
+  mid: string | null,
+  ws: string | null,
+  sendCreds?: { wa?: { phoneNumberId: string; accessToken: string }; pageToken?: string }
+) {
   // Dedupe by message id.
   if (mid) {
     const { data: existing } = await supabase.from("wa_messages").select("id").eq("wa_message_id", mid).maybeSingle();
@@ -310,9 +322,12 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
     return;
   }
 
-  const sent = await sendByChannel(channel, contactId, result.reply);
+  const sent = await sendByChannel(channel, contactId, result.reply, sendCreds);
   if (!sent.ok) {
-    await logEvent(`⚠️ Generated a reply but sending failed (${sent.error}). Check the access token in Settings → WhatsApp config (it may have expired).`);
+    // Do NOT store it as a delivered reply — that's why the inbox showed a message
+    // the patient never received. Surface the real reason instead.
+    await logEvent(`⚠️ ${agent.name} drafted a reply but WhatsApp/Meta REJECTED the send: ${sent.error}. (Most common: the access token expired — paste a permanent token in Settings → WhatsApp config. Also confirm the recipient number is allowed for a test number.)`);
+    return;
   }
   await supabase.from("wa_messages").insert({
     conversation_id: conversationId,
@@ -322,6 +337,6 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
     body: result.reply,
     wa_message_id: sent.id ?? null,
   });
-  if (sent.ok) await logEvent(`✅ ${agent.name} auto-replied on ${channel} to ${name}.`);
+  await logEvent(`✅ ${agent.name} auto-replied on ${channel} to ${name} (delivered).`);
   await supabase.from("wa_conversations").update({ last_message: result.reply, last_time: new Date().toISOString() }).eq("id", conversationId);
 }

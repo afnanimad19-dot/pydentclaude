@@ -27,6 +27,28 @@ export async function getWaCredentialsFull(): Promise<WaCreds | null> {
   }
 }
 
+// Resolve the WhatsApp credentials for the number that received a message — this
+// guarantees we reply from the right clinic's account (multi-tenant safe).
+export async function getWaCredsByPhoneId(phoneNumberId: string): Promise<{ phoneNumberId: string; accessToken: string; workspace: string | null } | null> {
+  try {
+    const { data } = await supabase.from("whatsapp_config").select("phone_number_id, access_token, workspace").eq("phone_number_id", phoneNumberId).limit(1).maybeSingle();
+    if (!data?.access_token) return null;
+    return { phoneNumberId: data.phone_number_id, accessToken: data.access_token, workspace: data.workspace ?? null };
+  } catch {
+    return null;
+  }
+}
+
+export async function getPageCredsByPageId(pageId: string): Promise<{ pageToken: string; workspace: string | null } | null> {
+  try {
+    const { data } = await supabase.from("whatsapp_config").select("page_access_token, workspace").eq("page_id", pageId).not("page_access_token", "is", null).limit(1).maybeSingle();
+    if (!data?.page_access_token) return null;
+    return { pageToken: data.page_access_token, workspace: data.workspace ?? null };
+  } catch {
+    return null;
+  }
+}
+
 export function graphUrl(path: string) {
   return `https://graph.facebook.com/${GRAPH_VERSION}/${path}`;
 }
@@ -44,11 +66,11 @@ export async function getPageCreds(): Promise<{ pageToken: string; pageId: strin
 
 // Send a text via the Messenger Platform Send API (works for both Facebook
 // Messenger and Instagram DMs once the Page is linked to the IG account).
-export async function sendMessengerText(recipientId: string, text: string): Promise<{ ok: boolean; id?: string; error?: string }> {
-  const creds = await getPageCreds();
-  if (!creds) return { ok: false, error: "Facebook/Instagram not connected (missing Page access token)." };
+export async function sendMessengerText(recipientId: string, text: string, pageToken?: string): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const token = pageToken ?? (await getPageCreds())?.pageToken;
+  if (!token) return { ok: false, error: "Facebook/Instagram not connected (missing Page access token)." };
   try {
-    const res = await fetch(graphUrl(`me/messages?access_token=${encodeURIComponent(creds.pageToken)}`), {
+    const res = await fetch(graphUrl(`me/messages?access_token=${encodeURIComponent(token)}`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ recipient: { id: recipientId }, messaging_type: "RESPONSE", message: { text } }),
@@ -76,13 +98,19 @@ export async function fetchMetaUserName(userId: string): Promise<string | null> 
 }
 
 // Routes an outbound message to the right API based on the conversation channel.
-export async function sendByChannel(channel: string, contactId: string, text: string): Promise<{ ok: boolean; id?: string; error?: string }> {
-  if (channel === "messenger" || channel === "instagram") return sendMessengerText(contactId, text);
-  return sendWhatsAppText(contactId, text);
+// Optional explicit creds reply from the exact account that received the message.
+export async function sendByChannel(
+  channel: string,
+  contactId: string,
+  text: string,
+  creds?: { wa?: { phoneNumberId: string; accessToken: string }; pageToken?: string }
+): Promise<{ ok: boolean; id?: string; error?: string }> {
+  if (channel === "messenger" || channel === "instagram") return sendMessengerText(contactId, text, creds?.pageToken);
+  return sendWhatsAppText(contactId, text, creds?.wa);
 }
 
-export async function sendWhatsAppText(to: string, body: string): Promise<{ ok: boolean; id?: string; error?: string }> {
-  const creds = await getWaCredentials();
+export async function sendWhatsAppText(to: string, body: string, override?: { phoneNumberId: string; accessToken: string }): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const creds = override ?? (await getWaCredentials());
   if (!creds) return { ok: false, error: "WhatsApp is not connected (missing Phone Number ID / Access Token)." };
 
   try {
