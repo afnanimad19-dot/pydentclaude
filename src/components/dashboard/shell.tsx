@@ -29,6 +29,7 @@ import { Avatar } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme";
 import { Toaster } from "@/components/toast";
 import { supabase } from "@/lib/supabase";
+import { clearWorkspaceCache } from "@/lib/db";
 import { CLINICAL_MODULES_ENABLED } from "@/lib/features";
 
 interface NavItem {
@@ -143,6 +144,12 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentTab = searchParams.get("tab");
+
+  // Reset the cached workspace whenever the signed-in user changes.
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange(() => clearWorkspaceCache());
+    return () => sub.subscription.unsubscribe();
+  }, []);
 
   // Auth guard: allow logged-in users, or explicit demo-mode visitors.
   useEffect(() => {

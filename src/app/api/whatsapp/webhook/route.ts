@@ -13,7 +13,7 @@ import { sendByChannel, fetchMetaUserName } from "@/lib/wa-send";
 async function expectedVerifyToken(): Promise<string | null> {
   if (process.env.WHATSAPP_VERIFY_TOKEN) return process.env.WHATSAPP_VERIFY_TOKEN;
   try {
-    const { data } = await supabase.from("whatsapp_config").select("verify_token").eq("workspace", "default").maybeSingle();
+    const { data } = await supabase.from("whatsapp_config").select("verify_token").not("verify_token","is",null).limit(1).maybeSingle();
     return data?.verify_token || null;
   } catch {
     return null;
@@ -118,13 +118,25 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ received: true });
 }
 
+// The active clinic's workspace id (single connected clinic for now — keyed off
+// the stored WhatsApp config). Inbound rows are tagged with this so they show in
+// that clinic's (scoped) dashboards.
+async function activeWorkspace(): Promise<string | null> {
+  try {
+    const { data } = await supabase.from("whatsapp_config").select("workspace").limit(1).maybeSingle();
+    return data?.workspace ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Auto-capture a lead into the CRM. WhatsApp matches an existing patient by phone;
 // Messenger/Instagram create a new contact (no phone to match on).
-async function resolveLead(channel: string, contactId: string, name: string): Promise<string | null> {
+async function resolveLead(channel: string, contactId: string, name: string, ws: string | null): Promise<string | null> {
   try {
     if (channel === "whatsapp") {
       const digits = contactId.replace(/\D/g, "");
-      const { data: pts } = await supabase.from("patients").select("id, phone");
+      const { data: pts } = await supabase.from("patients").select("id, phone").eq("workspace_id", ws);
       const match = (pts ?? []).find((p: any) => {
         const d = String(p.phone ?? "").replace(/\D/g, "");
         return d.length >= 7 && (d === digits || d.endsWith(digits.slice(-9)) || digits.endsWith(d.slice(-9)));
@@ -132,14 +144,14 @@ async function resolveLead(channel: string, contactId: string, name: string): Pr
       if (match) return match.id;
       const { data: created } = await supabase
         .from("patients")
-        .insert({ name: name || `+${contactId}`, phone: `+${contactId}`, status: "New", source_channel: "whatsapp", source_agent: "WhatsApp inbox" })
+        .insert({ workspace_id: ws, name: name || `+${contactId}`, phone: `+${contactId}`, status: "New", source_channel: "whatsapp", source_agent: "WhatsApp inbox" })
         .select("id")
         .single();
       return created?.id ?? null;
     }
     const { data: created } = await supabase
       .from("patients")
-      .insert({ name: name || `${channel} user`, phone: "", status: "New", source_channel: channel, source_agent: `${channel} inbox` })
+      .insert({ workspace_id: ws, name: name || `${channel} user`, phone: "", status: "New", source_channel: channel, source_agent: `${channel} inbox` })
       .select("id")
       .single();
     return created?.id ?? null;
@@ -208,13 +220,14 @@ async function handleMessaging(channel: string, ev: any): Promise<boolean> {
 
 // Generic inbound handler shared by every channel.
 async function storeInbound(channel: string, contactId: string, name: string, body: string, mid: string | null) {
+  const ws = await activeWorkspace();
   // Dedupe by message id.
   if (mid) {
     const { data: existing } = await supabase.from("wa_messages").select("id").eq("wa_message_id", mid).maybeSingle();
     if (existing) return;
   }
 
-  const { data: convo } = await supabase.from("wa_conversations").select("*").eq("contact_phone", contactId).eq("channel", channel).maybeSingle();
+  const { data: convo } = await supabase.from("wa_conversations").select("*").eq("workspace_id", ws).eq("contact_phone", contactId).eq("channel", channel).maybeSingle();
   let conversationId: string;
   if (convo) {
     conversationId = convo.id;
@@ -223,10 +236,10 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
       .update({ contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: (convo.unread ?? 0) + 1 })
       .eq("id", conversationId);
   } else {
-    const patientId = await resolveLead(channel, contactId, name);
+    const patientId = await resolveLead(channel, contactId, name, ws);
     const { data: created } = await supabase
       .from("wa_conversations")
-      .insert({ contact_phone: contactId, channel, contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: 1, patient_id: patientId })
+      .insert({ workspace_id: ws, contact_phone: contactId, channel, contact_name: name, last_message: body, last_time: new Date().toISOString(), unread: 1, patient_id: patientId })
       .select("id")
       .single();
     conversationId = created!.id;
@@ -243,7 +256,7 @@ async function storeInbound(channel: string, contactId: string, name: string, bo
   // Conversation override, else the Agent-Hub default for this channel.
   let agentId: string | null = convo?.assigned_agent_id ?? null;
   if (!agentId) {
-    const { data: def } = await supabase.from("channel_defaults").select("agent_id, enabled").eq("channel", channel).maybeSingle();
+    const { data: def } = await supabase.from("channel_defaults").select("agent_id, enabled").eq("workspace_id", ws).eq("channel", channel).maybeSingle();
     if (def?.enabled && def.agent_id) agentId = def.agent_id;
   }
   if (!agentId) {

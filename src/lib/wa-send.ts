@@ -19,7 +19,7 @@ export async function getWaCredentials(): Promise<{ phoneNumberId: string; acces
 
 export async function getWaCredentialsFull(): Promise<WaCreds | null> {
   try {
-    const { data } = await supabase.from("whatsapp_config").select("phone_number_id, access_token, waba_id").eq("workspace", "default").maybeSingle();
+    const { data } = await supabase.from("whatsapp_config").select("phone_number_id, access_token, waba_id").not("phone_number_id","is",null).limit(1).maybeSingle();
     if (!data?.phone_number_id || !data?.access_token) return null;
     return { phoneNumberId: data.phone_number_id, accessToken: data.access_token, wabaId: data.waba_id ?? "" };
   } catch {
@@ -34,7 +34,7 @@ export function graphUrl(path: string) {
 // Messenger / Instagram credentials (a Facebook Page access token + ids).
 export async function getPageCreds(): Promise<{ pageToken: string; pageId: string; igId: string } | null> {
   try {
-    const { data } = await supabase.from("whatsapp_config").select("page_access_token, page_id, ig_id").eq("workspace", "default").maybeSingle();
+    const { data } = await supabase.from("whatsapp_config").select("page_access_token, page_id, ig_id").not("page_access_token","is",null).limit(1).maybeSingle();
     if (!data?.page_access_token) return null;
     return { pageToken: data.page_access_token, pageId: data.page_id ?? "", igId: data.ig_id ?? "" };
   } catch {

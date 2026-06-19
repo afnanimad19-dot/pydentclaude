@@ -13,6 +13,29 @@ import {
 
 export type DataSource = "live" | "demo";
 
+// Current clinic's workspace id (multi-tenant). Cached per page load; cleared on
+// auth change. All reads are scoped to this; inserts default to it in the DB.
+let _wsCache: string | null | undefined;
+export function clearWorkspaceCache() {
+  _wsCache = undefined;
+}
+export async function getWorkspaceId(): Promise<string | null> {
+  if (_wsCache !== undefined) return _wsCache;
+  try {
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) {
+      _wsCache = null;
+      return null;
+    }
+    const { data } = await supabase.from("profiles").select("workspace_id").eq("user_id", auth.user.id).maybeSingle();
+    _wsCache = data?.workspace_id ?? null;
+    return _wsCache ?? null;
+  } catch {
+    _wsCache = null;
+    return null;
+  }
+}
+
 // Some networks leave a failed connection hanging instead of rejecting —
 // race every primary query against a timeout so the demo fallback engages.
 function withTimeout<T>(p: PromiseLike<T>, ms = 6000): Promise<T> {
@@ -60,7 +83,8 @@ function rowToAppointment(r: any, patientName: string): Appointment {
 
 export async function fetchPatients(): Promise<{ patients: Patient[]; source: DataSource }> {
   try {
-    const { data, error } = await withTimeout(supabase.from("patients").select("*").order("name"));
+    const ws = await getWorkspaceId();
+    const { data, error } = await withTimeout(supabase.from("patients").select("*").eq("workspace_id", ws).order("name"));
     if (error || !data) throw error ?? new Error("no data");
     return { patients: data.map(rowToPatient), source: "live" };
   } catch {
@@ -70,8 +94,9 @@ export async function fetchPatients(): Promise<{ patients: Patient[]; source: Da
 
 export async function fetchAppointments(): Promise<{ appointments: Appointment[]; source: DataSource }> {
   try {
+    const ws = await getWorkspaceId();
     const { data, error } = await withTimeout(
-      supabase.from("appointments").select("*, patients(name)").order("date")
+      supabase.from("appointments").select("*, patients(name)").eq("workspace_id", ws).order("date")
     );
     if (error || !data) throw error ?? new Error("no data");
     return {
@@ -95,7 +120,8 @@ export interface PatientBundle {
 
 export async function fetchPatientBundle(id: string): Promise<PatientBundle | null> {
   try {
-    const { data: p, error } = await withTimeout(supabase.from("patients").select("*").eq("id", id).single());
+    const ws = await getWorkspaceId();
+    const { data: p, error } = await withTimeout(supabase.from("patients").select("*").eq("id", id).eq("workspace_id", ws).single());
     if (error || !p) throw error ?? new Error("not found");
 
     const [apts, plans, docs, ins, pays] = await Promise.all([
@@ -278,7 +304,8 @@ function agentToRow(input: Omit<AiAgent, "id" | "vapiAssistantId">): Record<stri
 
 export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSource }> {
   try {
-    const { data, error } = await withTimeout(supabase.from("agents").select("*").order("created_at"));
+    const ws = await getWorkspaceId();
+    const { data, error } = await withTimeout(supabase.from("agents").select("*").eq("workspace_id", ws).order("created_at"));
     if (error || !data) throw error ?? new Error("no data");
     return { agents: data.map(rowToAgent), source: "live" };
   } catch {
@@ -327,7 +354,8 @@ export interface ChannelDefault {
 
 export async function fetchChannelDefaults(): Promise<ChannelDefault[]> {
   try {
-    const { data } = await supabase.from("channel_defaults").select("*");
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("channel_defaults").select("*").eq("workspace_id", ws);
     return (data ?? []).map((r) => ({ channel: r.channel, agentId: r.agent_id, enabled: r.enabled }));
   } catch {
     return [];
@@ -335,9 +363,10 @@ export async function fetchChannelDefaults(): Promise<ChannelDefault[]> {
 }
 
 export async function setChannelDefault(channel: string, agentId: string | null, enabled: boolean): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
   const { error } = await supabase
     .from("channel_defaults")
-    .upsert({ channel, agent_id: agentId, enabled, updated_at: new Date().toISOString() }, { onConflict: "channel" });
+    .upsert({ workspace_id: ws, channel, agent_id: agentId, enabled, updated_at: new Date().toISOString() }, { onConflict: "workspace_id,channel" });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Saved." };
 }
@@ -352,7 +381,8 @@ export interface PhoneLine {
 
 export async function fetchPhoneLines(): Promise<PhoneLine[]> {
   try {
-    const { data } = await supabase.from("phone_lines").select("*").order("created_at");
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("phone_lines").select("*").eq("workspace_id", ws).order("created_at");
     return (data ?? []).map((r) => ({ id: r.id, number: r.number, agentId: r.agent_id, direction: r.direction, active: r.active }));
   } catch {
     return [];
@@ -360,7 +390,8 @@ export async function fetchPhoneLines(): Promise<PhoneLine[]> {
 }
 
 export async function addPhoneLine(number: string, agentId: string | null, direction: PhoneLine["direction"]): Promise<{ ok: boolean; message: string }> {
-  const { error } = await supabase.from("phone_lines").upsert({ number, agent_id: agentId, direction, active: true }, { onConflict: "number" });
+  const ws = await getWorkspaceId();
+  const { error } = await supabase.from("phone_lines").upsert({ workspace_id: ws, number, agent_id: agentId, direction, active: true }, { onConflict: "workspace_id,number" });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Phone line saved." };
 }
@@ -381,7 +412,8 @@ export async function assignAgent(conversationKey: string, agentId: string): Pro
 
 export async function fetchAssignments(): Promise<Record<string, string>> {
   try {
-    const { data } = await supabase.from("agent_assignments").select("conversation_key, agent_id").eq("active", true);
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("agent_assignments").select("conversation_key, agent_id").eq("workspace_id", ws).eq("active", true);
     return Object.fromEntries((data ?? []).map((r) => [r.conversation_key, r.agent_id]));
   } catch {
     return {};
@@ -398,7 +430,8 @@ export async function enrollFollowUp(dealKey: string, agentId: string, patientNa
 
 export async function fetchFollowUps(): Promise<Record<string, string>> {
   try {
-    const { data } = await supabase.from("follow_ups").select("deal_key, agent_id").eq("active", true);
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("follow_ups").select("deal_key, agent_id").eq("workspace_id", ws).eq("active", true);
     return Object.fromEntries((data ?? []).map((r) => [r.deal_key, r.agent_id]));
   } catch {
     return {};
@@ -414,7 +447,8 @@ export interface PatientFolder {
 
 export async function fetchFolders(): Promise<PatientFolder[]> {
   try {
-    const { data } = await supabase.from("patient_folders").select("*").order("name");
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("patient_folders").select("*").eq("workspace_id", ws).order("name");
     return (data ?? []).map((r) => ({ id: r.id, name: r.name }));
   } catch {
     return [];
@@ -465,7 +499,8 @@ export interface WaTemplate {
 
 export async function fetchWaTemplates(): Promise<{ templates: WaTemplate[]; source: DataSource }> {
   try {
-    const { data, error } = await withTimeout(supabase.from("wa_templates").select("*").order("created_at", { ascending: false }));
+    const ws = await getWorkspaceId();
+    const { data, error } = await withTimeout(supabase.from("wa_templates").select("*").eq("workspace_id", ws).order("created_at", { ascending: false }));
     if (error || !data) throw error ?? new Error("no data");
     return {
       templates: data.map((r) => ({
@@ -516,7 +551,8 @@ export interface IgPost {
 
 export async function fetchIgPosts(): Promise<IgPost[]> {
   try {
-    const { data } = await supabase.from("ig_posts").select("*").order("scheduled_for");
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("ig_posts").select("*").eq("workspace_id", ws).order("scheduled_for");
     return (data ?? []).map((r) => ({
       id: r.id,
       caption: r.caption,
@@ -587,7 +623,8 @@ export interface Workflow {
 
 export async function fetchWorkflows(): Promise<{ workflows: Workflow[]; source: DataSource }> {
   try {
-    const { data, error } = await withTimeout(supabase.from("workflows").select("*").order("created_at"));
+    const ws = await getWorkspaceId();
+    const { data, error } = await withTimeout(supabase.from("workflows").select("*").eq("workspace_id", ws).order("created_at"));
     if (error || !data) throw error ?? new Error("no data");
     return {
       workflows: data.map((r) => ({
@@ -607,7 +644,8 @@ export async function fetchWorkflows(): Promise<{ workflows: Workflow[]; source:
 
 export async function fetchWorkflow(id: string): Promise<Workflow | null> {
   try {
-    const { data, error } = await supabase.from("workflows").select("*").eq("id", id).single();
+    const ws = await getWorkspaceId();
+    const { data, error } = await supabase.from("workflows").select("*").eq("id", id).eq("workspace_id", ws).single();
     if (error || !data) return null;
     return {
       id: data.id,
@@ -777,7 +815,8 @@ export async function deletePrescription(id: string): Promise<void> {
 
 export async function fetchStageAgents(): Promise<Record<string, string>> {
   try {
-    const { data } = await supabase.from("pipeline_stage_agents").select("stage_id, agent_id").not("agent_id", "is", null);
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("pipeline_stage_agents").select("stage_id, agent_id").eq("workspace_id", ws).not("agent_id", "is", null);
     return Object.fromEntries((data ?? []).map((r) => [r.stage_id, r.agent_id]));
   } catch {
     return {};
@@ -786,9 +825,10 @@ export async function fetchStageAgents(): Promise<Record<string, string>> {
 
 export async function setStageAgentDb(stageId: string, agentId: string | null): Promise<void> {
   try {
+    const ws = await getWorkspaceId();
     await supabase
       .from("pipeline_stage_agents")
-      .upsert({ stage_id: stageId, agent_id: agentId, updated_at: new Date().toISOString() }, { onConflict: "stage_id" });
+      .upsert({ workspace_id: ws, stage_id: stageId, agent_id: agentId, updated_at: new Date().toISOString() }, { onConflict: "workspace_id,stage_id" });
   } catch {
     /* demo mode */
   }
@@ -824,7 +864,8 @@ export const emptyWhatsappConfig: WhatsappConfig = {
 
 export async function fetchWhatsappConfig(): Promise<WhatsappConfig> {
   try {
-    const { data } = await supabase.from("whatsapp_config").select("*").eq("workspace", "default").maybeSingle();
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("whatsapp_config").select("*").eq("workspace", ws ?? "default").maybeSingle();
     if (!data) return emptyWhatsappConfig;
     return {
       displayNumber: data.display_number ?? "",
@@ -846,9 +887,10 @@ export async function fetchWhatsappConfig(): Promise<WhatsappConfig> {
 export async function saveWhatsappConfig(c: WhatsappConfig): Promise<{ ok: boolean; message: string }> {
   // "Connected" means the essential routing credentials are present.
   const connected = !!(c.phoneNumberId && c.accessToken && c.verifyToken);
+  const ws = await getWorkspaceId();
   const { error } = await supabase.from("whatsapp_config").upsert(
     {
-      workspace: "default",
+      workspace: ws ?? "default",
       display_number: c.displayNumber,
       phone_number_id: c.phoneNumberId,
       waba_id: c.wabaId,
@@ -894,7 +936,8 @@ export interface WaMessage {
 
 export async function fetchWaConversations(): Promise<WaConversation[]> {
   try {
-    const { data } = await supabase.from("wa_conversations").select("*").order("last_time", { ascending: false });
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("wa_conversations").select("*").eq("workspace_id", ws).order("last_time", { ascending: false });
     return (data ?? []).map((r) => ({
       id: r.id,
       contactPhone: r.contact_phone,
@@ -1043,7 +1086,8 @@ export interface WaBroadcast {
 
 export async function fetchWaBroadcasts(): Promise<WaBroadcast[]> {
   try {
-    const { data } = await supabase.from("wa_broadcasts").select("*").order("created_at", { ascending: false });
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("wa_broadcasts").select("*").eq("workspace_id", ws).order("created_at", { ascending: false });
     return (data ?? []).map((r) => ({
       id: r.id,
       name: r.name,
@@ -1091,10 +1135,11 @@ export async function createBroadcast(payload: {
   scheduledFor: string | null;
 }): Promise<{ ok: boolean; error?: string; sent?: number; failed?: number; recipients?: number; scheduled?: boolean }> {
   try {
+    const workspaceId = await getWorkspaceId();
     const res = await fetch("/api/whatsapp/broadcast", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, workspaceId }),
     });
     const data = await res.json();
     if (!res.ok) return { ok: false, error: data.error ?? "broadcast failed" };

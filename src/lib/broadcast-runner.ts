@@ -9,8 +9,9 @@ function paramCount(body: string): number {
 
 // Resolve the audience for a broadcast: patients in its folder (or all), with a
 // usable phone number.
-export async function broadcastAudience(folderId: string | null): Promise<any[]> {
+export async function broadcastAudience(folderId: string | null, workspaceId?: string | null): Promise<any[]> {
   let q = supabase.from("patients").select("id, name, phone");
+  if (workspaceId) q = q.eq("workspace_id", workspaceId);
   if (folderId) q = q.eq("folder_id", folderId);
   const { data } = await q;
   return (data ?? []).filter((p: any) => p.phone && String(p.phone).replace(/\D/g, "").length >= 7);
@@ -30,7 +31,7 @@ export async function runBroadcast(broadcastId: string): Promise<{ ok: boolean; 
 
   await supabase.from("wa_broadcasts").update({ status: "Sending" }).eq("id", broadcastId);
 
-  const audience = await broadcastAudience(b.folder_id ?? null);
+  const audience = await broadcastAudience(b.folder_id ?? null, b.workspace_id ?? null);
   const { data: tpl } = await supabase.from("wa_templates").select("body").eq("name", b.template_name).maybeSingle();
   const nParams = tpl ? paramCount(tpl.body ?? "") : 0;
 
