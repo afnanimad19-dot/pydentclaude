@@ -46,6 +46,22 @@ function withTimeout<T>(p: PromiseLike<T>, ms = 6000): Promise<T> {
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+// Resilient upsert that does NOT rely on ON CONFLICT (which 42P10's if the matching
+// unique index/constraint isn't present). Matches on `match`, updates if found else inserts.
+async function upsertRow(table: string, match: Record<string, any>, row: Record<string, any>): Promise<{ error: any }> {
+  let sel = supabase.from(table).select(Object.keys(match)[0]);
+  for (const [k, v] of Object.entries(match)) sel = sel.eq(k, v);
+  const { data: existing } = await sel.limit(1).maybeSingle();
+  if (existing) {
+    let upd = supabase.from(table).update(row);
+    for (const [k, v] of Object.entries(match)) upd = upd.eq(k, v);
+    return await upd;
+  }
+  return await supabase.from(table).insert({ ...match, ...row });
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
 function rowToPatient(r: any): Patient {
   return {
     id: r.id,
@@ -369,9 +385,7 @@ export async function fetchChannelDefaults(): Promise<ChannelDefault[]> {
 
 export async function setChannelDefault(channel: string, agentId: string | null, enabled: boolean): Promise<{ ok: boolean; message: string }> {
   const ws = await getWorkspaceId();
-  const { error } = await supabase
-    .from("channel_defaults")
-    .upsert({ workspace_id: ws, channel, agent_id: agentId, enabled, updated_at: new Date().toISOString() }, { onConflict: "workspace_id,channel" });
+  const { error } = await upsertRow("channel_defaults", { workspace_id: ws, channel }, { agent_id: agentId, enabled, updated_at: new Date().toISOString() });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Saved." };
 }
@@ -396,7 +410,7 @@ export async function fetchPhoneLines(): Promise<PhoneLine[]> {
 
 export async function addPhoneLine(number: string, agentId: string | null, direction: PhoneLine["direction"]): Promise<{ ok: boolean; message: string }> {
   const ws = await getWorkspaceId();
-  const { error } = await supabase.from("phone_lines").upsert({ workspace_id: ws, number, agent_id: agentId, direction, active: true }, { onConflict: "workspace_id,number" });
+  const { error } = await upsertRow("phone_lines", { workspace_id: ws, number }, { agent_id: agentId, direction, active: true });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Phone line saved." };
 }
@@ -410,9 +424,7 @@ export async function updateAgentStatus(id: string, status: AiAgent["status"]): 
 }
 
 export async function assignAgent(conversationKey: string, agentId: string): Promise<void> {
-  await supabase
-    .from("agent_assignments")
-    .upsert({ conversation_key: conversationKey, agent_id: agentId, active: true }, { onConflict: "conversation_key" });
+  await upsertRow("agent_assignments", { conversation_key: conversationKey }, { agent_id: agentId, active: true });
 }
 
 export async function fetchAssignments(): Promise<Record<string, string>> {
@@ -426,9 +438,7 @@ export async function fetchAssignments(): Promise<Record<string, string>> {
 }
 
 export async function enrollFollowUp(dealKey: string, agentId: string, patientName: string): Promise<{ ok: boolean; message: string }> {
-  const { error } = await supabase
-    .from("follow_ups")
-    .upsert({ deal_key: dealKey, agent_id: agentId, patient_name: patientName, active: true }, { onConflict: "deal_key" });
+  const { error } = await upsertRow("follow_ups", { deal_key: dealKey }, { agent_id: agentId, patient_name: patientName, active: true });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Enrolled in daily follow-up." };
 }
@@ -706,9 +716,7 @@ export async function fetchToothMarks(patientId: string): Promise<Record<number,
 
 export async function setToothMark(patientId: string, tooth: number, condition: ToothCondition): Promise<void> {
   try {
-    await supabase
-      .from("tooth_chart_marks")
-      .upsert({ patient_id: patientId, tooth, condition, updated_at: new Date().toISOString() }, { onConflict: "patient_id,tooth" });
+    await upsertRow("tooth_chart_marks", { patient_id: patientId, tooth }, { condition, updated_at: new Date().toISOString() });
   } catch {
     /* demo mode — keep local state only */
   }
@@ -831,9 +839,7 @@ export async function fetchStageAgents(): Promise<Record<string, string>> {
 export async function setStageAgentDb(stageId: string, agentId: string | null): Promise<void> {
   try {
     const ws = await getWorkspaceId();
-    await supabase
-      .from("pipeline_stage_agents")
-      .upsert({ workspace_id: ws, stage_id: stageId, agent_id: agentId, updated_at: new Date().toISOString() }, { onConflict: "workspace_id,stage_id" });
+    await upsertRow("pipeline_stage_agents", { workspace_id: ws, stage_id: stageId }, { agent_id: agentId, updated_at: new Date().toISOString() });
   } catch {
     /* demo mode */
   }
