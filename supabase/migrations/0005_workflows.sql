@@ -35,4 +35,4 @@ insert into workflows (id, name, channel, status, triggered_today, nodes) values
     {"id":"n2","type":"message","title":"Empathetic rebook text","detail":"“We missed you today — want to grab a new time?” with booking link"},
     {"id":"n3","type":"condition","title":"Booked within 48h?","detail":"If not, add to Pipeline → Contacted and notify Front Desk"}
   ]'::jsonb)
-on conflict (id) do nothing;
+on conflict do nothing;

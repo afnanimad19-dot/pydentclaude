@@ -102,4 +102,4 @@ insert into agents (id, name, kind, role, status, model, voice, language, first_
    'You are Sam, a consultative sales assistant. You follow up on treatment plans that were presented but not accepted. Focus on value, financing options and answering objections. Never pressure; always offer a consult call.',
    'Financing: 12-month 0% via in-house plan on treatment over $1,000. Implant packages from $3,900. Veneers from $800/tooth.',
    false, false, false, array['whatsapp','email'])
-on conflict (id) do nothing;
+on conflict do nothing;

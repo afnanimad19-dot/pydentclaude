@@ -131,7 +131,7 @@ insert into patients (id, pat_num, name, phone, email, birthdate, balance, insur
   ('00000000-0000-0000-0000-000000000006', 1455, 'Daniel Osei',     '+1 (305) 555-0133', 'd.osei@gmail.com',      '1990-01-08', 75,     'Aetna',            '2026-06-09', '2026-09-09 10:00+00', false, 'Active'),
   ('00000000-0000-0000-0000-000000000007', 1503, 'Emily Tran',      '+1 (786) 555-0108', 'emily.tran@icloud.com', '1998-06-25', 0,      'Delta Dental PPO', null,         '2026-06-12 16:00+00', false, 'New'),
   ('00000000-0000-0000-0000-000000000008', 1544, 'Luis Mendoza',    '+1 (305) 555-0121', 'lmendoza@hotmail.com',  '1975-03-14', 520,    'Humana',           '2026-02-02', null,                  true,  'Active')
-on conflict (id) do nothing;
+on conflict do nothing;
 
 insert into appointments (apt_num, patient_id, provider, operatory, procedure, date, time, duration_min, status, confirmed_via) values
   (5012, '00000000-0000-0000-0000-000000000001', 'Dr. Patel',       'Op 1', 'Prophylaxis + Exam',     '2026-06-12', '09:00', 60, 'Confirmed',   'whatsapp'),
@@ -139,13 +139,13 @@ insert into appointments (apt_num, patient_id, provider, operatory, procedure, d
   (5014, '00000000-0000-0000-0000-000000000003', 'Dr. Gomez',       'Op 3', 'Crown Seat #19',         '2026-06-13', '14:30', 60, 'Unconfirmed', null),
   (5015, '00000000-0000-0000-0000-000000000004', 'Dr. Gomez',       'Op 1', 'Implant Consult',        '2026-06-18', '11:00', 45, 'Scheduled',   null),
   (5016, '00000000-0000-0000-0000-000000000006', 'Hygiene — Kelly', 'Op 4', 'Perio Maintenance',      '2026-09-09', '10:00', 50, 'Scheduled',   'sms')
-on conflict (apt_num) do nothing;
+on conflict do nothing;
 
 insert into treatment_plans (id, patient_id, name, presented_on, status) values
   ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000004', 'Implant restoration — lower right', '2026-04-10', 'Presented'),
   ('10000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000008', 'Crown + restorative',               '2026-02-02', 'Accepted'),
   ('10000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000003', 'Crown seat',                        '2026-05-12', 'In progress')
-on conflict (id) do nothing;
+on conflict do nothing;
 
 insert into treatment_procedures (plan_id, code, description, tooth, fee, status) values
   ('10000000-0000-0000-0000-000000000001', 'D6010', 'Implant placement',              '#30', 2400, 'Planned'),

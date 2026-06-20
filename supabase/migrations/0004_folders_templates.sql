@@ -58,7 +58,7 @@ insert into patient_folders (id, name) values
   ('30000000-0000-0000-0000-000000000001', 'Came from WhatsApp'),
   ('30000000-0000-0000-0000-000000000002', 'Came from voice agent'),
   ('30000000-0000-0000-0000-000000000003', 'Recall overdue')
-on conflict (name) do nothing;
+on conflict do nothing;
 
 insert into wa_templates (name, category, language, header_type, header_text, body, footer, buttons, status) values
   ('recall_cleaning_reminder', 'MARKETING', 'English', 'text', 'Time for your cleaning! 🦷',
