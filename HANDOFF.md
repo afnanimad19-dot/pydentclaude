@@ -42,12 +42,18 @@ Open Dental: app → /api/opendental/* gateway → Cloudflare Tunnel → clinic 
   is app-level); strict RLS is a future hardening task.
 
 ## 5. Migrations (Supabase SQL Editor) — RUN ONCE, IN ORDER
-`supabase/migrations/0001 … 0020`. **Migrations are not idempotent except 0020.**
-Re-running old seed files used to throw `ERROR 42P10 ON CONFLICT` (now fixed by
-replacing `on conflict (col)` with `on conflict do nothing`). **To catch up the
-recent schema, run only `0020_catchup.sql`** (idempotent; = 0015–0019:
-opendental_config, appointments.external_id, agents.behavior, wa_messages dedupe
-index, voice_calls). Requires 0014 (multi-tenant) already applied.
+`supabase/migrations/0001 … 0023`. **Migrations are not idempotent except the
+recent catch-ups (0020+).** Re-running old seed files used to throw
+`ERROR 42P10 ON CONFLICT` (fixed by replacing `on conflict (col)` with
+`on conflict do nothing`, and routing all app upserts through `upsertRow()`).
+- **`0022_add_missing_tables.sql`** — created the only two tables that were missing
+  (`opendental_config`, `voice_calls`) + `appointments.external_id` + dedup index.
+  Idempotent, no ON CONFLICT. **User confirmed this ran successfully.**
+- **`0023_team_members.sql` — NEW, USER MUST RUN THIS.** Creates `team_members`
+  (invite by email + role admin/editor/viewer + status invited/active), adds
+  `wa_conversations.assigned_to`, and updates `handle_new_user()` so an invited
+  email JOINS the existing clinic workspace instead of creating a new one.
+  Idempotent (`create … if not exists`), no targeted ON CONFLICT. Run in a fresh tab.
 
 ## 6. Env vars (Netlify → Site config → Environment variables)
 Required/used:
@@ -65,7 +71,12 @@ Per-clinic creds (WhatsApp token, Page token, Open Dental URL/key) are saved IN-
 - Multi-tenant auth; demo data removed; signup → empty workspace (email verification
   is a Supabase toggle).
 - Omnichannel inbox (WhatsApp/IG/Messenger live), lifecycle rail, assign-to-me /
-  hand-back, scroll-to-latest.
+  assign-to-teammate (dropdown) / hand-back-to-AI, scroll-to-latest.
+- **Team members** (Settings → Team): invite staff by email + role
+  (Administrator/Editor/Viewer), edit role, remove. Invited emails auto-join the
+  clinic workspace on signup. In the inbox, any conversation can be assigned to
+  "Me" or a named teammate — assigning to a human stops AI auto-reply until handed
+  back. Stored in `team_members`; assignee in `wa_conversations.assigned_to`.
 - Lead auto-capture; returning-session welcome (~15 min) with continue/follow-up/
   new-booking options.
 - Chat agents: name/type/language/model, **Instructions** + **Behavior** boxes,
@@ -88,6 +99,9 @@ Per-clinic creds (WhatsApp token, Page token, Open Dental URL/key) are saved IN-
 - `src/lib/agent-reply.ts` — OpenRouter, tool loop (book/slots/reschedule/cancel).
 - `src/lib/wa-send.ts` — WhatsApp/Messenger send, creds resolved by phone/page id.
 - `src/components/dashboard/agents-shared.tsx` — agent create/edit modal.
+- `src/components/dashboard/team-members.tsx` — Team tab panel (invite/role/remove).
+  Inbox assign-to-teammate lives in `src/app/dashboard/inbox/page.tsx`
+  (`assignToPerson` / `assignToMe` → `setWaAssignee` in db.ts).
 - `src/app/api/vapi/events/route.ts`, `src/app/dashboard/voice/page.tsx` — voice.
 - `src/app/api/opendental/*`, `src/lib/opendental-gateway.ts`, `opendental-connector/`.
 - Docs: `PROJECT_OVERVIEW.md`, `AGENT_GUIDE.md`, `VOICE_AGENT_VAPI.md`,
@@ -111,8 +125,10 @@ Per-clinic creds (WhatsApp token, Page token, Open Dental URL/key) are saved IN-
 - Test numbers only message **allowlisted recipients** until the Meta app is published.
 
 ## 11. Roadmap / what's next
-1. Team members + roles (invite by email; Administrator/Editor/Viewer).
-2. Phone-booking tool on the Vapi assistant; true Vapi-voice preview.
+1. ~~Team members + roles~~ ✅ DONE (invite by email; Administrator/Editor/Viewer;
+   inbox assign-to-teammate). Next: enforce role permissions in the UI/routes
+   (currently roles are stored but not yet gating access).
+2. Phone-booking tool on the Vapi assistant; true Vapi-voice preview ("weppy").
 3. Website chat widget + HubSpot/Zoho lead sync (marketing data only).
 4. PDF/Word knowledge-base extraction; strict RLS hardening; OpenDental connector
    productionising (find-or-create patient → real PatNum).

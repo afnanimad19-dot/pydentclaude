@@ -18,6 +18,7 @@ import {
   User,
   PlugZap,
   Tag as TagIcon,
+  UsersRound,
   Palette,
   LogOut,
   Plus,
@@ -27,6 +28,7 @@ import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { WhatsAppConfigForm } from "@/components/dashboard/whatsapp-config";
 import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
+import { TeamMembersPanel } from "@/components/dashboard/team-members";
 import { ThemeToggle } from "@/components/theme";
 import { fetchPatients } from "@/lib/db";
 import { supabase } from "@/lib/supabase";
@@ -56,6 +58,7 @@ const TABS = [
   { key: "channels", label: "Channels", icon: MessageCircle },
   { key: "whatsapp", label: "WhatsApp config", icon: MessageCircle },
   { key: "tags", label: "Tags", icon: TagIcon },
+  { key: "team", label: "Team", icon: UsersRound },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -282,6 +285,8 @@ export default function SettingsPage() {
           </div>
         </Card>
       )}
+
+      {tab === "team" && <TeamMembersPanel />}
     </>
   );
 }

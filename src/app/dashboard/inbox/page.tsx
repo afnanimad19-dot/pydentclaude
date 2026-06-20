@@ -16,12 +16,14 @@ import {
   markWaRead,
   assignWaAgent,
   setWaLifecycle,
-  setWaStatus,
+  setWaAssignee,
+  fetchTeamMembers,
   sendWaReply,
   type AiAgent,
   type ChannelDefault,
   type WaConversation,
   type WaMessage,
+  type TeamMember,
 } from "@/lib/db";
 import { conversations, channelMeta, patients as mockPatients, type Channel, type Message, type Patient } from "@/lib/mock-data";
 
@@ -92,7 +94,9 @@ export default function InboxPage() {
   const [liveAssign, setLiveAssign] = useState<Record<string, string | null>>({});
   const [liveStage, setLiveStage] = useState<Record<string, string>>({});
   const [liveStatus, setLiveStatus] = useState<Record<string, string>>({});
+  const [liveAssignee, setLiveAssignee] = useState<Record<string, string | null>>({});
   const [livePatients, setLivePatients] = useState<Patient[]>([]);
+  const [team, setTeam] = useState<TeamMember[]>([]);
 
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [channelDefaults, setChannelDefaults] = useState<ChannelDefault[]>([]);
@@ -120,6 +124,7 @@ export default function InboxPage() {
     fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "chat")));
     fetchAssignments().then(setDemoAssignments);
     fetchChannelDefaults().then(setChannelDefaults);
+    fetchTeamMembers().then(setTeam);
   }, []);
 
   const refreshLive = useCallback(() => {
@@ -128,6 +133,7 @@ export default function InboxPage() {
       setLiveAssign((prev) => ({ ...Object.fromEntries(cs.map((c) => [c.id, c.assignedAgentId])), ...prev }));
       setLiveStage((prev) => ({ ...Object.fromEntries(cs.map((c) => [c.id, c.lifecycle])), ...prev }));
       setLiveStatus((prev) => ({ ...Object.fromEntries(cs.map((c) => [c.id, c.status])), ...prev }));
+      setLiveAssignee((prev) => ({ ...Object.fromEntries(cs.map((c) => [c.id, c.assignedTo])), ...prev }));
       const id = activeIdRef.current;
       if (cs.some((c) => c.id === id)) fetchWaMessages(id).then(setLiveMessages);
     });
@@ -232,6 +238,7 @@ export default function InboxPage() {
   }, [activeId, thread.length]);
 
   const humanHandled = !!active?.live && liveStatus[active.id] === "human";
+  const currentAssignee = active?.live ? liveAssignee[active.id] ?? null : null;
   const hubDefault = active && !humanHandled ? channelDefaults.find((d) => d.channel === active.channel && d.enabled && d.agentId) : undefined;
   const activeAgentId = active?.live ? liveAssign[active.id] ?? null : demoAssignments[active?.id ?? ""] ?? null;
   const assignedAgent = humanHandled ? null : agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.id === hubDefault?.agentId) ?? null;
@@ -265,9 +272,10 @@ export default function InboxPage() {
       // Handing (back) to an AI agent re-opens the conversation for auto-replies.
       setLiveAssign((prev) => ({ ...prev, [active.id]: agentId || null }));
       setLiveStatus((prev) => ({ ...prev, [active.id]: "open" }));
+      setLiveAssignee((prev) => ({ ...prev, [active.id]: null }));
       setMineSet((prev) => { const n = new Set(prev); n.delete(active.id); return n; });
       assignWaAgent(active.id, agentId || null);
-      setWaStatus(active.id, "open");
+      setWaAssignee(active.id, null);
       if (agentId) toast(`Handed back to ${agents.find((a) => a.id === agentId)?.name ?? "the agent"} — AI will reply again.`);
     } else {
       setDemoAssignments((prev) => ({ ...prev, [active.id]: agentId }));
@@ -282,12 +290,31 @@ export default function InboxPage() {
       // Mark the conversation human-handled so the webhook stops auto-replying.
       setLiveAssign((prev) => ({ ...prev, [active.id]: null }));
       setLiveStatus((prev) => ({ ...prev, [active.id]: "human" }));
+      setLiveAssignee((prev) => ({ ...prev, [active.id]: ME }));
       assignWaAgent(active.id, null);
-      setWaStatus(active.id, "human");
+      setWaAssignee(active.id, ME);
     } else {
       setDemoAssignments((prev) => { const n = { ...prev }; delete n[active.id]; return n; });
     }
     toast(`${active.name}'s conversation is assigned to you — the AI agent steps back until you hand it back.`);
+  }
+
+  // Assign a live conversation to a teammate (by name/email). The AI steps back so
+  // that teammate handles the patient personally. Empty value clears the assignee.
+  function assignToPerson(person: string) {
+    if (!active) return;
+    if (!person) { assignAgentForActive(""); setLiveAssignee((prev) => ({ ...prev, [active.id]: null })); return; }
+    if (active.live) {
+      setLiveAssign((prev) => ({ ...prev, [active.id]: null }));
+      setLiveStatus((prev) => ({ ...prev, [active.id]: "human" }));
+      setLiveAssignee((prev) => ({ ...prev, [active.id]: person }));
+      setMineSet((prev) => { const n = new Set(prev); n.delete(active.id); return n; });
+      assignWaAgent(active.id, null);
+      setWaAssignee(active.id, person);
+    } else {
+      setDemoAssignments((prev) => { const n = { ...prev }; delete n[active.id]; return n; });
+    }
+    toast(`${active.name}'s conversation is assigned to ${person} — they'll handle the reply.`);
   }
 
   function setStage(stage: string) {
@@ -413,7 +440,7 @@ export default function InboxPage() {
             <div>
               <p className="flex items-center gap-2 text-sm font-semibold text-ink-900">
                 {active.name} <StatusBadge status={active.lifecycle} tone={stageTone(active.lifecycle)} />
-                {humanHandled && <StatusBadge status="You" tone="blue" />}
+                {humanHandled && <StatusBadge status={currentAssignee === ME ? "You" : currentAssignee ? currentAssignee : "Human"} tone="blue" />}
               </p>
               <p className="text-xs text-ink-400">via {channelMeta[active.channel].label}{active.phone ? ` · +${active.phone}` : ""}</p>
             </div>
@@ -426,6 +453,18 @@ export default function InboxPage() {
               <option value="">{humanHandled ? "No AI — you're handling it" : hubDefault ? `Hub default — ${agents.find((a) => a.id === hubDefault.agentId)?.name ?? "agent"}` : "No AI agent"}</option>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
             </select>
+            {active.live && (
+              <select
+                value={currentAssignee === ME ? "__me__" : currentAssignee ?? ""}
+                onChange={(e) => { const v = e.target.value; if (v === "__me__") assignToMe(); else assignToPerson(v); }}
+                className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none"
+                title="Assign to a teammate"
+              >
+                <option value="">Assign to…</option>
+                <option value="__me__">Me ({ME})</option>
+                {team.map((m) => <option key={m.id} value={m.name || m.email}>{m.name || m.email}</option>)}
+              </select>
+            )}
             {humanHandled ? (
               <button onClick={() => assignAgentForActive("")} className="flex items-center gap-1.5 rounded-lg border border-brand-300 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-100 dark:text-brand-300"><Bot className="h-3.5 w-3.5" /> Hand back to AI</button>
             ) : (

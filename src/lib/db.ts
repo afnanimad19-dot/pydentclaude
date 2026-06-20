@@ -936,6 +936,7 @@ export interface WaConversation {
   status: string;
   patientId: string | null;
   channel: string;
+  assignedTo: string | null;
 }
 
 export interface WaMessage {
@@ -963,6 +964,7 @@ export async function fetchWaConversations(): Promise<WaConversation[]> {
       status: r.status ?? "open",
       patientId: r.patient_id ?? null,
       channel: r.channel ?? "whatsapp",
+      assignedTo: r.assigned_to ?? null,
     }));
   } catch {
     return [];
@@ -1246,5 +1248,64 @@ export async function fetchVoiceCalls(): Promise<VoiceCallRecord[]> {
     }));
   } catch {
     return [];
+  }
+}
+
+// ----------------------------------------------------------- team members (0023)
+
+export interface TeamMember {
+  id: string;
+  email: string;
+  name: string;
+  role: "admin" | "editor" | "viewer";
+  status: "invited" | "active";
+}
+
+export async function fetchTeamMembers(): Promise<TeamMember[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("team_members").select("*").eq("workspace_id", ws).order("created_at");
+    return (data ?? []).map((r) => ({ id: r.id, email: r.email, name: r.name ?? "", role: r.role, status: r.status }));
+  } catch {
+    return [];
+  }
+}
+
+export async function inviteTeamMember(email: string, role: TeamMember["role"], name: string): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const clean = email.trim().toLowerCase();
+  const { data: existing } = await supabase.from("team_members").select("id").eq("workspace_id", ws).eq("email", clean).maybeSingle();
+  if (existing) return { ok: false, message: "That email is already a member." };
+  const { error } = await supabase.from("team_members").insert({ workspace_id: ws, email: clean, name: name.trim(), role, status: "invited" });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: `Invited ${clean}. They join your clinic when they sign up with this email.` };
+}
+
+export async function updateTeamMember(id: string, patch: Partial<Pick<TeamMember, "role">>): Promise<void> {
+  try {
+    await supabase.from("team_members").update(patch).eq("id", id);
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function removeTeamMember(id: string): Promise<void> {
+  try {
+    await supabase.from("team_members").delete().eq("id", id);
+  } catch {
+    /* ignore */
+  }
+}
+
+// Assign a live conversation to a person (name/email) — turns AI off — or clear it.
+export async function setWaAssignee(conversationId: string, assignee: string | null): Promise<void> {
+  try {
+    await supabase
+      .from("wa_conversations")
+      .update({ assigned_to: assignee, status: assignee ? "human" : "open", assigned_agent_id: assignee ? null : undefined })
+      .eq("id", conversationId);
+  } catch {
+    /* demo */
   }
 }
