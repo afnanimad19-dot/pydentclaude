@@ -311,6 +311,7 @@ export default function InboxPage() {
           model: agent.model,
           agentName: agent.name,
           instructions: agent.instructions,
+          behavior: agent.behavior,
           knowledgeBase: agent.knowledgeBase,
           capabilities: { canBook: agent.canBook, canReschedule: agent.canReschedule, canCancel: agent.canCancel },
           patientContext: patient ? `Name: ${patient.name}. Insurance: ${patient.insurance}. Last visit: ${patient.lastVisit}. Next appointment: ${patient.nextAppointment ?? "none"}. Balance: $${patient.balance}.` : "",

@@ -6,6 +6,7 @@ export interface AgentReplyInput {
   model?: string;
   agentName?: string;
   instructions?: string;
+  behavior?: string;
   knowledgeBase?: string;
   capabilities?: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean };
   patientContext?: string;
@@ -20,7 +21,7 @@ export interface BookingArgs {
 }
 
 function buildSystem(input: AgentReplyInput): string {
-  const { agentName = "Assistant", instructions = "", knowledgeBase = "", capabilities = {}, patientContext = "", sessionNote = "" } = input;
+  const { agentName = "Assistant", instructions = "", behavior = "", knowledgeBase = "", capabilities = {}, patientContext = "", sessionNote = "" } = input;
   const abilities = [
     capabilities.canBook && "book new appointments",
     capabilities.canReschedule && "reschedule existing appointments",
@@ -33,6 +34,7 @@ function buildSystem(input: AgentReplyInput): string {
     `You are ${agentName}, an AI assistant for a dental clinic, chatting with a patient.`,
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
     instructions,
+    behavior && `BEHAVIOR RULES (follow strictly — how to act):\n${behavior}`,
     knowledgeBase && `KNOWLEDGE BASE (answer only from this; if the answer isn't here, say you'll check with the team):\n${knowledgeBase}`,
     abilities && `You are allowed to: ${abilities}.`,
     capabilities.canBook && "When the patient has agreed on a specific date AND time, call the book_appointment tool. Before offering times, call get_available_slots to fetch real open slots and only offer those. Do not claim an appointment is booked unless the tool succeeded.",

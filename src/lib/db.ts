@@ -243,6 +243,7 @@ export interface AiAgent {
   firstMessage: string;
   language: string;
   instructions: string;
+  behavior: string;
   knowledgeBase: string;
   canBook: boolean;
   canReschedule: boolean;
@@ -267,6 +268,7 @@ function rowToAgent(r: any): AiAgent {
     firstMessage: r.first_message ?? "",
     language: r.language ?? "English",
     instructions: r.instructions ?? "",
+    behavior: r.behavior ?? "",
     knowledgeBase: r.knowledge_base ?? "",
     canBook: !!r.can_book,
     canReschedule: !!r.can_reschedule,
@@ -290,6 +292,7 @@ function agentToRow(input: Omit<AiAgent, "id" | "vapiAssistantId">): Record<stri
     first_message: input.firstMessage,
     language: input.language,
     instructions: input.instructions,
+    behavior: input.behavior,
     knowledge_base: input.knowledgeBase,
     can_book: input.canBook,
     can_reschedule: input.canReschedule,
@@ -316,11 +319,12 @@ export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSo
 export async function createAgent(input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string; id?: string }> {
   const row = agentToRow(input);
   let { data, error } = await supabase.from("agents").insert(row).select("id").single();
-  if (error && /purpose|first_message_mode|kb_files/.test(error.message)) {
-    // Migration 0003 not applied yet — retry without the new columns.
+  if (error && /purpose|first_message_mode|kb_files|behavior/.test(error.message)) {
+    // Newer columns not migrated yet — retry without them.
     delete row.purpose;
     delete row.first_message_mode;
     delete row.kb_files;
+    delete row.behavior;
     ({ data, error } = await supabase.from("agents").insert(row).select("id").single());
   }
   if (error) return { ok: false, message: error.message };
@@ -334,10 +338,11 @@ export async function setAgentVapiId(id: string, vapiId: string): Promise<void> 
 export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
   const row = agentToRow(input);
   let { error } = await supabase.from("agents").update(row).eq("id", id);
-  if (error && /purpose|first_message_mode|kb_files/.test(error.message)) {
+  if (error && /purpose|first_message_mode|kb_files|behavior/.test(error.message)) {
     delete row.purpose;
     delete row.first_message_mode;
     delete row.kb_files;
+    delete row.behavior;
     ({ error } = await supabase.from("agents").update(row).eq("id", id));
   }
   if (error) return { ok: false, message: error.message };
@@ -888,23 +893,25 @@ export async function saveWhatsappConfig(c: WhatsappConfig): Promise<{ ok: boole
   // "Connected" means the essential routing credentials are present.
   const connected = !!(c.phoneNumberId && c.accessToken && c.verifyToken);
   const ws = await getWorkspaceId();
-  const { error } = await supabase.from("whatsapp_config").upsert(
-    {
-      workspace: ws ?? "default",
-      display_number: c.displayNumber,
-      phone_number_id: c.phoneNumberId,
-      waba_id: c.wabaId,
-      access_token: c.accessToken,
-      verify_token: c.verifyToken,
-      pin: c.pin,
-      connected,
-      page_id: c.pageId,
-      page_access_token: c.pageAccessToken,
-      ig_id: c.igId,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "workspace" }
-  );
+  const key = ws ?? "default";
+  const row = {
+    display_number: c.displayNumber,
+    phone_number_id: c.phoneNumberId,
+    waba_id: c.wabaId,
+    access_token: c.accessToken,
+    verify_token: c.verifyToken,
+    pin: c.pin,
+    connected,
+    page_id: c.pageId,
+    page_access_token: c.pageAccessToken,
+    ig_id: c.igId,
+    updated_at: new Date().toISOString(),
+  };
+  // Update-or-insert (no ON CONFLICT dependency).
+  const { data: existing } = await supabase.from("whatsapp_config").select("workspace").eq("workspace", key).maybeSingle();
+  const { error } = existing
+    ? await supabase.from("whatsapp_config").update(row).eq("workspace", key)
+    : await supabase.from("whatsapp_config").insert({ workspace: key, ...row });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: connected ? "WhatsApp connected." : "Saved. Add the Phone Number ID, Access Token and Verify Token to connect." };
 }
@@ -1172,10 +1179,12 @@ export async function fetchOpenDentalConfig(): Promise<OpenDentalConfig> {
 
 export async function saveOpenDentalConfig(c: OpenDentalConfig): Promise<{ ok: boolean; message: string }> {
   const ws = await getWorkspaceId();
-  const { error } = await supabase.from("opendental_config").upsert(
-    { workspace_id: ws, clinic_api_url: c.clinicApiUrl.trim(), clinic_api_key: c.clinicApiKey.trim(), enabled: c.enabled, updated_at: new Date().toISOString() },
-    { onConflict: "workspace_id" }
-  );
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const row = { clinic_api_url: c.clinicApiUrl.trim(), clinic_api_key: c.clinicApiKey.trim(), enabled: c.enabled, updated_at: new Date().toISOString() };
+  const { data: existing } = await supabase.from("opendental_config").select("workspace_id").eq("workspace_id", ws).maybeSingle();
+  const { error } = existing
+    ? await supabase.from("opendental_config").update(row).eq("workspace_id", ws)
+    : await supabase.from("opendental_config").insert({ workspace_id: ws, ...row });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: c.enabled ? "Open Dental connected." : "Saved." };
 }

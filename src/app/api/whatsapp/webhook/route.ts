@@ -425,6 +425,7 @@ async function storeInbound(
     model: agent.model ?? "openai/gpt-4o-mini",
     agentName: agent.name,
     instructions: agent.instructions ?? "",
+    behavior: agent.behavior ?? "",
     knowledgeBase: agent.knowledge_base ?? "",
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
     patientContext: `Contact name: ${name}. Contact phone: ${contactId}.${apptContext}`,

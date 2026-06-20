@@ -105,6 +105,7 @@ function emptyForm(): Omit<AiAgent, "id" | "vapiAssistantId"> {
     firstMessage: "",
     language: "English",
     instructions: "",
+    behavior: "",
     knowledgeBase: "",
     canBook: true,
     canReschedule: true,
@@ -710,15 +711,36 @@ export function AgentModal({
           )}
 
           <div className="mt-4">
-            <Field label={form.kind === "voice" ? "System prompt — personality, behavior, full script" : "Instructions / personality — greeting, behavior, full script"}>
+            <Field label={form.kind === "voice" ? "Instructions — role, script, what to say" : "Instructions — role, goal, what to say"}>
               <textarea
                 rows={4}
                 className={inputCls}
-                placeholder="You are the friendly receptionist for Bright Smile Dental. Greet warmly by name, answer questions about hours and insurance, always offer to book, and hand off to a human if unsure…"
+                placeholder="You are Sarah, the receptionist for Bright Smile Dental. Your goal is to answer questions and BOOK appointments. Greet by name, confirm the service they want, check available times, and book. Keep replies to 1-2 short sentences."
                 value={form.instructions}
                 onChange={(e) => set("instructions", e.target.value)}
               />
             </Field>
+          </div>
+
+          <div className="mt-4">
+            <Field label="Behavior — rules & tone (how to act, what NOT to do)">
+              <textarea
+                rows={4}
+                className={inputCls}
+                placeholder={
+                  "• Never ask the same question twice — remember what the patient already told you.\n" +
+                  "• Ask only one question at a time.\n" +
+                  "• Don't repeat the greeting on every message.\n" +
+                  "• Before offering times, check real availability; only offer open slots.\n" +
+                  "• If you don't know something, say you'll check with the team — never make up clinical advice."
+                }
+                value={form.behavior}
+                onChange={(e) => set("behavior", e.target.value)}
+              />
+            </Field>
+            <p className="mt-1.5 text-xs text-ink-400">
+              Behavior is separate from Instructions: instructions say <em>what</em> the agent does; behavior says <em>how</em> it acts — the rules that stop repeated questions and keep replies natural.
+            </p>
           </div>
 
           <div className="mt-4">
@@ -850,6 +872,7 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
           model: agent.model,
           agentName: agent.name,
           instructions: agent.instructions,
+          behavior: agent.behavior,
           knowledgeBase: agent.knowledgeBase,
           capabilities: { canBook: agent.canBook, canReschedule: agent.canReschedule, canCancel: agent.canCancel },
           messages: next,
