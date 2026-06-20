@@ -64,7 +64,27 @@ To run AI calling the **client provides** Twilio number / SIP trunk / existing
 telecom; all carrier/SIP/minute charges are the client's, billed on usage. Pydental
 just configures Vapi against that telephony.
 
-## Status
-- ✅ Architecture decided; Vapi assistant creation exists.
-- ⏳ `/api/vapi/events` webhook + `voice_calls` storage + Call-log transcript/recording
-  UI + voice preview = the next build (this doc is the spec for it).
+## Status — BUILT
+- ✅ `/api/vapi/events` webhook receives `status-update` + `end-of-call-report`.
+- ✅ `voice_calls` table (migration 0019) stores transcript, recording URL, summary,
+  duration, outcome — scoped to the clinic whose assistant took the call.
+- ✅ Caller is auto-captured as a patient (source = voice).
+- ✅ **Voice** screen shows the live Call log: a **Live** badge for in-progress calls,
+  and per call the **transcript**, **recording player** and **summary** + a link to
+  the caller's chart. Polls every 8s.
+- ✅ **Voice preview** button in the agent modal (browser TTS sample).
+
+### To turn it on
+1. Run migration `0019`. Set `VAPI_API_KEY` (private) in Netlify; optionally
+   `VAPI_WEBHOOK_SECRET`.
+2. In Vapi → your assistant → **Server URL** = `https://<your-site>.netlify.app/api/vapi/events`
+   (and, if you set the secret, send it as header `x-vapi-secret`).
+3. So Pydental can match the call to the right agent/clinic, the assistant must be
+   the one created/linked from Pydental (we store its Vapi assistant id). Buy a number
+   in Vapi and assign it. Call it → after the call the transcript/recording/summary
+   appear on the Voice screen.
+
+### Still optional/next
+- True Vapi-voice preview (provider sample audio) instead of browser TTS.
+- A booking **tool/function** on the Vapi assistant so phone bookings write to
+  Calendar/Open Dental (same endpoints the chat agent uses).

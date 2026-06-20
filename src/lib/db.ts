@@ -1208,3 +1208,43 @@ export async function odTestConnection(): Promise<{ ok: boolean; doctors?: numbe
     return { ok: false, error: e instanceof Error ? e.message : "Connection failed" };
   }
 }
+
+// ----------------------------------------------------------- voice calls (Vapi)
+
+export interface VoiceCallRecord {
+  id: string;
+  agentName: string;
+  callerPhone: string;
+  patientId: string | null;
+  direction: string;
+  status: string;
+  startedAt: string | null;
+  durationSec: number;
+  transcript: string;
+  summary: string;
+  recordingUrl: string;
+  outcome: string;
+}
+
+export async function fetchVoiceCalls(): Promise<VoiceCallRecord[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("voice_calls").select("*").eq("workspace_id", ws).order("created_at", { ascending: false }).limit(100);
+    return (data ?? []).map((r) => ({
+      id: r.id,
+      agentName: r.agent_name ?? "",
+      callerPhone: r.caller_phone ?? "",
+      patientId: r.patient_id ?? null,
+      direction: r.direction ?? "inbound",
+      status: r.status ?? "ended",
+      startedAt: r.started_at,
+      durationSec: r.duration_sec ?? 0,
+      transcript: r.transcript ?? "",
+      summary: r.summary ?? "",
+      recordingUrl: r.recording_url ?? "",
+      outcome: r.outcome ?? "",
+    }));
+  } catch {
+    return [];
+  }
+}

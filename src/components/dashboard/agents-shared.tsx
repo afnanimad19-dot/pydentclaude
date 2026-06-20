@@ -26,6 +26,7 @@ import {
   MessageSquareText,
   Mic,
   PhoneOff,
+  Play,
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
@@ -56,6 +57,25 @@ const VOICES = [
   "Neutral female · US English",
   "Calm male · US English",
 ];
+
+// Browser-TTS preview so you can hear a voice before selecting. (The live call
+// uses the real Vapi voice; this is a quick local sample.)
+function previewVoice(voiceName: string) {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  const synth = window.speechSynthesis;
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance("Hi, thank you for calling Bright Smile Dental. How can I help you today?");
+  const voices = synth.getVoices();
+  const female = /female/i.test(voiceName);
+  const pick =
+    voices.find((v) => /en/i.test(v.lang) && (female ? /female|samantha|victoria|zira|fiona|aria/i.test(v.name) : /male|david|daniel|alex|fred|guy/i.test(v.name))) ||
+    voices.find((v) => /en/i.test(v.lang)) ||
+    voices[0];
+  if (pick) u.voice = pick;
+  u.rate = 1;
+  u.pitch = female ? 1.1 : 0.95;
+  synth.speak(u);
+}
 
 // Mirrors the server-side mapping in /api/vapi/assistants
 const VOICE_IDS: Record<string, string> = {
@@ -659,11 +679,21 @@ export function AgentModal({
             {form.kind === "voice" && (
               <>
                 <Field label="Voice">
-                  <select className={inputCls} value={form.voice} onChange={(e) => set("voice", e.target.value)}>
-                    {VOICES.map((v) => (
-                      <option key={v}>{v}</option>
-                    ))}
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <select className={inputCls} value={form.voice} onChange={(e) => set("voice", e.target.value)}>
+                      {VOICES.map((v) => (
+                        <option key={v}>{v}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => previewVoice(form.voice)}
+                      title="Hear a sample of this voice"
+                      className="flex shrink-0 items-center gap-1.5 rounded-xl border border-ink-200 px-3 py-2.5 text-sm font-medium text-ink-700 hover:bg-ink-50"
+                    >
+                      <Play className="h-4 w-4" /> Preview
+                    </button>
+                  </div>
                 </Field>
                 <Field label="Transcriber">
                   <select className={inputCls} defaultValue="Deepgram · Nova-2 (multilingual)">
