@@ -64,7 +64,11 @@ export async function POST(req: NextRequest) {
         },
       ],
     },
-    voice: { provider: "vapi", voiceId: voiceFor(agent.voice) },
+    // Use the clinic's chosen ElevenLabs voice (premade or cloned) when set;
+    // otherwise fall back to a built-in Vapi voice.
+    voice: agent.voiceId
+      ? { provider: "11labs", voiceId: agent.voiceId, model: "eleven_multilingual_v2" }
+      : { provider: "vapi", voiceId: voiceFor(agent.voice) },
     transcriber: { provider: "deepgram", model: "nova-2", language: agent.language?.includes("Spanish") ? "multi" : "en" },
   };
 

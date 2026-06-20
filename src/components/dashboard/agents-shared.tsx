@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
+import { VoiceLibrary } from "@/components/dashboard/voice-library";
 import {
   fetchAgents,
   createAgent,
@@ -122,6 +123,7 @@ function emptyForm(): Omit<AiAgent, "id" | "vapiAssistantId"> {
     status: "Draft",
     model: OPENAI_MODELS[0],
     voice: VOICES[0],
+    voiceId: null,
     firstMessage: "",
     language: "English",
     instructions: "",
@@ -500,6 +502,7 @@ export function AgentModal({
   );
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [voiceLibOpen, setVoiceLibOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
 
@@ -565,6 +568,7 @@ export function AgentModal({
           body: JSON.stringify({
             name: form.name,
             voice: form.voice,
+            voiceId: form.voiceId,
             model: form.model.replace(/^openai\//, ""),
             firstMessage: form.firstMessage,
             instructions: form.instructions,
@@ -591,6 +595,14 @@ export function AgentModal({
   const abilityLabels = { canBook: "Book appointments", canReschedule: "Reschedule / change times", canCancel: "Cancel appointments" } as const;
 
   return (
+    <>
+    {voiceLibOpen && (
+      <VoiceLibrary
+        selectedId={form.voiceId}
+        onSelect={(voiceId, displayName) => { set("voiceId", voiceId); set("voice", displayName); }}
+        onClose={() => setVoiceLibOpen(false)}
+      />
+    )}
     <Modal
       open
       onClose={onClose}
@@ -680,15 +692,18 @@ export function AgentModal({
               <>
                 <Field label="Voice">
                   <div className="flex items-center gap-2">
-                    <select className={inputCls} value={form.voice} onChange={(e) => set("voice", e.target.value)}>
-                      {VOICES.map((v) => (
-                        <option key={v}>{v}</option>
-                      ))}
-                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setVoiceLibOpen(true)}
+                      className="flex flex-1 items-center justify-between gap-2 rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-left text-sm text-ink-800 hover:border-brand-400"
+                    >
+                      <span className="truncate">{form.voice || "Choose a voice…"}</span>
+                      <span className="shrink-0 text-xs font-medium text-brand-600">Browse</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => previewVoice(form.voice)}
-                      title="Hear a sample of this voice"
+                      title="Quick sample (basic browser voice)"
                       className="flex shrink-0 items-center gap-1.5 rounded-xl border border-ink-200 px-3 py-2.5 text-sm font-medium text-ink-700 hover:bg-ink-50"
                     >
                       <Play className="h-4 w-4" /> Preview
@@ -870,6 +885,7 @@ export function AgentModal({
         </>
       )}
     </Modal>
+    </>
   );
 }
 
@@ -1027,7 +1043,9 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
               },
             ],
           },
-          voice: { provider: "vapi", voiceId: VOICE_IDS[agent.voice] ?? "Leah" },
+          voice: agent.voiceId
+            ? { provider: "11labs", voiceId: agent.voiceId }
+            : { provider: "vapi", voiceId: VOICE_IDS[agent.voice] ?? "Leah" },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
       }

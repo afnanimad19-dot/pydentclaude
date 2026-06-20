@@ -54,6 +54,9 @@ recent catch-ups (0020+).** Re-running old seed files used to throw
   `wa_conversations.assigned_to`, and updates `handle_new_user()` so an invited
   email JOINS the existing clinic workspace instead of creating a new one.
   Idempotent (`create … if not exists`), no targeted ON CONFLICT. Run in a fresh tab.
+- **`0024_voices.sql` — NEW, USER MUST RUN THIS.** Creates `voices` (per-clinic
+  cloned voices) and adds `agents.voice_id`. Powers the Voice Library + custom voice
+  feature. Idempotent, no ON CONFLICT.
 
 ## 6. Env vars (Netlify → Site config → Environment variables)
 Required/used:
@@ -61,6 +64,9 @@ Required/used:
 - `OPENROUTER_API_KEY` (chat AI — agent replies fail without it)
 - `META_APP_SECRET` (verifies webhook signatures; lenient if absent)
 - `VAPI_API_KEY` (voice), optional `VAPI_WEBHOOK_SECRET`
+- `ELEVENLABS_API_KEY` (voice library + custom voice cloning). Without it the
+  Voice Library still loads a curated list and previews with the basic browser
+  voice, but real audio previews and "record your own voice" are disabled.
 - `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` (calendar)
 - Optional: `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_STRICT_SIGNATURE`,
   `RETURNING_SESSION_MIN` (default 15), `CRON_SECRET`, `META_GRAPH_VERSION`.
@@ -91,6 +97,15 @@ Per-clinic creds (WhatsApp token, Page token, Open Dental URL/key) are saved IN-
   (local Node middleware) + Cloudflare Tunnel design.
 - Voice (Vapi): `/api/vapi/events` webhook + `voice_calls` + Call-log UI (transcript/
   recording/summary, live badge) + voice preview button.
+- **Voice Library + custom voices** (managed TTS / ElevenLabs): in the voice-agent
+  editor, "Browse" opens a voice library — premade voices grouped by gender with
+  real audio previews, plus "Create custom voice" (record ~20–30s in the browser →
+  instant clone, with a consent checkbox). Chosen voice id is saved on the agent
+  (`agents.voice_id`) and used for the live Vapi call (`provider: 11labs`). Custom
+  voices stored per-clinic in `voices` (migration 0024). Routes: `/api/voice/list`,
+  `/api/voice/preview`, `/api/voice/clone`. Falls back gracefully with no API key.
+  NOTE: OmniVoice (user's fork) was evaluated but is GPU-only / not realtime, so we
+  went with a managed TTS that also works for live calls.
 
 ## 8. Key files
 - `src/lib/db.ts` — all data access (workspace-scoped). `upsertRow()` = resilient
@@ -128,7 +143,9 @@ Per-clinic creds (WhatsApp token, Page token, Open Dental URL/key) are saved IN-
 1. ~~Team members + roles~~ ✅ DONE (invite by email; Administrator/Editor/Viewer;
    inbox assign-to-teammate). Next: enforce role permissions in the UI/routes
    (currently roles are stored but not yet gating access).
-2. Phone-booking tool on the Vapi assistant; true Vapi-voice preview ("weppy").
+2. Voice library + custom voice cloning ✅ DONE (managed TTS; works for previews and
+   live Vapi calls). Remaining "weppy": phone-booking tool on the Vapi assistant so
+   voice calls can actually book/reschedule/cancel like the chat agents do.
 3. Website chat widget + HubSpot/Zoho lead sync (marketing data only).
 4. PDF/Word knowledge-base extraction; strict RLS hardening; OpenDental connector
    productionising (find-or-create patient → real PatNum).

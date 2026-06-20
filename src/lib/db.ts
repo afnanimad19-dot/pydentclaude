@@ -256,6 +256,7 @@ export interface AiAgent {
   model: string;
   vapiAssistantId: string | null;
   voice: string;
+  voiceId: string | null;
   firstMessage: string;
   language: string;
   instructions: string;
@@ -281,6 +282,7 @@ function rowToAgent(r: any): AiAgent {
     model: r.model ?? "openai/gpt-4o-mini",
     vapiAssistantId: r.vapi_assistant_id ?? null,
     voice: r.voice ?? "",
+    voiceId: r.voice_id ?? null,
     firstMessage: r.first_message ?? "",
     language: r.language ?? "English",
     instructions: r.instructions ?? "",
@@ -305,6 +307,7 @@ function agentToRow(input: Omit<AiAgent, "id" | "vapiAssistantId">): Record<stri
     status: input.status,
     model: input.model,
     voice: input.kind === "voice" ? input.voice : null,
+    voice_id: input.kind === "voice" ? input.voiceId : null,
     first_message: input.firstMessage,
     language: input.language,
     instructions: input.instructions,
@@ -335,12 +338,13 @@ export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSo
 export async function createAgent(input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string; id?: string }> {
   const row = agentToRow(input);
   let { data, error } = await supabase.from("agents").insert(row).select("id").single();
-  if (error && /purpose|first_message_mode|kb_files|behavior/.test(error.message)) {
+  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id/.test(error.message)) {
     // Newer columns not migrated yet — retry without them.
     delete row.purpose;
     delete row.first_message_mode;
     delete row.kb_files;
     delete row.behavior;
+    delete row.voice_id;
     ({ data, error } = await supabase.from("agents").insert(row).select("id").single());
   }
   if (error) return { ok: false, message: error.message };
@@ -354,11 +358,12 @@ export async function setAgentVapiId(id: string, vapiId: string): Promise<void> 
 export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
   const row = agentToRow(input);
   let { error } = await supabase.from("agents").update(row).eq("id", id);
-  if (error && /purpose|first_message_mode|kb_files|behavior/.test(error.message)) {
+  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id/.test(error.message)) {
     delete row.purpose;
     delete row.first_message_mode;
     delete row.kb_files;
     delete row.behavior;
+    delete row.voice_id;
     ({ error } = await supabase.from("agents").update(row).eq("id", id));
   }
   if (error) return { ok: false, message: error.message };
@@ -1307,5 +1312,42 @@ export async function setWaAssignee(conversationId: string, assignee: string | n
       .eq("id", conversationId);
   } catch {
     /* demo */
+  }
+}
+
+// ----------------------------------------------------------- custom voices (0024)
+
+export interface CustomVoice {
+  id: string;
+  voiceId: string; // provider (ElevenLabs) voice id
+  name: string;
+  gender: string;
+  accent: string;
+}
+
+// This clinic's own cloned voices (premade voices come from /api/voice/list).
+export async function fetchCustomVoices(): Promise<CustomVoice[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("voices").select("*").eq("workspace_id", ws).order("created_at", { ascending: false });
+    return (data ?? []).map((r) => ({ id: r.id, voiceId: r.voice_id, name: r.name ?? "Custom voice", gender: r.gender ?? "", accent: r.accent ?? "" }));
+  } catch {
+    return [];
+  }
+}
+
+export async function saveCustomVoice(voiceId: string, name: string, gender = "", accent = ""): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { error } = await supabase.from("voices").insert({ workspace_id: ws, voice_id: voiceId, name: name.trim() || "Custom voice", gender, accent });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Custom voice saved." };
+}
+
+export async function removeCustomVoice(id: string): Promise<void> {
+  try {
+    await supabase.from("voices").delete().eq("id", id);
+  } catch {
+    /* ignore */
   }
 }
