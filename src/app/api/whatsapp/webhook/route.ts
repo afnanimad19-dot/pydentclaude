@@ -259,6 +259,13 @@ async function bookAppointment(ws: string | null, patientId: string | null, name
   const time = dt.slice(11, 16) || "09:00";
   if (!date) return "Could not book — no valid date/time was provided.";
 
+  // Don't double-book: reject if the slot is already taken (same provider, or any
+  // provider when none is specified).
+  let conflictQ = supabase.from("appointments").select("id").eq("workspace_id", ws).eq("date", date).eq("time", time).neq("status", "Broken");
+  if (args.doctor) conflictQ = conflictQ.eq("provider", args.doctor);
+  const { data: clash } = await conflictQ.limit(1).maybeSingle();
+  if (clash) return `That slot (${date} ${time}) is already taken — offer the patient a different open time.`;
+
   const { data: appt } = await supabase
     .from("appointments")
     .insert({ workspace_id: ws, patient_id: patientId, provider: args.doctor || "", procedure: args.service || "Consultation", date, time, status: "Scheduled", confirmed_via: "whatsapp" })
@@ -353,7 +360,13 @@ async function storeInbound(
     conversationId = created!.id;
   }
 
-  await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "inbound", author: name, body, wa_message_id: mid });
+  // Insert the inbound message. If Meta retried (duplicate message id), the unique
+  // index rejects it — abort so we don't reply twice.
+  const { error: inboundErr } = await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "inbound", author: name, body, wa_message_id: mid });
+  if (inboundErr && mid) {
+    await logEvent(`Duplicate inbound from ${name} ignored (Meta retry).`);
+    return;
+  }
 
   // A human has taken over ("Assign to me") — never auto-reply.
   if (convo?.status === "human") {
