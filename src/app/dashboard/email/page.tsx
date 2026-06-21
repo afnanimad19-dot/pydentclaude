@@ -8,7 +8,7 @@ import { NewCampaignModal } from "@/components/dashboard/create-modals";
 import { emailCampaigns, conversations } from "@/lib/mock-data";
 
 const automations = [
-  { name: "Welcome series (new patients)", trigger: "New patient created in Pydental", steps: "3 emails over 7 days", status: "Live" },
+  { name: "Welcome series (new patients)", trigger: "New patient created in Pydent", steps: "3 emails over 7 days", status: "Live" },
   { name: "Treatment plan follow-up", trigger: "Unscheduled treatment plan > 7 days", steps: "2 emails + pipeline task", status: "Live" },
   { name: "Post-visit review request", trigger: "Appointment completed +4 hours", steps: "1 email → Google review link", status: "Live" },
   { name: "Birthday greeting", trigger: "Patient birthdate", steps: "1 email with hygiene offer", status: "Paused" },

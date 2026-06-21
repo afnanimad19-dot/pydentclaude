@@ -445,7 +445,7 @@ function ClinicalDisabled() {
       <h1 className="text-xl font-semibold text-ink-900">Clinical charting is coming soon</h1>
       <p className="mt-2 text-sm text-ink-500">
         Tooth chart, ledger, insurance claims and prescriptions unlock once your OpenDental
-        connection is set up. Until then, everything else in Pydental works as normal.
+        connection is set up. Until then, everything else in Pydent works as normal.
       </p>
       <Link href="/dashboard" className="mt-5 inline-block rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
         Back to dashboard

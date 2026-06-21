@@ -47,7 +47,7 @@ export function OpenDentalConfigCard() {
         {cfg.enabled && cfg.clinicApiUrl ? <StatusBadge status="Connected" tone="green" /> : <StatusBadge status="Not connected" tone="gray" />}
       </div>
       <p className="mt-1 max-w-2xl text-sm text-ink-500">
-        Patient/clinical data stays on your clinic server. Pydental only talks to your local middleware (over a Cloudflare
+        Patient/clinical data stays on your clinic server. Pydent only talks to your local middleware (over a Cloudflare
         Tunnel) for live doctor slots and bookings — no medical records ever reach the cloud.
       </p>
 
@@ -77,7 +77,7 @@ export function OpenDentalConfigCard() {
             </a>
           </div>
           <p className="text-xs text-ink-400">
-            You install the small <strong>Pydental Connector</strong> (Node.js) on your clinic server next to Open Dental; it
+            You install the small <strong>Pydent Connector</strong> (Node.js) on your clinic server next to Open Dental; it
             exposes only doctor slots + booking. The connector is in <code>opendental-connector/</code>.
           </p>
         </div>

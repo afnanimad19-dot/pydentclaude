@@ -61,7 +61,7 @@ export function RevenueChart() {
         />
         <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
         <Area type="monotone" dataKey="production" name="Total production" stroke="#9692b0" fill="url(#prod)" strokeWidth={2} />
-        <Area type="monotone" dataKey="fromPydental" name="Booked via Pydental" stroke="#8b5cf6" fill="url(#pyd)" strokeWidth={2} />
+        <Area type="monotone" dataKey="fromPydent" name="Booked via Pydent" stroke="#8b5cf6" fill="url(#pyd)" strokeWidth={2} />
       </AreaChart>
     </ResponsiveContainer>
   );

@@ -89,7 +89,7 @@ const testimonials = [
   },
   {
     quote:
-      "We kept OpenDental, which is what sold us. Pydental is just a much nicer face on our own data — plus the agents that actually talk to patients.",
+      "We kept OpenDental, which is what sold us. Pydent is just a much nicer face on our own data — plus the agents that actually talk to patients.",
     name: "Dr. L. Gomez",
     role: "Coral Gables Dentistry",
   },
@@ -141,7 +141,7 @@ export default function Home() {
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-lg shadow-violet-500/25">
               <Sparkles className="h-5 w-5" />
             </div>
-            <span className="text-lg font-semibold tracking-tight text-white">Pydental</span>
+            <span className="text-lg font-semibold tracking-tight text-white">Pydent</span>
           </Link>
           <nav className="hidden items-center gap-8 text-sm font-medium text-slate-400 md:flex">
             <a href="#features" className="transition-colors hover:text-white">Features</a>
@@ -316,7 +316,7 @@ export default function Home() {
               Your whole practice, in one system you own
             </h2>
             <p className="mt-4 leading-relaxed text-slate-400">
-              Pydental isn&apos;t just the conversation layer — it&apos;s a full patient system.
+              Pydent isn&apos;t just the conversation layer — it&apos;s a full patient system.
               Charts, schedule, treatment plans, documents, insurance and payments live in your own
               database, and every AI agent works directly on that data.
             </p>
@@ -402,7 +402,7 @@ export default function Home() {
           <div className="text-center">
             <SectionTag><Star className="h-3.5 w-3.5" /> Customers</SectionTag>
             <h2 className="mt-5 text-3xl font-semibold tracking-tight text-white md:text-4xl">
-              Clinics love using Pydental
+              Clinics love using Pydent
             </h2>
           </div>
           <div className="mt-12 grid gap-5 md:grid-cols-3">
@@ -534,7 +534,7 @@ export default function Home() {
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 text-white">
                   <Sparkles className="h-4 w-4" />
                 </div>
-                <span className="font-semibold text-white">Pydental</span>
+                <span className="font-semibold text-white">Pydent</span>
               </div>
               <p className="mt-3 text-sm leading-relaxed text-slate-500">
                 The calm workspace for dental clinics — voice, WhatsApp, SMS, email and pipeline in one place.
@@ -559,7 +559,7 @@ export default function Home() {
               </div>
             </div>
           </div>
-          <p className="pb-6 text-xs text-slate-600">© 2026 Pydental. All rights reserved.</p>
+          <p className="pb-6 text-xs text-slate-600">© 2026 Pydent. All rights reserved.</p>
         </div>
         <div
           aria-hidden

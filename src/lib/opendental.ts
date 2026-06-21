@@ -1,4 +1,4 @@
-// OpenDental API client for Pydental.
+// OpenDental API client for Pydent.
 //
 // Each clinic connects its own OpenDental API key (Developer + Customer key
 // pair) from Settings → Integrations. Until a key is saved AND demo mode is

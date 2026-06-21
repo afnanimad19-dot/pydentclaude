@@ -1,4 +1,4 @@
-// Demo-mode dataset for Pydental. Every dashboard screen reads from here so the
+// Demo-mode dataset for Pydent. Every dashboard screen reads from here so the
 // whole product can be explored end-to-end before any live integration
 // (OpenDental, WhatsApp Business, Twilio, Retell) is connected.
 
@@ -278,12 +278,12 @@ export const weeklyConversations = [
 ];
 
 export const monthlyRevenue = [
-  { month: "Jan", production: 86_000, fromPydental: 9_400 },
-  { month: "Feb", production: 91_500, fromPydental: 14_200 },
-  { month: "Mar", production: 88_200, fromPydental: 18_900 },
-  { month: "Apr", production: 97_800, fromPydental: 24_600 },
-  { month: "May", production: 104_300, fromPydental: 31_200 },
-  { month: "Jun", production: 48_900, fromPydental: 17_800 },
+  { month: "Jan", production: 86_000, fromPydent: 9_400 },
+  { month: "Feb", production: 91_500, fromPydent: 14_200 },
+  { month: "Mar", production: 88_200, fromPydent: 18_900 },
+  { month: "Apr", production: 97_800, fromPydent: 24_600 },
+  { month: "May", production: 104_300, fromPydent: 31_200 },
+  { month: "Jun", production: 48_900, fromPydent: 17_800 },
 ];
 
 export const todayStats = {

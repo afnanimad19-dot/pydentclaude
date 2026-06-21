@@ -242,7 +242,7 @@ export default function SettingsPage() {
               badge={<StatusBadge status="Not connected" tone="gray" />}
               action={<button onClick={() => toast('Embed snippet copied: <script src="https://cdn.pydental.ai/widget.js" data-clinic="YOUR_CLINIC_ID"></script>', "success")} className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">Copy embed code</button>}
             />
-            <ConnCard icon={Globe} name="WordPress plugin" detail="Prefer a plugin? Install the Pydental plugin on WordPress to add the widget, booking form and lead capture without touching code." badge={<StatusBadge status="Planned" tone="gray" />} />
+            <ConnCard icon={Globe} name="WordPress plugin" detail="Prefer a plugin? Install the Pydent plugin on WordPress to add the widget, booking form and lead capture without touching code." badge={<StatusBadge status="Planned" tone="gray" />} />
           </div>
         </>
       )}

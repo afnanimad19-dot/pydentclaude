@@ -12,7 +12,7 @@ function vapiHeaders() {
   };
 }
 
-// Map Pydental voice labels onto currently-supported Vapi voices
+// Map Pydent voice labels onto currently-supported Vapi voices
 // (verified against the live API: Leah, Elliot, Savannah, Rohan, Tara).
 function voiceFor(label?: string): string {
   const map: Record<string, string> = {
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   if (!process.env.VAPI_API_KEY) return notConfigured();
   const agent = await req.json();
 
-  // Map a Pydental voice agent onto a Vapi assistant definition.
+  // Map a Pydent voice agent onto a Vapi assistant definition.
   const assistant = {
     name: agent.name,
     firstMessage: agent.firstMessage || `Hi, this is ${agent.name} from the dental office. How can I help?`,

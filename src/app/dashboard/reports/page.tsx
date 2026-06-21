@@ -113,7 +113,7 @@ export default function ReportsPage() {
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h2 className="font-semibold text-ink-900">Production trend</h2>
-            <p className="text-sm text-ink-500">Total production vs. revenue booked through Pydental agents.</p>
+            <p className="text-sm text-ink-500">Total production vs. revenue booked through Pydent agents.</p>
           </div>
         </div>
         <RevenueChart />

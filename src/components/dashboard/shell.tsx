@@ -181,7 +181,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
           {open && (
             <div className="leading-tight">
-              <span className="block text-base font-semibold tracking-tight text-ink-900">Pydental</span>
+              <span className="block text-base font-semibold tracking-tight text-ink-900">Pydent</span>
               <span className="block text-[11px] font-medium text-ink-400">Bright Smile Dental</span>
             </div>
           )}

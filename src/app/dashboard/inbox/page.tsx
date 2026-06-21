@@ -78,7 +78,8 @@ export default function InboxPage() {
   const [view, setView] = useState<"all" | "mine" | "unassigned">("all");
   const [lifecycleFilter, setLifecycleFilter] = useState<string | null>(null);
   const [unrepliedOnly, setUnrepliedOnly] = useState(false);
-  const [activeId, setActiveId] = useState<string>(conversations[0]?.id ?? "");
+  const [activeId, setActiveId] = useState<string>("");
+  const userPicked = useRef(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -188,6 +189,14 @@ export default function InboxPage() {
     return [...live, ...demo];
   }, [liveConvos, liveStage, demoLifecycle]);
 
+  // Open straight on the most recent conversation (live ones come first, newest
+  // first) instead of a blank/empty thread. Keeps following the newest until the
+  // user clicks a conversation, so it lands on the latest live chat once it loads.
+  useEffect(() => {
+    if (userPicked.current || unified.length === 0) return;
+    setActiveId(unified[0].id);
+  }, [unified]);
+
   const demoUnreplied = (id: string, base: Message[]) => {
     const thread = [...base, ...(extraMessages[id] ?? [])];
     return thread.length > 0 && thread[thread.length - 1].direction === "inbound";
@@ -243,6 +252,23 @@ export default function InboxPage() {
   const activeAgentId = active?.live ? liveAssign[active.id] ?? null : demoAssignments[active?.id ?? ""] ?? null;
   const assignedAgent = humanHandled ? null : agents.find((a) => a.id === activeAgentId) ?? agents.find((a) => a.id === hubDefault?.agentId) ?? null;
   const windowClosed = active?.channel === "whatsapp" && thread.length > 0 && thread[thread.length - 1].direction === "outbound";
+
+  // One "Assign to" control covering both AI agents and people (Me / teammates).
+  const assignValue = humanHandled
+    ? currentAssignee === ME
+      ? "me"
+      : currentAssignee
+        ? `person:${currentAssignee}`
+        : ""
+    : activeAgentId
+      ? `agent:${activeAgentId}`
+      : "";
+  function onAssign(v: string) {
+    if (v === "me") return assignToMe();
+    if (v.startsWith("agent:")) return assignAgentForActive(v.slice(6));
+    if (v.startsWith("person:")) return assignToPerson(v.slice(7));
+    assignAgentForActive(""); // Unassigned / back to hub default
+  }
 
   async function send() {
     if (!draft.trim() || !active) return;
@@ -413,7 +439,7 @@ export default function InboxPage() {
         <div className="flex-1 overflow-y-auto">
           {list.length === 0 && <p className="px-4 py-10 text-center text-sm text-ink-400">No conversations match these filters.</p>}
           {list.map((u) => (
-            <button key={u.id} onClick={() => setActiveId(u.id)} className={`flex w-full items-start gap-3 border-b border-ink-100 px-3.5 py-3 text-left transition-colors ${u.id === active.id ? "bg-brand-50/60" : "hover:bg-ink-50"}`}>
+            <button key={u.id} onClick={() => { userPicked.current = true; setActiveId(u.id); }} className={`flex w-full items-start gap-3 border-b border-ink-100 px-3.5 py-3 text-left transition-colors ${u.id === active.id ? "bg-brand-50/60" : "hover:bg-ink-50"}`}>
               <Avatar name={u.name} size="sm" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
@@ -445,31 +471,31 @@ export default function InboxPage() {
               <p className="text-xs text-ink-400">via {channelMeta[active.channel].label}{active.phone ? ` · +${active.phone}` : ""}</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <select value={active.lifecycle} onChange={(e) => setStage(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none" title="Lifecycle stage">
-              {LIFECYCLE.map((l) => <option key={l.key} value={l.key}>{l.key}</option>)}
-            </select>
-            <select value={humanHandled ? "" : activeAgentId ?? ""} onChange={(e) => assignAgentForActive(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none" title="Assign an AI agent">
-              <option value="">{humanHandled ? "No AI — you're handling it" : hubDefault ? `Hub default — ${agents.find((a) => a.id === hubDefault.agentId)?.name ?? "agent"}` : "No AI agent"}</option>
-              {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
-            </select>
-            {active.live && (
-              <select
-                value={currentAssignee === ME ? "__me__" : currentAssignee ?? ""}
-                onChange={(e) => { const v = e.target.value; if (v === "__me__") assignToMe(); else assignToPerson(v); }}
-                className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none"
-                title="Assign to a teammate"
-              >
-                <option value="">Assign to…</option>
-                <option value="__me__">Me ({ME})</option>
-                {team.map((m) => <option key={m.id} value={m.name || m.email}>{m.name || m.email}</option>)}
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="px-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-400">Lifecycle</label>
+              <select value={active.lifecycle} onChange={(e) => setStage(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none" title="Lifecycle stage">
+                {LIFECYCLE.map((l) => <option key={l.key} value={l.key}>{l.key}</option>)}
               </select>
-            )}
-            {humanHandled ? (
-              <button onClick={() => assignAgentForActive("")} className="flex items-center gap-1.5 rounded-lg border border-brand-300 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-100 dark:text-brand-300"><Bot className="h-3.5 w-3.5" /> Hand back to AI</button>
-            ) : (
-              <button onClick={assignToMe} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"><UserCheck className="h-3.5 w-3.5" /> Assign to me</button>
-            )}
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="px-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-400">Assign to</label>
+              <select
+                value={assignValue}
+                onChange={(e) => onAssign(e.target.value)}
+                className="min-w-44 rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none"
+                title="Assign this conversation to an AI agent or a teammate"
+              >
+                <option value="">{hubDefault ? `Hub default — ${agents.find((a) => a.id === hubDefault.agentId)?.name ?? "agent"}` : "Unassigned"}</option>
+                <optgroup label="AI agents">
+                  {agents.map((a) => <option key={a.id} value={`agent:${a.id}`}>🤖 {a.name} — {a.role}</option>)}
+                </optgroup>
+                <optgroup label="Team">
+                  <option value="me">Me ({ME})</option>
+                  {team.map((m) => <option key={m.id} value={`person:${m.name || m.email}`}>{m.name || m.email}{m.role ? ` — ${m.role}` : ""}</option>)}
+                </optgroup>
+              </select>
+            </div>
           </div>
         </div>
 

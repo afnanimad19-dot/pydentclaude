@@ -47,7 +47,7 @@ export default function DashboardPage() {
         </Card>
         <Card className="p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="font-semibold text-ink-900">Production booked via Pydental</h2>
+            <h2 className="font-semibold text-ink-900">Production booked via Pydent</h2>
             <Link href="/dashboard/pipeline" className="flex items-center gap-1 text-sm font-medium text-brand-600 hover:text-brand-700">
               View pipeline <ArrowRight className="h-3.5 w-3.5" />
             </Link>

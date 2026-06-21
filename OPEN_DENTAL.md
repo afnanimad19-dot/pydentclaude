@@ -1,9 +1,9 @@
 # Open Dental Integration — Architecture & Plan (DHA/MOH-safe)
 
-This captures the goal and the secure design for connecting Pydental to a clinic's
+This captures the goal and the secure design for connecting Pydent to a clinic's
 **Open Dental** without putting patient clinical data on the cloud. (Our stack is
 Next.js + Supabase + Netlify, driven from Claude — wherever the source doc says
-"Lovable", read "Pydental".)
+"Lovable", read "Pydent".)
 
 ## 1. Declared objective
 
@@ -19,7 +19,7 @@ records. The cloud only ever sees scheduling + lead/marketing data.
 diagnosis, medical history, treatment plans, insurance details, clinical notes,
 X-rays, full patient profile, the Open Dental SQL database.
 
-**May be stored in the cloud (Pydental / Supabase) — minimum necessary only:**
+**May be stored in the cloud (Pydent / Supabase) — minimum necessary only:**
 lead name, phone, email, marketing source/campaign, appointment **request status**,
 and for a confirmed booking: booking id, doctor id, service id, slot date/time,
 status, created-at. **Nothing clinical.**
@@ -27,7 +27,7 @@ status, created-at. **Nothing clinical.**
 ## 3. Secure architecture (outbound-only, no exposed DB)
 
 ```
-Pydental (cloud)                         Clinic (local network)
+Pydent (cloud)                         Clinic (local network)
   AI agent / website / inbox
         │  HTTPS
         ▼
@@ -69,7 +69,7 @@ POST /cancel-appointment { appointmentId }                → { ok }
 Open Dental provides the matching APIs (Appointments **GET Slots**, **POST
 Appointments**, reschedule/cancel) — the middleware translates our calls to those.
 
-## 5. What we must build in Pydental (this app) — requirements
+## 5. What we must build in Pydent (this app) — requirements
 
 1. **Open Dental connection settings (per workspace):** `clinic_api_url`,
    `clinic_api_key` (the Cloudflare Tunnel URL of the clinic's middleware + a shared
@@ -90,12 +90,68 @@ Appointments**, reschedule/cancel) — the middleware translates our calls to th
 ## 6. Build order
 
 1. OpenDental connection settings card + per-workspace storage. *(small)*
-2. Gateway API routes in Pydental that forward to the clinic middleware. *(small)*
+2. Gateway API routes in Pydent that forward to the clinic middleware. *(small)*
 3. The local middleware starter (separate repo/folder, Node + Open Dental API). *(medium)*
 4. Wire the agent + website widget to call slots/book; mirror booking → Calendar +
    pipeline status. *(medium)*
 5. Testing against an Open Dental **test database** before any live clinic.
 
-Until a clinic enables this, Pydental runs fully standalone (our own Calendar +
+Until a clinic enables this, Pydent runs fully standalone (our own Calendar +
 patients). When they're ready, only this connector is added — no patient data ever
 leaves their building.
+
+---
+
+## 7. Tools, services & pricing (everything Pydent runs on)
+
+This is the full list of external tools/APIs Pydent uses, what each is for, and what
+it costs. **All AI/voice/messaging prices are usage-based — verify the current rate
+on each vendor's pricing page before quoting a client, as they change.** Prices below
+were last checked **June 2026** (USD).
+
+### A. The clinic's dental system
+
+| Tool | What it's for | Cost |
+|---|---|---|
+| **Open Dental** (PMS) | The clinic's source of truth — patients, schedule, clinical records. Stays on their local server. | **US: $199/mo per location** (first 12 months), then **$149/mo**. **+$20/mo per provider** beyond the first 3. Canada $164→$137; other countries $89/mo; developing countries free. |
+| **Open Dental API** | The interface our local middleware uses to read slots and book/reschedule/cancel. | **$30/mo per location** — covers all API permissions except Payments, PayPlans and Special. Billed only once a key is assigned **and enabled**; stops automatically if the key is disabled. Requires Developer Portal access (email `vendor.relations@opendental.com`, 1–3 business days). |
+| **Open Dental one-time / optional** | Setup, training, eServices. | Post-conversion setup $160 (2-hr); online training $80/hr; on-site training $4,325/day; eServices (texting, web sched, etc.) $5–$165/mo per location — **all optional**, not required for our integration. |
+
+> So a typical single-location clinic already on Open Dental adds **just the $30/mo API
+> fee** to use our booking integration. The $149–199/mo support fee is their existing
+> Open Dental bill, not something we add.
+
+### B. Our cloud platform (what *we* run Pydent on)
+
+| Tool | What it's for | Cost |
+|---|---|---|
+| **Netlify** | Hosting the Next.js app. | Free tier works to start; **Pro ~$19/mo per member** for production. |
+| **Supabase** | Our cloud database + auth (leads, bookings metadata, agents — **no clinical data**). | Free tier to start; **Pro $25/mo per project** once live. |
+| **Cloudflare Tunnel** | Secure outbound-only link from the clinic middleware to us (no exposed DB/ports). | **Free.** |
+
+### C. AI, voice & messaging (usage-based)
+
+| Tool | What it's for | Cost |
+|---|---|---|
+| **OpenRouter** | Chat-agent replies (routes to GPT-4o / Claude, etc.). | **No base fee — pay per token**, passed through at model price (e.g. GPT-4o-mini ≈ $0.15 / $0.60 per 1M input/output tokens). A typical chat reply is a fraction of a cent. |
+| **Vapi** | Runs the live phone calls (telephony + STT + LLM + TTS orchestration). | **~$0.05/min platform fee** + pass-through of the STT/LLM/TTS it uses → roughly **$0.07–0.15/min all-in**. Phone numbers ≈ **$2/mo** each. |
+| **ElevenLabs** | Voice library + custom voice cloning, and the TTS voice on live calls (`provider: 11labs`). | Free tier 10k chars/mo; **Creator $22/mo** (100k chars ≈ ~2 hrs speech); Pro $99/mo; Business $330/mo. Instant voice cloning included from the $5 Starter plan up. Billed per character of speech generated. |
+| **Deepgram** | Speech-to-text transcription on calls. | Pay-as-you-go ≈ **$0.0043/min** (Nova-2). Usually **billed through Vapi**, not separately. |
+| **Meta WhatsApp Cloud API** | WhatsApp (and Instagram/Messenger) inbox channels. | The API itself is **free**; Meta charges **per conversation** by country and category (service vs. marketing/utility templates) — varies a lot by region. |
+
+### D. What this means in practice (rough monthly, 1 location)
+
+- **Fixed/ours:** Netlify ~$19 + Supabase ~$25 = **~$44/mo** (can start on free tiers).
+- **Open Dental side (theirs):** existing support fee + **$30/mo API** to enable booking.
+- **Voice add-on:** ElevenLabs ~$22/mo + Vapi call minutes (~$0.10/min) + ~$2/mo number.
+- **Chat AI:** cents per conversation via OpenRouter.
+- **WhatsApp:** Meta's per-conversation fee (region-dependent).
+
+There is **no GPU/CPU server cost** — voice cloning and TTS are fully managed by
+ElevenLabs/Vapi, so we never host or rent a GPU.
+
+Sources: [Open Dental fees](https://www.opendental.com/site/fees.html) ·
+[Open Dental API permissions](https://www.opendental.com/site/apipermissions.html) ·
+[Open Dental API setup](https://www.opendental.com/site/apisetup.html). Verify
+ElevenLabs / Vapi / Supabase / Netlify / OpenRouter / Meta pricing on each vendor's
+own pricing page before quoting — these are usage-based and change.

@@ -55,7 +55,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-lg shadow-violet-500/25">
             <Sparkles className="h-5 w-5" />
           </div>
-          <span className="text-xl font-semibold tracking-tight text-white">Pydental</span>
+          <span className="text-xl font-semibold tracking-tight text-white">Pydent</span>
         </Link>
 
         <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-8 shadow-2xl backdrop-blur">

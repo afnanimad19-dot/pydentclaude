@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pydental — One calm workspace for your dental clinic",
+  title: "Pydent — One calm workspace for your dental clinic",
   description:
     "Voice agents, WhatsApp, SMS, email and pipeline into one calm workspace. Your team ships faster, your patients feel heard, and revenue compounds — without stitching tools together.",
 };
