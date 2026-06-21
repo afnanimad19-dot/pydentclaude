@@ -1,36 +1,59 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import {
-  BarChart3,
-  Search,
-  Store,
-  Megaphone,
-  HardDrive,
-  CalendarDays,
-  CircleAlert,
-  CheckCircle2,
-} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Search, CheckCircle2, CircleAlert, X } from "lucide-react";
 import { Card } from "@/components/ui";
+import { Modal } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { fetchConnections, disconnectConnection, getWorkspaceId, type Connection } from "@/lib/db";
 
-// Google products a clinic can connect (each via the same OAuth app, its own
-// account). Marketing/social channels come later.
-const GOOGLE_PROVIDERS: { key: string; name: string; detail: string; icon: typeof BarChart3 }[] = [
-  { key: "google_analytics", name: "Google Analytics", detail: "Website traffic & conversions (GA4).", icon: BarChart3 },
-  { key: "google_search_console", name: "Google Search Console", detail: "Search rankings, clicks & impressions.", icon: Search },
-  { key: "google_business", name: "Google Business Profile", detail: "Reviews, calls & map listing.", icon: Store },
-  { key: "google_ads", name: "Google Ads", detail: "Campaign spend & performance.", icon: Megaphone },
-  { key: "google_drive", name: "Google Drive", detail: "Pull documents into agent knowledge.", icon: HardDrive },
-  { key: "google_calendar", name: "Google Calendar", detail: "Mirror booked appointments to a calendar.", icon: CalendarDays },
+// A provider in the catalog. `oauth: "google"` ones connect for real (popup);
+// the rest render as cards and explain the one-time app setup they need.
+interface Provider {
+  key: string;
+  name: string;
+  detail: string;
+  group: "posting" | "data";
+  badge: string; // short label shown in the logo chip
+  color: string; // chip background
+  oauth?: "google";
+}
+
+const PROVIDERS: Provider[] = [
+  // Content posting
+  { key: "x", name: "X (Twitter)", detail: "Schedule & publish posts.", group: "posting", badge: "X", color: "bg-black text-white" },
+  { key: "linkedin", name: "LinkedIn", detail: "Publish to your company page.", group: "posting", badge: "in", color: "bg-[#0a66c2] text-white" },
+  { key: "youtube", name: "YouTube", detail: "Publish videos & shorts.", group: "posting", badge: "▶", color: "bg-[#ff0000] text-white" },
+  { key: "tiktok", name: "TikTok", detail: "Schedule & publish clips.", group: "posting", badge: "♪", color: "bg-black text-white" },
+  { key: "instagram", name: "Instagram", detail: "Posts, reels & stories.", group: "posting", badge: "IG", color: "bg-gradient-to-tr from-amber-500 to-pink-600 text-white" },
+  { key: "facebook", name: "Facebook Pages", detail: "Publish to your Page.", group: "posting", badge: "f", color: "bg-[#1877f2] text-white" },
+  { key: "pinterest", name: "Pinterest", detail: "Schedule pins.", group: "posting", badge: "P", color: "bg-[#e60023] text-white" },
+  { key: "wordpress", name: "WordPress", detail: "Publish blog posts (WordPress.com).", group: "posting", badge: "W", color: "bg-[#21759b] text-white" },
+  { key: "wordpress_self", name: "WordPress (Self-Hosted)", detail: "Publish to your own WP site.", group: "posting", badge: "W", color: "bg-ink-700 text-white" },
+  { key: "reddit", name: "Reddit", detail: "Post to subreddits.", group: "posting", badge: "r", color: "bg-[#ff4500] text-white" },
+  { key: "threads", name: "Threads", detail: "Publish to Threads.", group: "posting", badge: "@", color: "bg-black text-white" },
+
+  // Channel data & setup
+  { key: "shopify", name: "Shopify", detail: "Store orders & customers.", group: "data", badge: "S", color: "bg-[#95bf47] text-white" },
+  { key: "google_analytics", name: "Google Analytics", detail: "Website traffic & conversions (GA4).", group: "data", badge: "GA", color: "bg-[#e8710a] text-white", oauth: "google" },
+  { key: "google_search_console", name: "Google Search Console", detail: "Rankings, clicks & impressions.", group: "data", badge: "SC", color: "bg-[#4285f4] text-white", oauth: "google" },
+  { key: "google_business", name: "Google Business Profile", detail: "Reviews, calls & map listing.", group: "data", badge: "GB", color: "bg-[#4285f4] text-white", oauth: "google" },
+  { key: "google_ads", name: "Google Ads", detail: "Campaign spend & performance.", group: "data", badge: "Ad", color: "bg-[#fbbc04] text-ink-900", oauth: "google" },
+  { key: "google_drive", name: "Google Drive", detail: "Pull documents into agent knowledge.", group: "data", badge: "Dr", color: "bg-[#1fa463] text-white", oauth: "google" },
+  { key: "google_calendar", name: "Google Calendar", detail: "Mirror booked appointments.", group: "data", badge: "Ca", color: "bg-[#4285f4] text-white", oauth: "google" },
+  { key: "meta_ads", name: "Meta Ads", detail: "Facebook & Instagram ad performance.", group: "data", badge: "M", color: "bg-[#0866ff] text-white" },
+  { key: "tiktok_ads", name: "TikTok Ads", detail: "TikTok ad campaign data.", group: "data", badge: "♪", color: "bg-black text-white" },
+  { key: "stripe", name: "Stripe", detail: "Payments & subscriptions.", group: "data", badge: "S", color: "bg-[#635bff] text-white" },
+  { key: "notion", name: "Notion", detail: "Sync notes & docs.", group: "data", badge: "N", color: "bg-black text-white" },
 ];
 
 export function IntegrationsPanel() {
   const [connections, setConnections] = useState<Connection[]>([]);
-  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [googleReady, setGoogleReady] = useState<boolean | null>(null);
   const [ws, setWs] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [setupFor, setSetupFor] = useState<Provider | null>(null);
 
   const refresh = useCallback(() => {
     fetchConnections().then(setConnections);
@@ -39,10 +62,9 @@ export function IntegrationsPanel() {
   useEffect(() => {
     refresh();
     getWorkspaceId().then(setWs);
-    fetch("/api/health").then((r) => r.json()).then((h) => setConfigured(!!h.google)).catch(() => setConfigured(false));
+    fetch("/api/health").then((r) => r.json()).then((h) => setGoogleReady(!!h.google)).catch(() => setGoogleReady(false));
   }, [refresh]);
 
-  // When the OAuth popup finishes, it postMessages us — refresh the cards.
   useEffect(() => {
     function onMsg(e: MessageEvent) {
       if (e.data?.type === "pydent-oauth") {
@@ -56,103 +78,163 @@ export function IntegrationsPanel() {
     return () => window.removeEventListener("message", onMsg);
   }, [refresh]);
 
-  function connect(provider: string) {
-    if (!configured) {
-      toast("Add GOOGLE_OAUTH_CLIENT_ID / SECRET in Netlify to enable Google connections.", "info");
-      return;
-    }
-    if (!ws) {
-      toast("Sign in first.", "info");
-      return;
-    }
-    setBusy(provider);
-    const url = `/api/google/oauth?provider=${provider}&ws=${encodeURIComponent(ws)}&popup=1`;
-    const popup = window.open(url, "pydent-oauth", "width=520,height=680");
-    // Fallback: if popups are blocked, navigate in the same tab.
-    if (!popup) {
-      window.location.assign(url.replace("&popup=1", ""));
-      return;
-    }
-    // Fallback: if no message arrives but the popup closed, refresh anyway.
-    const timer = setInterval(() => {
-      if (popup.closed) {
-        clearInterval(timer);
-        setBusy(null);
-        refresh();
+  function connect(p: Provider) {
+    if (p.oauth === "google") {
+      if (!googleReady) {
+        toast("Add GOOGLE_OAUTH_CLIENT_ID / SECRET in Netlify to enable Google connections.", "info");
+        return;
       }
-    }, 800);
+      if (!ws) { toast("Sign in first.", "info"); return; }
+      setBusy(p.key);
+      const url = `/api/google/oauth?provider=${p.key}&ws=${encodeURIComponent(ws)}&popup=1`;
+      const popup = window.open(url, "pydent-oauth", "width=520,height=680");
+      if (!popup) { window.location.assign(url.replace("&popup=1", "")); return; }
+      const timer = setInterval(() => {
+        if (popup.closed) { clearInterval(timer); setBusy(null); refresh(); }
+      }, 800);
+      return;
+    }
+    // Non-Google providers need their own app credentials — explain the setup.
+    setSetupFor(p);
   }
 
-  async function disconnect(provider: string) {
-    setBusy(provider);
-    await disconnectConnection(provider);
+  async function disconnect(p: Provider) {
+    setBusy(p.key);
+    await disconnectConnection(p.key);
     setBusy(null);
     refresh();
     toast("Disconnected.", "success");
   }
 
   const byProvider = Object.fromEntries(connections.map((c) => [c.provider, c]));
+  const q = query.trim().toLowerCase();
+  const filtered = useMemo(
+    () => PROVIDERS.filter((p) => !q || p.name.toLowerCase().includes(q) || p.detail.toLowerCase().includes(q)),
+    [q]
+  );
+  const posting = filtered.filter((p) => p.group === "posting");
+  const data = filtered.filter((p) => p.group === "data");
+
+  const grid = (items: Provider[]) => (
+    <Grid items={items} byProvider={byProvider} busy={busy} onConnect={connect} onDisconnect={disconnect} />
+  );
 
   return (
-    <div className="space-y-4">
-      {configured === false && (
+    <div className="space-y-6">
+      {setupFor && (
+        <Modal open onClose={() => setSetupFor(null)} title={`Connect ${setupFor.name}`} subtitle="One-time app setup needed">
+          <div className="space-y-3 text-sm text-ink-600">
+            <p>
+              <strong>{setupFor.name}</strong> connects the same way as Google — a one-click popup — once its developer app is
+              registered. To enable it:
+            </p>
+            <ol className="ml-4 list-decimal space-y-1.5 text-ink-600">
+              <li>Create an app in the {setupFor.name} developer portal and get its Client ID / Secret (or API key).</li>
+              <li>Add those as environment variables in Netlify.</li>
+              <li>Add the redirect URI <code className="rounded bg-ink-100 px-1">{typeof window !== "undefined" ? window.location.origin : ""}/api/{setupFor.key}/oauth/callback</code>.</li>
+            </ol>
+            <p className="text-xs text-ink-400">Google integrations are live now; tell me which of these to wire next and I&apos;ll add the OAuth flow.</p>
+          </div>
+          <button onClick={() => setSetupFor(null)} className="mt-5 w-full rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">Got it</button>
+        </Modal>
+      )}
+
+      <div>
+        <h2 className="text-lg font-semibold text-ink-900">Integrations</h2>
+        <p className="text-sm text-ink-500">Connect your clinic&apos;s own accounts — each connection is yours, signed in via a secure popup.</p>
+        <div className="relative mt-3">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search integrations…"
+            className="w-full rounded-xl border border-ink-200 bg-surface py-2.5 pl-9 pr-9 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400"
+          />
+          {query && <button onClick={() => setQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 hover:text-ink-600"><X className="h-4 w-4" /></button>}
+        </div>
+      </div>
+
+      {googleReady === false && (
         <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700">
           <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             Google connections need a one-time setup: create an OAuth client in Google Cloud Console, add
             <code className="mx-1 rounded bg-amber-500/15 px-1">GOOGLE_OAUTH_CLIENT_ID</code> and
-            <code className="mx-1 rounded bg-amber-500/15 px-1">GOOGLE_OAUTH_CLIENT_SECRET</code> in Netlify, and add this
+            <code className="mx-1 rounded bg-amber-500/15 px-1">GOOGLE_OAUTH_CLIENT_SECRET</code> in Netlify, and add this exact
             redirect URI: <code className="rounded bg-amber-500/15 px-1">{typeof window !== "undefined" ? window.location.origin : ""}/api/google/oauth/callback</code>.
           </span>
         </div>
       )}
 
-      <div>
-        <h3 className="mb-1 text-sm font-semibold text-ink-900">Channel data &amp; setup — Google</h3>
-        <p className="mb-3 text-sm text-ink-500">Each clinic connects its own Google accounts. One click, approve in the Google popup — done.</p>
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {GOOGLE_PROVIDERS.map((p) => {
-            const conn = byProvider[p.key];
-            const connected = !!conn;
-            const Icon = p.icon;
-            return (
-              <Card key={p.key} className="flex flex-col p-4">
-                <div className="flex items-start gap-3">
-                  <div className="rounded-lg border border-ink-100 bg-ink-50 p-2"><Icon className="h-5 w-5 text-ink-600" /></div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-ink-900">{p.name}</p>
-                    <p className="flex items-center gap-1.5 text-xs">
-                      <span className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-500" : "bg-ink-300"}`} />
-                      <span className={connected ? "text-emerald-600" : "text-ink-400"}>
-                        {connected ? (conn.accountLabel ? `Connected · ${conn.accountLabel}` : "Connected") : "Not connected"}
-                      </span>
-                    </p>
-                  </div>
-                </div>
-                <p className="mt-2 text-xs leading-relaxed text-ink-500">{p.detail}</p>
-                {connected ? (
-                  <div className="mt-3 flex gap-2">
-                    <span className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-500/15 py-2 text-xs font-semibold text-emerald-600">
-                      <CheckCircle2 className="h-3.5 w-3.5" /> Connected
-                    </span>
-                    <button onClick={() => disconnect(p.key)} disabled={busy === p.key} className="rounded-lg border border-ink-200 px-3 py-2 text-xs font-medium text-ink-600 hover:bg-ink-50 disabled:opacity-50">
-                      Disconnect
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => connect(p.key)}
-                    disabled={busy === p.key}
-                    className="mt-3 rounded-lg border border-ink-200 py-2 text-xs font-semibold text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:text-brand-300"
-                  >
-                    {busy === p.key ? "Connecting…" : "Connect"}
-                  </button>
-                )}
-              </Card>
-            );
-          })}
+      {data.length > 0 && (
+        <div>
+          <h3 className="mb-1 text-sm font-semibold text-ink-900">Channel data &amp; setup</h3>
+          <p className="mb-3 text-sm text-ink-500">Connect advertising & analytics platforms to track performance and pull data.</p>
+          {grid(data)}
         </div>
-      </div>
+      )}
+
+      {posting.length > 0 && (
+        <div>
+          <h3 className="mb-1 text-sm font-semibold text-ink-900">Content posting</h3>
+          <p className="mb-3 text-sm text-ink-500">Connect your social & content platforms to schedule and publish posts.</p>
+          {grid(posting)}
+        </div>
+      )}
+
+      {filtered.length === 0 && <p className="py-8 text-center text-sm text-ink-400">No integrations match &ldquo;{query}&rdquo;.</p>}
+    </div>
+  );
+}
+
+function Grid({
+  items,
+  byProvider,
+  busy,
+  onConnect,
+  onDisconnect,
+}: {
+  items: Provider[];
+  byProvider: Record<string, Connection>;
+  busy: string | null;
+  onConnect: (p: Provider) => void;
+  onDisconnect: (p: Provider) => void;
+}) {
+  return (
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {items.map((p) => {
+        const conn = byProvider[p.key];
+        const connected = !!conn;
+        return (
+          <Card key={p.key} className="flex flex-col p-4">
+            <div className="flex items-start gap-3">
+              <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-sm font-bold ${p.color}`}>{p.badge}</div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-ink-900">{p.name}</p>
+                <p className="flex items-center gap-1.5 text-xs">
+                  <span className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-500" : "bg-ink-300"}`} />
+                  <span className={connected ? "text-emerald-600" : "text-ink-400"}>
+                    {connected ? (conn.accountLabel ? `Connected · ${conn.accountLabel}` : "Connected") : "Not Connected"}
+                  </span>
+                </p>
+              </div>
+            </div>
+            <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-ink-500">{p.detail}</p>
+            {connected ? (
+              <div className="mt-3 flex gap-2">
+                <span className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-500/15 py-2 text-xs font-semibold text-emerald-600">
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Connected
+                </span>
+                <button onClick={() => onDisconnect(p)} disabled={busy === p.key} className="rounded-lg border border-ink-200 px-3 py-2 text-xs font-medium text-ink-600 hover:bg-ink-50 disabled:opacity-50">Disconnect</button>
+              </div>
+            ) : (
+              <button onClick={() => onConnect(p)} disabled={busy === p.key} className="mt-3 rounded-lg border border-ink-200 py-2 text-xs font-semibold text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:text-brand-300">
+                {busy === p.key ? "Connecting…" : "Connect"}
+              </button>
+            )}
+          </Card>
+        );
+      })}
     </div>
   );
 }

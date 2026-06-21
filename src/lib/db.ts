@@ -1431,28 +1431,39 @@ export async function disconnectConnection(provider: string): Promise<{ ok: bool
 
 export interface ClinicSettings {
   website: string;
+  showSampleData: boolean;
 }
 
 export async function fetchClinicSettings(): Promise<ClinicSettings> {
   try {
     const ws = await getWorkspaceId();
-    const { data } = await supabase.from("clinic_settings").select("website").eq("workspace_id", ws).maybeSingle();
-    return { website: data?.website ?? "" };
+    const { data } = await supabase.from("clinic_settings").select("*").eq("workspace_id", ws).maybeSingle();
+    return { website: data?.website ?? "", showSampleData: data?.show_sample_data ?? true };
   } catch {
-    return { website: "" };
+    return { website: "", showSampleData: true };
   }
 }
 
-export async function saveClinicSettings(s: ClinicSettings): Promise<{ ok: boolean; message: string }> {
+export async function saveClinicSettings(s: Partial<ClinicSettings>): Promise<{ ok: boolean; message: string }> {
   const ws = await getWorkspaceId();
   if (!ws) return { ok: false, message: "Sign in first." };
   const { data: existing } = await supabase.from("clinic_settings").select("workspace_id").eq("workspace_id", ws).maybeSingle();
-  const row = { website: s.website.trim(), updated_at: new Date().toISOString() };
-  const { error } = existing
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row: Record<string, any> = { updated_at: new Date().toISOString() };
+  if (s.website !== undefined) row.website = s.website.trim();
+  if (s.showSampleData !== undefined) row.show_sample_data = s.showSampleData;
+  let { error } = existing
     ? await supabase.from("clinic_settings").update(row).eq("workspace_id", ws)
     : await supabase.from("clinic_settings").insert({ workspace_id: ws, ...row });
+  // Older DBs without the show_sample_data column — retry without it.
+  if (error && /show_sample_data/.test(error.message)) {
+    delete row.show_sample_data;
+    ({ error } = existing
+      ? await supabase.from("clinic_settings").update(row).eq("workspace_id", ws)
+      : await supabase.from("clinic_settings").insert({ workspace_id: ws, ...row }));
+  }
   if (error) return { ok: false, message: error.message };
-  return { ok: true, message: "Website saved." };
+  return { ok: true, message: "Saved." };
 }
 
 // ----------------------------------------------------------- custom voices (0024)

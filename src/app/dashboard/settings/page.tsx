@@ -29,6 +29,7 @@ import { WhatsAppConfigForm } from "@/components/dashboard/whatsapp-config";
 import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
 import { WebsiteConfigCard } from "@/components/dashboard/website-config";
 import { IntegrationsPanel } from "@/components/dashboard/integrations-panel";
+import { SampleDataCard } from "@/components/dashboard/sample-data-card";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
 import { ThemeToggle } from "@/components/theme";
 import { fetchPatients } from "@/lib/db";
@@ -180,6 +181,7 @@ export default function SettingsPage() {
               <ThemeToggle /> <span className="text-sm text-ink-600">Toggle theme</span>
             </div>
           </Card>
+          <SampleDataCard />
         </div>
       )}
 

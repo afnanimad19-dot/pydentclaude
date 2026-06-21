@@ -20,6 +20,7 @@ import {
   setWaAssignee,
   fetchTeamMembers,
   fetchCustomVoices,
+  fetchClinicSettings,
   sendWaReply,
   type AiAgent,
   type ChannelDefault,
@@ -123,6 +124,7 @@ export default function InboxPage() {
   const [voiceId, setVoiceId] = useState<string>("");
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [bookOpen, setBookOpen] = useState(false);
+  const [showSample, setShowSample] = useState(true);
 
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [channelDefaults, setChannelDefaults] = useState<ChannelDefault[]>([]);
@@ -151,6 +153,7 @@ export default function InboxPage() {
     fetchAssignments().then(setDemoAssignments);
     fetchChannelDefaults().then(setChannelDefaults);
     fetchTeamMembers().then(setTeam);
+    fetchClinicSettings().then((s) => setShowSample(s.showSampleData));
     // Voice list for voice notes: your own cloned voices first, then premade.
     Promise.all([
       fetchCustomVoices().catch(() => []),
@@ -211,20 +214,23 @@ export default function InboxPage() {
       tags: ["whatsapp"],
       patientId: c.patientId ?? undefined,
     }));
-    const demo: UnifiedConvo[] = conversations.map((c) => ({
-      id: c.id,
-      live: false,
-      channel: c.channel,
-      name: c.patientName,
-      preview: c.preview,
-      time: c.time,
-      unread: c.unread,
-      lifecycle: demoLifecycle[c.id] ?? "New Lead",
-      tags: c.tags,
-      patientId: c.patientId,
-    }));
+    // Sample conversations are hidden once a real clinic turns sample data off.
+    const demo: UnifiedConvo[] = showSample
+      ? conversations.map((c) => ({
+          id: c.id,
+          live: false,
+          channel: c.channel,
+          name: c.patientName,
+          preview: c.preview,
+          time: c.time,
+          unread: c.unread,
+          lifecycle: demoLifecycle[c.id] ?? "New Lead",
+          tags: c.tags,
+          patientId: c.patientId,
+        }))
+      : [];
     return [...live, ...demo];
-  }, [liveConvos, liveStage, demoLifecycle]);
+  }, [liveConvos, liveStage, demoLifecycle, showSample]);
 
   // Open straight on the most recent conversation (live ones come first, newest
   // first) instead of a blank/empty thread. Keeps following the newest until the
