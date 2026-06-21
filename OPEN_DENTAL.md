@@ -129,6 +129,26 @@ were last checked **June 2026** (USD).
 | **Supabase** | Our cloud database + auth (leads, bookings metadata, agents — **no clinical data**). | Free tier to start; **Pro $25/mo per project** once live. |
 | **Cloudflare Tunnel** | Secure outbound-only link from the clinic middleware to us (no exposed DB/ports). | **Free.** |
 
+### B2. On the clinic's premises (the local setup — required for booking)
+
+To read live slots and write appointments into Open Dental **without exposing the
+clinic's database**, a small piece runs **locally at the clinic**. This is the
+"middleware" — it's the only thing that has to be installed on-site, and it never
+ships clinical data to the cloud (it only answers slot/book/reschedule/cancel calls).
+
+| Tool / requirement | What it's for | Cost |
+|---|---|---|
+| **Pydent Connector (local middleware)** | The Node.js app we build and the clinic installs next to Open Dental. Holds `mappings.js` (service→CDT code, doctor→providerId/operatory), talks to the Open Dental API locally, and exposes only the booking actions over the tunnel. | **No license fee — it's our software, included.** Delivered as a separate small install. |
+| **Host machine** | A PC/server on the clinic's network that stays on, running the connector beside Open Dental (often the existing Open Dental server or a small always-on PC). | **Usually $0** — runs on hardware the clinic already has. Only a cost if they choose to add a dedicated mini-PC (~$150–400 one-time). **No GPU needed.** |
+| **Node.js runtime** | Runs the connector. | **Free** (open source). |
+| **Cloudflare Tunnel agent** (`cloudflared`) | The outbound-only connector that links the local middleware to our gateway — no open ports, no static IP needed. | **Free.** |
+| **Open Dental API key** | Enables the connector to call Open Dental locally (see section A). | **$30/mo per location** (listed above — this is the one recurring fee for the local link). |
+
+> **In plain terms:** the only *required* on-site setup is installing our free
+> connector + free Cloudflare Tunnel on a machine the clinic already has, and enabling
+> the **$30/mo** Open Dental API key. No new server, no GPU, no extra monthly software
+> license for the middleware itself.
+
 ### C. AI, voice & messaging (usage-based)
 
 | Tool | What it's for | Cost |
@@ -142,6 +162,8 @@ were last checked **June 2026** (USD).
 ### D. What this means in practice (rough monthly, 1 location)
 
 - **Fixed/ours:** Netlify ~$19 + Supabase ~$25 = **~$44/mo** (can start on free tiers).
+- **Local setup (theirs):** our free connector + free Cloudflare Tunnel on an existing
+  machine — **$0/mo** (optional one-time mini-PC ~$150–400 if they want dedicated hardware).
 - **Open Dental side (theirs):** existing support fee + **$30/mo API** to enable booking.
 - **Voice add-on:** ElevenLabs ~$22/mo + Vapi call minutes (~$0.10/min) + ~$2/mo number.
 - **Chat AI:** cents per conversation via OpenRouter.
