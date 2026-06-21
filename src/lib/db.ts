@@ -1390,6 +1390,43 @@ export async function setWaAssignee(conversationId: string, assignee: string | n
   }
 }
 
+// ----------------------------------------------------------- connections (0026)
+
+export interface Connection {
+  provider: string;
+  status: string;
+  accountLabel: string;
+}
+
+// This clinic's connected integrations (Google, etc.). Status only — no tokens.
+export async function fetchConnections(): Promise<Connection[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("connections").select("*").eq("workspace_id", ws);
+    return (data ?? []).map((r) => ({ provider: r.provider, status: r.status ?? "connected", accountLabel: r.account_label ?? "" }));
+  } catch {
+    return [];
+  }
+}
+
+export async function disconnectConnection(provider: string): Promise<{ ok: boolean }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false };
+  try {
+    await fetch("/api/connections/disconnect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: ws, provider }),
+    });
+    // Also remove the status row directly (demo-open RLS) so the UI updates even
+    // if the service-role key isn't set.
+    await supabase.from("connections").delete().eq("workspace_id", ws).eq("provider", provider);
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // ----------------------------------------------------------- clinic settings (0025)
 
 export interface ClinicSettings {

@@ -9,7 +9,6 @@ import {
   MessageSquareText,
   Mail,
   PhoneCall,
-  CalendarDays,
   Bot,
   Camera,
   MessageSquare,
@@ -29,6 +28,7 @@ import { Field, inputCls } from "@/components/modal";
 import { WhatsAppConfigForm } from "@/components/dashboard/whatsapp-config";
 import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
 import { WebsiteConfigCard } from "@/components/dashboard/website-config";
+import { IntegrationsPanel } from "@/components/dashboard/integrations-panel";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
 import { ThemeToggle } from "@/components/theme";
 import { fetchPatients } from "@/lib/db";
@@ -203,13 +203,7 @@ export default function SettingsPage() {
             detail="Runs your phone agents — calls, transcription and voices come from Vapi; you adjust everything here."
             badge={health === null ? <StatusBadge status="Checking…" tone="gray" /> : health.vapi ? <StatusBadge status="Key configured" tone="green" /> : <StatusBadge status="Add VAPI_API_KEY (private key)" tone="amber" />}
           />
-          <ConnCard
-            icon={CalendarDays}
-            name="Google Calendar"
-            detail="Mirror every booked appointment to the clinic's Google Calendar."
-            badge={health === null ? <StatusBadge status="Checking…" tone="gray" /> : health.google ? <StatusBadge status="Ready to connect" tone="blue" /> : <StatusBadge status="Add OAuth env vars" tone="amber" />}
-            action={<a href="/api/google/oauth" className="shrink-0 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Connect Google Calendar</a>}
-          />
+          <IntegrationsPanel />
           <OpenDentalConfigCard />
           <WebsiteConfigCard />
         </div>

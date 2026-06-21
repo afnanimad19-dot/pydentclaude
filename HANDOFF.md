@@ -57,8 +57,12 @@ recent catch-ups (0020+).** Re-running old seed files used to throw
 - **`0024_voices.sql` — USER MUST RUN THIS.** Creates `voices` (per-clinic
   cloned voices) and adds `agents.voice_id`. Powers the Voice Library + custom voice
   feature. Idempotent, no ON CONFLICT.
-- **`0025_clinic_settings.sql` — NEW, USER MUST RUN THIS.** Creates `clinic_settings`
+- **`0025_clinic_settings.sql` — USER MUST RUN THIS.** Creates `clinic_settings`
   (the clinic website URL) for the "import knowledge from website" feature. Idempotent.
+- **`0026_connections.sql` — NEW, USER MUST RUN THIS.** Creates `connections`
+  (per-workspace integration status, readable) and `oauth_tokens` (per-workspace
+  tokens, service-role only — no RLS policy). Powers the multi-tenant Google
+  connections. Idempotent.
 
 ## 6. Env vars (Netlify → Site config → Environment variables)
 Required/used:
@@ -129,6 +133,30 @@ Per-clinic creds (WhatsApp token, Page token, Open Dental URL/key) are saved IN-
   the tool) is the remaining wiring step; the plumbing + OD forward are ready.
 - **Calendar view switcher**: Week grid / Next 15 days / Next 30 days (agenda list),
   alongside the existing month jump dropdown.
+- **Multi-tenant connections (Settings → Connections → IntegrationsPanel)**: per-clinic
+  Google connections (Analytics, Search Console, Business Profile, Ads, Drive, Calendar)
+  via OAuth popup. Cards show green "Connected · <email>" / "Not connected" and a
+  Disconnect. Generalized `/api/google/oauth` carries `{ws, provider, popup}` in `state`;
+  `/api/google/oauth/callback` stores tokens in `oauth_tokens` and status in
+  `connections` PER WORKSPACE (service-role), then closes the popup via postMessage.
+  `/api/connections/disconnect` removes both.
+
+  ## How multi-tenant connections work (the meeting question)
+  - The Netlify env vars hold ONE thing: the developer's *app* credentials
+    (`GOOGLE_OAUTH_CLIENT_ID/SECRET`, the Vapi/ElevenLabs/OpenRouter keys). That is the
+    SaaS's single app — like Calendly/Zapier having one Google app that everyone connects
+    to. New clinics never touch Netlify.
+  - Each clinic clicks Connect → approves in the Google popup → Google returns a code →
+    the callback exchanges it for THAT clinic's tokens → stored per `workspace_id` in the
+    DB. So every clinic's connection is its own, isolated by workspace — not shared, not
+    in Netlify.
+  - For non-OAuth keys (ElevenLabs/Vapi/OpenAI): either the SaaS provides them globally
+    (env, you bill usage) OR each clinic pastes its own key into the dashboard (store
+    per-workspace, like the Open Dental / WhatsApp config cards already do).
+  - Google "Error 400: redirect_uri_mismatch" → in Google Cloud Console → Credentials →
+    the OAuth client → Authorized redirect URIs, add the EXACT
+    `https://<your-domain>/api/google/oauth/callback` (and the Netlify URL). Plus add the
+    requested scopes/test users on the OAuth consent screen.
 
 ## 8. Key files
 - `src/lib/db.ts` — all data access (workspace-scoped). `upsertRow()` = resilient
