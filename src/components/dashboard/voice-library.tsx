@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Play, Loader2, Mic, Square, Trash2, Check, Sparkles, CircleAlert } from "lucide-react";
+import { Play, Pause, Loader2, Mic, Square, Trash2, Check, Sparkles, CircleAlert } from "lucide-react";
 import { Modal, Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { fetchCustomVoices, saveCustomVoice, removeCustomVoice, type CustomVoice } from "@/lib/db";
@@ -46,6 +46,7 @@ export function VoiceLibrary({
   const [custom, setCustom] = useState<CustomVoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState<string | null>(null);
+  const [loadingId, setLoadingId] = useState<string | null>(null);
   const [tab, setTab] = useState<"library" | "create">("library");
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -65,13 +66,26 @@ export function VoiceLibrary({
     return () => audioRef.current?.pause();
   }, []);
 
+  function stopAudio() {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setPlaying(null);
+  }
+
   async function preview(v: { id: string; gender: string; previewUrl?: string | null }) {
-    audioRef.current?.pause();
+    // Toggle: clicking the voice that's currently playing pauses it.
+    if (playing === v.id) {
+      stopAudio();
+      return;
+    }
+    stopAudio();
     if (!configured) {
       browserPreview(v.gender);
       return;
     }
-    setPlaying(v.id);
+    setLoadingId(v.id);
     try {
       let src: string;
       if (v.previewUrl) {
@@ -93,9 +107,12 @@ export function VoiceLibrary({
       audio.onended = () => setPlaying(null);
       audio.onerror = () => setPlaying(null);
       await audio.play();
+      setPlaying(v.id);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not play preview", "info");
       setPlaying(null);
+    } finally {
+      setLoadingId(null);
     }
   }
 
@@ -105,7 +122,7 @@ export function VoiceLibrary({
   }
 
   return (
-    <Modal open onClose={onClose} title="Voice library" subtitle="Pick a voice and hear it — or record your own custom voice." wide>
+    <Modal open onClose={onClose} title="Voice library" subtitle="Pick a voice and hear it — or record your own custom voice." wide z="z-[60]">
       <div className="mb-4 flex gap-2">
         <button
           onClick={() => setTab("library")}
@@ -148,6 +165,7 @@ export function VoiceLibrary({
                         meta={[v.gender, v.accent].filter(Boolean).join(" · ") || "Cloned voice"}
                         selected={selectedId === v.voiceId}
                         playing={playing === v.voiceId}
+                        loading={loadingId === v.voiceId}
                         onPreview={() => preview({ id: v.voiceId, gender: v.gender })}
                         onSelect={() => choose(v.voiceId, v.name)}
                         onDelete={async () => { await removeCustomVoice(v.id); loadCustom(); }}
@@ -166,6 +184,7 @@ export function VoiceLibrary({
                       meta={[v.gender, v.accent, v.description].filter(Boolean).join(" · ")}
                       selected={selectedId === v.id}
                       playing={playing === v.id}
+                      loading={loadingId === v.id}
                       onPreview={() => preview(v)}
                       onSelect={() => choose(v.id, `${v.name} · ${v.accent || v.gender}`)}
                     />
@@ -194,6 +213,7 @@ function VoiceRow({
   meta,
   selected,
   playing,
+  loading,
   onPreview,
   onSelect,
   onDelete,
@@ -202,6 +222,7 @@ function VoiceRow({
   meta: string;
   selected: boolean;
   playing: boolean;
+  loading?: boolean;
   onPreview: () => void;
   onSelect: () => void;
   onDelete?: () => void;
@@ -210,10 +231,10 @@ function VoiceRow({
     <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${selected ? "border-brand-400 bg-brand-50/60" : "border-ink-100"}`}>
       <button
         onClick={onPreview}
-        title="Hear this voice"
+        title={playing ? "Pause" : "Play preview"}
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-600 text-white hover:bg-brand-700"
       >
-        {playing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
       </button>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-ink-900">{name}</p>

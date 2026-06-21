@@ -9,6 +9,7 @@ export function Modal({
   subtitle,
   children,
   wide = false,
+  z = "z-50",
 }: {
   open: boolean;
   onClose: () => void;
@@ -16,10 +17,11 @@ export function Modal({
   subtitle?: string;
   children: React.ReactNode;
   wide?: boolean;
+  z?: string;
 }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className={`fixed inset-0 ${z} flex items-center justify-center p-4`}>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div
         className={`relative max-h-[90vh] w-full ${wide ? "max-w-3xl" : "max-w-lg"} overflow-y-auto rounded-2xl border border-ink-200 bg-surface p-6 shadow-2xl`}

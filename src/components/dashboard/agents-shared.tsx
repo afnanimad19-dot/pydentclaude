@@ -59,25 +59,6 @@ const VOICES = [
   "Calm male · US English",
 ];
 
-// Browser-TTS preview so you can hear a voice before selecting. (The live call
-// uses the real Vapi voice; this is a quick local sample.)
-function previewVoice(voiceName: string) {
-  if (typeof window === "undefined" || !window.speechSynthesis) return;
-  const synth = window.speechSynthesis;
-  synth.cancel();
-  const u = new SpeechSynthesisUtterance("Hi, thank you for calling Bright Smile Dental. How can I help you today?");
-  const voices = synth.getVoices();
-  const female = /female/i.test(voiceName);
-  const pick =
-    voices.find((v) => /en/i.test(v.lang) && (female ? /female|samantha|victoria|zira|fiona|aria/i.test(v.name) : /male|david|daniel|alex|fred|guy/i.test(v.name))) ||
-    voices.find((v) => /en/i.test(v.lang)) ||
-    voices[0];
-  if (pick) u.voice = pick;
-  u.rate = 1;
-  u.pitch = female ? 1.1 : 0.95;
-  synth.speak(u);
-}
-
 // Mirrors the server-side mapping in /api/vapi/assistants
 const VOICE_IDS: Record<string, string> = {
   "Warm female · US English": "Leah",
@@ -613,13 +594,6 @@ export function AgentModal({
 
   return (
     <>
-    {voiceLibOpen && (
-      <VoiceLibrary
-        selectedId={form.voiceId}
-        onSelect={(voiceId, displayName) => { set("voiceId", voiceId); set("voice", displayName); }}
-        onClose={() => setVoiceLibOpen(false)}
-      />
-    )}
     <Modal
       open
       onClose={onClose}
@@ -707,25 +681,17 @@ export function AgentModal({
             </Field>
             {form.kind === "voice" && (
               <>
-                <Field label="Voice">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setVoiceLibOpen(true)}
-                      className="flex flex-1 items-center justify-between gap-2 rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-left text-sm text-ink-800 hover:border-brand-400"
-                    >
-                      <span className="truncate">{form.voice || "Choose a voice…"}</span>
-                      <span className="shrink-0 text-xs font-medium text-brand-600">Browse</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => previewVoice(form.voice)}
-                      title="Quick sample (basic browser voice)"
-                      className="flex shrink-0 items-center gap-1.5 rounded-xl border border-ink-200 px-3 py-2.5 text-sm font-medium text-ink-700 hover:bg-ink-50"
-                    >
-                      <Play className="h-4 w-4" /> Preview
-                    </button>
-                  </div>
+                <Field label="Voice (ElevenLabs)">
+                  <button
+                    type="button"
+                    onClick={() => setVoiceLibOpen(true)}
+                    className="flex w-full items-center justify-between gap-2 rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-left text-sm text-ink-800 hover:border-brand-400"
+                  >
+                    <span className="truncate">{form.voice || "Choose a voice…"}</span>
+                    <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-brand-600">
+                      <Play className="h-3.5 w-3.5" /> Browse &amp; preview
+                    </span>
+                  </button>
                 </Field>
                 <Field label="Transcriber">
                   <select className={inputCls} defaultValue="Deepgram · Nova-2 (multilingual)">
@@ -914,6 +880,13 @@ export function AgentModal({
         </>
       )}
     </Modal>
+    {voiceLibOpen && (
+      <VoiceLibrary
+        selectedId={form.voiceId}
+        onSelect={(voiceId, displayName) => { set("voiceId", voiceId); set("voice", displayName); }}
+        onClose={() => setVoiceLibOpen(false)}
+      />
+    )}
     </>
   );
 }
