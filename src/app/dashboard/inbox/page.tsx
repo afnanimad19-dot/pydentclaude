@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash, FileText, ChevronDown, RefreshCw, ArrowDown, Mic } from "lucide-react";
+import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash, FileText, ChevronDown, RefreshCw, ArrowDown, Mic, CalendarCheck2 } from "lucide-react";
 import { Card, ChannelBadge, Avatar, StatusBadge } from "@/components/ui";
+import { BookingModal } from "@/components/dashboard/booking-modal";
 import { toast } from "@/components/toast";
 import {
   fetchAgents,
@@ -121,6 +122,7 @@ export default function InboxPage() {
   const [voices, setVoices] = useState<VoiceOption[]>([]);
   const [voiceId, setVoiceId] = useState<string>("");
   const [voiceBusy, setVoiceBusy] = useState(false);
+  const [bookOpen, setBookOpen] = useState(false);
 
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [channelDefaults, setChannelDefaults] = useState<ChannelDefault[]>([]);
@@ -456,6 +458,14 @@ export default function InboxPage() {
   if (!active) return null;
 
   return (
+    <>
+    <BookingModal
+      open={bookOpen}
+      onClose={() => setBookOpen(false)}
+      onBooked={() => toast("Booking added to the calendar.", "success")}
+      initialName={active.name}
+      initialPhone={active.phone ?? ""}
+    />
     <Card className="flex h-[calc(100vh-106px)] overflow-hidden">
       {/* 1 — rail */}
       <div className="hidden w-52 shrink-0 flex-col border-r border-ink-200 bg-ink-50/40 md:flex">
@@ -561,6 +571,13 @@ export default function InboxPage() {
                 </optgroup>
               </select>
             </div>
+            <button
+              onClick={() => setBookOpen(true)}
+              title="Book an appointment for this contact"
+              className="flex items-center gap-1.5 self-end rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
+            >
+              <CalendarCheck2 className="h-3.5 w-3.5" /> Book
+            </button>
           </div>
         </div>
 
@@ -663,5 +680,6 @@ export default function InboxPage() {
         )}
       </div>
     </Card>
+    </>
   );
 }

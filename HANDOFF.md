@@ -54,9 +54,11 @@ recent catch-ups (0020+).** Re-running old seed files used to throw
   `wa_conversations.assigned_to`, and updates `handle_new_user()` so an invited
   email JOINS the existing clinic workspace instead of creating a new one.
   Idempotent (`create … if not exists`), no targeted ON CONFLICT. Run in a fresh tab.
-- **`0024_voices.sql` — NEW, USER MUST RUN THIS.** Creates `voices` (per-clinic
+- **`0024_voices.sql` — USER MUST RUN THIS.** Creates `voices` (per-clinic
   cloned voices) and adds `agents.voice_id`. Powers the Voice Library + custom voice
   feature. Idempotent, no ON CONFLICT.
+- **`0025_clinic_settings.sql` — NEW, USER MUST RUN THIS.** Creates `clinic_settings`
+  (the clinic website URL) for the "import knowledge from website" feature. Idempotent.
 
 ## 6. Env vars (Netlify → Site config → Environment variables)
 Required/used:
@@ -114,7 +116,19 @@ Per-clinic creds (WhatsApp token, Page token, Open Dental URL/key) are saved IN-
   in-dashboard.)
 - Agent editor: knowledge-base uploads are now **unlimited** (removed the 10-file cap).
   Instructions + Behavior are two separate boxes (Behavior = tone/rules/negative "what
-  NOT to do"); both render for chat and voice agents.
+  NOT to do"); both render for chat and voice agents. PDF/Word text is extracted via
+  `/api/kb/extract`. Behavior is now included in the Vapi voice-call system prompt.
+- **Website knowledge import**: clinic website URL saved in Settings → Connections
+  (`clinic_settings`, migration 0025); agent editor has "Import from your website"
+  which fetches + strips the page via `/api/kb/website` into the knowledge base.
+- **Booking system**: `createBooking()` (db.ts) creates/links a lead (name/phone/
+  email), books an appointment on our Calendar, and forwards to Open Dental
+  `/api/opendental/book` when the clinic has it enabled. Surfaced as a BookingModal —
+  "Quick booking" on the Calendar and a "Book" button in the inbox thread header
+  (prefilled with the contact). NOTE: autonomous agent booking (LLM decides + calls
+  the tool) is the remaining wiring step; the plumbing + OD forward are ready.
+- **Calendar view switcher**: Week grid / Next 15 days / Next 30 days (agenda list),
+  alongside the existing month jump dropdown.
 
 ## 8. Key files
 - `src/lib/db.ts` — all data access (workspace-scoped). `upsertRow()` = resilient

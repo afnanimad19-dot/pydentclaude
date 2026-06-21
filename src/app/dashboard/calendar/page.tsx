@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, CalendarCheck2 } from "lucide-react";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal } from "@/components/modal";
 import { NewAppointmentModal } from "@/components/dashboard/create-modals";
+import { BookingModal } from "@/components/dashboard/booking-modal";
 import { fetchAppointments, fetchPatients } from "@/lib/db";
 import { type Appointment, type Patient } from "@/lib/mock-data";
 
@@ -43,11 +44,14 @@ const STATUS_STYLES: Record<Appointment["status"], string> = {
 
 export default function CalendarPage() {
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()));
+  const [view, setView] = useState<"week" | "15" | "30">("week");
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [aptModal, setAptModal] = useState(false);
+  const [bookModal, setBookModal] = useState(false);
   const [selected, setSelected] = useState<Appointment | null>(null);
   const months = monthOptions();
+  const rangeDays = view === "15" ? 15 : view === "30" ? 30 : 7;
 
   const refresh = useCallback(() => {
     fetchAppointments().then((r) => setAppointments(r.appointments));
@@ -66,9 +70,19 @@ export default function CalendarPage() {
   function shiftWeek(delta: number) {
     setWeekStart((prev) => {
       const next = new Date(prev);
-      next.setUTCDate(next.getUTCDate() + delta * 7);
+      next.setUTCDate(next.getUTCDate() + delta * (view === "week" ? 7 : rangeDays));
       return next;
     });
+  }
+
+  // For the 15/30-day agenda: a flat list of days from the range start.
+  const agendaDays = Array.from({ length: rangeDays }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setUTCDate(d.getUTCDate() + i);
+    return d;
+  });
+  function aptsOn(date: string): Appointment[] {
+    return appointments.filter((a) => a.date === date).sort((a, b) => a.time.localeCompare(b.time));
   }
 
   function aptsAt(date: string, hour: number): Appointment[] {
@@ -86,6 +100,7 @@ export default function CalendarPage() {
         patientOptions={patients.map((p) => ({ id: p.id, name: p.name }))}
         onCreated={refresh}
       />
+      <BookingModal open={bookModal} onClose={() => setBookModal(false)} onBooked={refresh} />
       {selected && (
         <Modal open onClose={() => setSelected(null)} title={selected.patientName} subtitle={`${selected.procedure}`}>
           <div className="grid gap-3 text-sm">
@@ -122,29 +137,49 @@ export default function CalendarPage() {
         title="Calendar"
         subtitle="The clinic schedule at a glance — click any appointment for the patient's details."
         actions={
-          <button
-            onClick={() => setAptModal(true)}
-            className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-          >
-            <Plus className="h-4 w-4" /> New appointment
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setBookModal(true)}
+              className="flex items-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50"
+            >
+              <CalendarCheck2 className="h-4 w-4" /> Quick booking
+            </button>
+            <button
+              onClick={() => setAptModal(true)}
+              className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
+              <Plus className="h-4 w-4" /> New appointment
+            </button>
+          </div>
         }
       />
 
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-200 px-5 py-3.5">
-          <select
-            value={months.some((m) => m.value === monthValue) ? monthValue : ""}
-            onChange={(e) => e.target.value && setWeekStart(mondayOf(new Date(e.target.value)))}
-            className="rounded-lg border border-ink-200 bg-surface px-3 py-1.5 text-sm font-semibold text-ink-900 outline-none focus:border-brand-400"
-          >
-            {!months.some((m) => m.value === monthValue) && (
-              <option value="">{weekStart.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })}</option>
-            )}
-            {months.map((m) => (
-              <option key={m.value} value={m.value}>{m.label}</option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <select
+              value={months.some((m) => m.value === monthValue) ? monthValue : ""}
+              onChange={(e) => e.target.value && setWeekStart(mondayOf(new Date(e.target.value)))}
+              className="rounded-lg border border-ink-200 bg-surface px-3 py-1.5 text-sm font-semibold text-ink-900 outline-none focus:border-brand-400"
+            >
+              {!months.some((m) => m.value === monthValue) && (
+                <option value="">{weekStart.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })}</option>
+              )}
+              {months.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+            <select
+              value={view}
+              onChange={(e) => setView(e.target.value as typeof view)}
+              className="rounded-lg border border-ink-200 bg-surface px-3 py-1.5 text-sm font-medium text-ink-700 outline-none focus:border-brand-400"
+              title="How many days to show"
+            >
+              <option value="week">Week view</option>
+              <option value="15">Next 15 days</option>
+              <option value="30">Next 30 days</option>
+            </select>
+          </div>
           <div className="flex items-center gap-1">
             <button onClick={() => shiftWeek(-1)} className="rounded-lg p-1.5 text-ink-500 hover:bg-ink-50">
               <ChevronLeft className="h-5 w-5" />
@@ -158,6 +193,40 @@ export default function CalendarPage() {
           </div>
         </div>
 
+        {view !== "week" ? (
+          <div className="max-h-[calc(100vh-260px)] divide-y divide-ink-100 overflow-y-auto">
+            {agendaDays.map((d, i) => {
+              const date = iso(d);
+              const dayApts = aptsOn(date);
+              const isToday = date === iso(new Date());
+              return (
+                <div key={i} className="flex gap-4 px-5 py-3">
+                  <div className={`w-28 shrink-0 ${isToday ? "text-brand-600 dark:text-brand-300" : "text-ink-700"}`}>
+                    <p className="text-sm font-semibold">{d.toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" })} {d.getUTCDate()}</p>
+                    <p className="text-xs text-ink-400">{d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" })}</p>
+                  </div>
+                  <div className="flex flex-1 flex-col gap-1.5">
+                    {dayApts.length === 0 ? (
+                      <button onClick={() => setAptModal(true)} className="self-start rounded-lg border border-dashed border-ink-200 px-3 py-1.5 text-xs text-ink-400 hover:border-brand-400 hover:text-brand-600">No appointments — add one</button>
+                    ) : (
+                      dayApts.map((a) => (
+                        <button
+                          key={a.id}
+                          onClick={() => setSelected(a)}
+                          className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm ${STATUS_STYLES[a.status]}`}
+                        >
+                          <span className="w-16 shrink-0 font-semibold">{a.time}</span>
+                          <span className="flex-1 truncate"><span className="font-semibold">{a.patientName}</span> · {a.procedure}</span>
+                          <span className="shrink-0 text-xs opacity-80">{a.status}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <div className="grid min-w-[800px] grid-cols-[56px_repeat(6,1fr)]">
             {/* Header row */}
@@ -202,6 +271,7 @@ export default function CalendarPage() {
             ))}
           </div>
         </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-4 border-t border-ink-200 px-5 py-3 text-xs text-ink-500">
           {(["Scheduled", "Unconfirmed", "Completed", "Broken"] as Appointment["status"][]).map((s) => (

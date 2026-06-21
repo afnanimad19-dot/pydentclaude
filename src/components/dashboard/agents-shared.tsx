@@ -42,6 +42,7 @@ import {
   fetchPhoneLines,
   addPhoneLine,
   removePhoneLine,
+  fetchClinicSettings,
   type AiAgent,
   type DataSource,
   type ChannelDefault,
@@ -487,6 +488,34 @@ export function AgentModal({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
   const [extracting, setExtracting] = useState<string[]>([]);
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [importingWeb, setImportingWeb] = useState(false);
+
+  useEffect(() => {
+    fetchClinicSettings().then((s) => { if (s.website) setWebsiteUrl(s.website); });
+  }, []);
+
+  async function importWebsite() {
+    const url = websiteUrl.trim();
+    if (!url || importingWeb) return;
+    setImportingWeb(true);
+    try {
+      const res = await fetch("/api/kb/website", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Could not read the website.");
+      const label = `Website — ${(data.title || url).slice(0, 60)}`;
+      setFileTexts((prev) => ({ ...prev, [label]: data.text }));
+      setForm((f) => ({ ...f, kbFiles: f.kbFiles.includes(label) ? f.kbFiles : [...f.kbFiles, label] }));
+    } catch (e) {
+      setResult({ ok: false, message: e instanceof Error ? e.message : "Website import failed." });
+    } finally {
+      setImportingWeb(false);
+    }
+  }
 
   function set<K extends keyof typeof form>(k: K, v: (typeof form)[K]) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -778,6 +807,23 @@ export function AgentModal({
             <p className="mb-2 text-xs text-ink-400">
               The agent&apos;s brain: hours, pricing, insurance, FAQs, promos. It answers only from these documents. Upload as many as you need.
             </p>
+            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-2.5">
+              <span className="text-xs font-medium text-ink-500">Import from your website:</span>
+              <input
+                className="min-w-48 flex-1 rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400"
+                placeholder="https://www.yourclinic.com"
+                value={websiteUrl}
+                onChange={(e) => setWebsiteUrl(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={importWebsite}
+                disabled={importingWeb || !websiteUrl.trim()}
+                className="shrink-0 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {importingWeb ? "Reading…" : "Fetch site"}
+              </button>
+            </div>
             <input
               ref={fileInputRef}
               type="file"

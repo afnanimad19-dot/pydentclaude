@@ -28,6 +28,7 @@ import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { WhatsAppConfigForm } from "@/components/dashboard/whatsapp-config";
 import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
+import { WebsiteConfigCard } from "@/components/dashboard/website-config";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
 import { ThemeToggle } from "@/components/theme";
 import { fetchPatients } from "@/lib/db";
@@ -210,6 +211,7 @@ export default function SettingsPage() {
             action={<a href="/api/google/oauth" className="shrink-0 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Connect Google Calendar</a>}
           />
           <OpenDentalConfigCard />
+          <WebsiteConfigCard />
         </div>
       )}
 

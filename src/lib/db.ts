@@ -245,6 +245,81 @@ export async function createAppointment(input: {
   return { ok: true, message: "Appointment saved to the schedule." };
 }
 
+// A booking from a lead/agent: capture only name/email/phone + service, drop it on
+// our Calendar, and (when Open Dental is enabled) forward it to the clinic so it's
+// booked there too. Re-uses an existing lead with the same phone/email if present.
+export async function createBooking(input: {
+  name: string;
+  email?: string;
+  phone?: string;
+  service: string;
+  date: string;
+  time: string;
+  provider?: string;
+  operatory?: string;
+}): Promise<{ ok: boolean; message: string; openDental?: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+
+  // Find an existing lead/patient by phone, then email; otherwise create one.
+  let patientId: string | null = null;
+  if (input.phone) {
+    const { data } = await supabase.from("patients").select("id").eq("workspace_id", ws).eq("phone", input.phone).maybeSingle();
+    patientId = data?.id ?? null;
+  }
+  if (!patientId && input.email) {
+    const { data } = await supabase.from("patients").select("id").eq("workspace_id", ws).eq("email", input.email).maybeSingle();
+    patientId = data?.id ?? null;
+  }
+  if (!patientId) {
+    const { data, error } = await supabase
+      .from("patients")
+      .insert({ name: input.name, phone: input.phone ?? "", email: input.email ?? "", insurance: "Self-pay", status: "New" })
+      .select("id")
+      .single();
+    if (error || !data) return { ok: false, message: error?.message ?? "Could not save the lead." };
+    patientId = data.id;
+  }
+
+  const { error: aerr } = await supabase.from("appointments").insert({
+    patient_id: patientId,
+    procedure: input.service || "Consultation",
+    date: input.date,
+    time: input.time,
+    provider: input.provider ?? "",
+    operatory: input.operatory ?? "",
+    status: "Scheduled",
+  });
+  if (aerr) return { ok: false, message: aerr.message };
+
+  // Best-effort: also book in Open Dental when the clinic has it enabled.
+  let openDental: string | undefined;
+  try {
+    const cfg = await fetchOpenDentalConfig();
+    if (cfg.enabled && cfg.clinicApiUrl) {
+      const res = await fetch("/api/opendental/book", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId: ws,
+          name: input.name,
+          phone: input.phone ?? "",
+          email: input.email ?? "",
+          doctorId: input.provider || "default",
+          serviceId: input.service,
+          datetime: `${input.date}T${input.time}`,
+          consent: true,
+        }),
+      });
+      openDental = res.ok ? "Also booked in Open Dental." : "Saved here; Open Dental did not confirm.";
+    }
+  } catch {
+    openDental = "Saved here; Open Dental could not be reached.";
+  }
+
+  return { ok: true, message: "Booked — added to the calendar.", openDental };
+}
+
 // ----------------------------------------------------------------- agents
 
 export interface AiAgent {
@@ -1313,6 +1388,34 @@ export async function setWaAssignee(conversationId: string, assignee: string | n
   } catch {
     /* demo */
   }
+}
+
+// ----------------------------------------------------------- clinic settings (0025)
+
+export interface ClinicSettings {
+  website: string;
+}
+
+export async function fetchClinicSettings(): Promise<ClinicSettings> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("clinic_settings").select("website").eq("workspace_id", ws).maybeSingle();
+    return { website: data?.website ?? "" };
+  } catch {
+    return { website: "" };
+  }
+}
+
+export async function saveClinicSettings(s: ClinicSettings): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { data: existing } = await supabase.from("clinic_settings").select("workspace_id").eq("workspace_id", ws).maybeSingle();
+  const row = { website: s.website.trim(), updated_at: new Date().toISOString() };
+  const { error } = existing
+    ? await supabase.from("clinic_settings").update(row).eq("workspace_id", ws)
+    : await supabase.from("clinic_settings").insert({ workspace_id: ws, ...row });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Website saved." };
 }
 
 // ----------------------------------------------------------- custom voices (0024)
