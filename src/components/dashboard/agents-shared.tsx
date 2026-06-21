@@ -505,6 +505,7 @@ export function AgentModal({
   const [voiceLibOpen, setVoiceLibOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
+  const [extracting, setExtracting] = useState<string[]>([]);
 
   function set<K extends keyof typeof form>(k: K, v: (typeof form)[K]) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -518,10 +519,26 @@ export function AgentModal({
       let text = "";
       if (/\.(txt|md|csv|json)$/i.test(file.name)) {
         text = await file.text();
+      } else if (/\.(pdf|docx|doc)$/i.test(file.name)) {
+        // Read the real text out of PDF / Word on the server.
+        setExtracting((p) => [...p, file.name]);
+        try {
+          const fd = new FormData();
+          fd.append("file", file, file.name);
+          fd.append("name", file.name);
+          const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error ?? "Could not read this document.");
+          text = data.text;
+        } catch (e) {
+          text = `[Could not read ${file.name}: ${e instanceof Error ? e.message : "extraction failed"}]`;
+        } finally {
+          setExtracting((p) => p.filter((n) => n !== file.name));
+        }
       } else {
-        text = `[Document on file: ${file.name} — full text extraction for PDF/Word coming soon]`;
+        text = `[Document on file: ${file.name}]`;
       }
-      setFileTexts((prev) => ({ ...prev, [file.name]: text.slice(0, 20000) }));
+      setFileTexts((prev) => ({ ...prev, [file.name]: text.slice(0, 200_000) }));
       setForm((f) => ({ ...f, kbFiles: [...f.kbFiles, file.name] }));
     }
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -571,6 +588,7 @@ export function AgentModal({
             model: form.model.replace(/^openai\//, ""),
             firstMessage: form.firstMessage,
             instructions: form.instructions,
+            behavior: form.behavior,
             knowledgeBase: payload.knowledgeBase,
             language: form.language,
           }),
@@ -806,18 +824,31 @@ export function AgentModal({
               onClick={() => fileInputRef.current?.click()}
               className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-ink-300 py-4 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600 disabled:opacity-50 dark:hover:text-brand-300"
             >
-              <Upload className="h-4 w-4" /> Upload documents (.txt, .md, .csv, .pdf, .docx)
+              <Upload className="h-4 w-4" /> Upload documents (.txt, .md, .csv, .pdf, .docx — text is read automatically)
             </button>
+            {extracting.length > 0 && (
+              <p className="mt-2 text-xs text-brand-600">Reading {extracting.join(", ")}…</p>
+            )}
             {form.kbFiles.length > 0 && (
               <ul className="mt-2 space-y-1.5">
-                {form.kbFiles.map((f) => (
+                {form.kbFiles.map((f) => {
+                  const failed = (fileTexts[f] ?? "").startsWith("[Could not read");
+                  return (
                   <li key={f} className="flex items-center justify-between rounded-lg border border-ink-100 bg-ink-50 px-3 py-2 text-sm text-ink-700">
-                    <span className="flex items-center gap-2"><FileText className="h-4 w-4 text-brand-500" /> {f}</span>
+                    <span className="flex items-center gap-2">
+                      <FileText className={`h-4 w-4 ${failed ? "text-rose-500" : "text-brand-500"}`} /> {f}
+                      {failed ? (
+                        <span className="text-xs text-rose-500">couldn&apos;t read</span>
+                      ) : fileTexts[f] ? (
+                        <span className="text-xs text-emerald-600">{fileTexts[f].length.toLocaleString()} chars read</span>
+                      ) : null}
+                    </span>
                     <button onClick={() => removeFile(f)} className="rounded p-1 text-ink-400 hover:text-rose-500">
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -1035,7 +1066,11 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
             messages: [
               {
                 role: "system",
-                content: [agent.instructions, agent.knowledgeBase && `KNOWLEDGE BASE:\n${agent.knowledgeBase}`]
+                content: [
+                  agent.instructions,
+                  agent.behavior && `BEHAVIOR RULES (how to act, what NOT to do):\n${agent.behavior}`,
+                  agent.knowledgeBase && `KNOWLEDGE BASE:\n${agent.knowledgeBase}`,
+                ]
                   .filter(Boolean)
                   .join("\n\n"),
               },

@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
           role: "system",
           content: [
             agent.instructions,
+            agent.behavior && `BEHAVIOR RULES (how to act, what NOT to do):\n${agent.behavior}`,
             agent.knowledgeBase && `KNOWLEDGE BASE:\n${agent.knowledgeBase}`,
           ]
             .filter(Boolean)
