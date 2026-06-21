@@ -106,6 +106,15 @@ Per-clinic creds (WhatsApp token, Page token, Open Dental URL/key) are saved IN-
   `/api/voice/preview`, `/api/voice/clone`. Falls back gracefully with no API key.
   NOTE: OmniVoice (user's fork) was evaluated but is GPU-only / not realtime, so we
   went with a managed TTS that also works for live calls.
+- **Voice notes in the inbox**: when handling a chat yourself, type a message, pick a
+  voice (your cloned voice or a premade one) and "Send as voice note" — it's generated
+  via `/api/voice/preview` (ElevenLabs TTS) and dropped into the thread as a playable
+  audio bubble. Needs ELEVENLABS_API_KEY; empty/curated list works offline. (Live
+  WhatsApp *audio* delivery via Meta media API is a future step — today the note plays
+  in-dashboard.)
+- Agent editor: knowledge-base uploads are now **unlimited** (removed the 10-file cap).
+  Instructions + Behavior are two separate boxes (Behavior = tone/rules/negative "what
+  NOT to do"); both render for chat and voice agents.
 
 ## 8. Key files
 - `src/lib/db.ts` — all data access (workspace-scoped). `upsertRow()` = resilient

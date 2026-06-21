@@ -512,8 +512,7 @@ export function AgentModal({
 
   async function onFiles(list: FileList | null) {
     if (!list) return;
-    const remaining = 10 - form.kbFiles.length;
-    const files = Array.from(list).slice(0, remaining);
+    const files = Array.from(list);
     for (const file of files) {
       if (form.kbFiles.includes(file.name)) continue;
       let text = "";
@@ -768,7 +767,7 @@ export function AgentModal({
           </div>
 
           <div className="mt-4">
-            <Field label="Behavior — rules & tone (how to act, what NOT to do)">
+            <Field label="Behavior — rules, tone & negative rules (what NOT to do)">
               <textarea
                 rows={4}
                 className={inputCls}
@@ -790,10 +789,10 @@ export function AgentModal({
 
           <div className="mt-4">
             <p className="mb-1.5 text-sm font-medium text-ink-700">
-              Knowledge base — upload documents ({form.kbFiles.length}/10)
+              Knowledge base — upload documents{form.kbFiles.length > 0 ? ` (${form.kbFiles.length})` : ""}
             </p>
             <p className="mb-2 text-xs text-ink-400">
-              The agent&apos;s brain: hours, pricing, insurance, FAQs, promos. It answers only from these documents.
+              The agent&apos;s brain: hours, pricing, insurance, FAQs, promos. It answers only from these documents. Upload as many as you need.
             </p>
             <input
               ref={fileInputRef}
@@ -805,10 +804,9 @@ export function AgentModal({
             />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={form.kbFiles.length >= 10}
               className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-ink-300 py-4 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600 disabled:opacity-50 dark:hover:text-brand-300"
             >
-              <Upload className="h-4 w-4" /> Upload documents (.txt, .md, .csv, .pdf, .docx — max 10)
+              <Upload className="h-4 w-4" /> Upload documents (.txt, .md, .csv, .pdf, .docx)
             </button>
             {form.kbFiles.length > 0 && (
               <ul className="mt-2 space-y-1.5">

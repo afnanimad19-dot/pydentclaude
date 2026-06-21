@@ -177,3 +177,66 @@ Sources: [Open Dental fees](https://www.opendental.com/site/fees.html) ·
 [Open Dental API setup](https://www.opendental.com/site/apisetup.html). Verify
 ElevenLabs / Vapi / Supabase / Netlify / OpenRouter / Meta pricing on each vendor's
 own pricing page before quoting — these are usage-based and change.
+
+### E. Optional / situational tools (only if you turn the feature on)
+
+| Tool | When you need it | Cost |
+|---|---|---|
+| **Domain + DNS** (e.g. Namecheap, Cloudflare, Hostinger) | A custom domain for the app + website (e.g. `app.yourclinic.com`). | ~$10–15/yr per domain. |
+| **Email sender** (Resend / SendGrid / Postmark) | The email automations (welcome series, follow-ups) if you send from your own domain. | Free tiers ~3k emails/mo; paid from ~$15–20/mo. |
+| **Twilio** (or another SMS provider) | Native SMS as a channel, or the phone number behind Vapi calls. | Number ~$1–2/mo + ~$0.0075 per SMS segment (US). |
+| **Stripe** | If *you* bill clinics for the software (subscriptions). | No monthly fee; ~2.9% + 30¢ per charge. |
+
+### F. Hosting — where to deploy (and can we use Hostinger?)
+
+**The Pydent app is a Next.js app with server routes** (`/api/*`), so it needs a host
+that runs Node server-side rendering + serverless functions — not plain static/shared
+hosting.
+
+- **Recommended: Netlify or Vercel.** Both natively support Next.js, give serverless
+  functions for our `/api` routes, env-var management (where the `ELEVENLABS_API_KEY`,
+  `VAPI_API_KEY`, etc. go), HTTPS and CI from Git out of the box. This is the smoothest
+  path and what the project is wired for. Vercel is made by the Next.js team; Netlify is
+  what we currently target — either is fine.
+- **Hostinger:** their **shared/“web hosting”** plans are built for PHP/WordPress and
+  are **not suitable** for a Next.js SSR app. Their **VPS or Cloud** plans *can* run it,
+  but you’d manage Node, a process manager (PM2), Nginx, SSL and deploys **manually** —
+  more work and more to maintain. So: use Hostinger only if you specifically want a VPS
+  you control; otherwise **Netlify/Vercel is the professional, lower-effort choice**.
+  Hostinger is, however, perfectly good for a **separate marketing site/domain** or to
+  host the **local connector** on a clinic-side VPS if a clinic has no on-site machine.
+- **The local connector** (section B2) does **not** go on Netlify/Hostinger cloud — it
+  runs **inside the clinic** next to Open Dental, reached only via Cloudflare Tunnel.
+
+> Rule of thumb: **app → Netlify/Vercel**, **clinic connector → on-site (or a small
+> clinic-side VPS)**, **clinical data → never leaves the clinic.**
+
+---
+
+## 8. What you can do with it — scenarios
+
+Once the pieces above are connected, here are the main things the system can do:
+
+1. **Inbound call → booked appointment.** A patient calls the clinic number → Vapi
+   answers in your chosen ElevenLabs voice → the agent reads live Open Dental slots
+   through the connector → books the appointment → it appears on the Calendar. No staff
+   needed for routine bookings.
+2. **WhatsApp/Instagram lead → AI books or qualifies.** A lead messages on WhatsApp →
+   the assigned chat agent answers from the knowledge base, offers real open slots, and
+   books — or hands off to a human if it’s unsure.
+3. **Staff voice note in your own voice.** When a teammate takes over a chat (Assign to
+   me), they can type a reply and send it as a **voice note** spoken in a **cloned clinic
+   voice** (e.g. the dentist’s) — personal, on-brand, without recording each time.
+4. **Custom clinic brand voice everywhere.** Record ~30s once → that voice is used for
+   phone calls *and* voice notes, so every patient touchpoint sounds like your clinic.
+5. **Missed-call / after-hours text-back.** Out-of-hours calls or missed calls trigger a
+   WhatsApp/SMS follow-up so leads aren’t lost overnight.
+6. **Reschedule / cancel self-service.** Patients message or call to move an appointment;
+   the agent updates Open Dental and the Calendar reflects it — no double-booking.
+7. **Lifecycle + routing.** Every conversation gets a stage (New → Hot → Payment →
+   Customer) and is routed to the right AI agent or teammate from one “Assign to” menu.
+8. **Reactivation / recall campaigns.** Outbound voice or message campaigns to patients
+   due for a checkup, using the same agents and voices.
+
+All of the above keep clinical data on the clinic’s server — only scheduling and
+lead/marketing metadata is ever stored in the cloud.

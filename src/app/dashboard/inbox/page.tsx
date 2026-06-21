@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash, FileText, ChevronDown, RefreshCw, ArrowDown } from "lucide-react";
+import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash, FileText, ChevronDown, RefreshCw, ArrowDown, Mic } from "lucide-react";
 import { Card, ChannelBadge, Avatar, StatusBadge } from "@/components/ui";
 import { toast } from "@/components/toast";
 import {
@@ -18,6 +18,7 @@ import {
   setWaLifecycle,
   setWaAssignee,
   fetchTeamMembers,
+  fetchCustomVoices,
   sendWaReply,
   type AiAgent,
   type ChannelDefault,
@@ -47,6 +48,21 @@ const LIFECYCLE: { key: string; tone: "blue" | "amber" | "violet" | "green" }[] 
   { key: "Payment", tone: "violet" },
   { key: "Customer", tone: "green" },
 ];
+
+interface ThreadItem {
+  id: string;
+  direction: "inbound" | "outbound";
+  author: string;
+  body: string;
+  time: string;
+  byBot?: boolean;
+  audioUrl?: string;
+}
+
+interface VoiceOption {
+  id: string;
+  label: string;
+}
 
 interface UnifiedConvo {
   id: string;
@@ -99,6 +115,13 @@ export default function InboxPage() {
   const [livePatients, setLivePatients] = useState<Patient[]>([]);
   const [team, setTeam] = useState<TeamMember[]>([]);
 
+  // Voice notes (ElevenLabs): pick a voice — premade or your own cloned voice — and
+  // turn the typed message into a voice note when you're handling the chat yourself.
+  const [voiceNotes, setVoiceNotes] = useState<Record<string, ThreadItem[]>>({});
+  const [voices, setVoices] = useState<VoiceOption[]>([]);
+  const [voiceId, setVoiceId] = useState<string>("");
+  const [voiceBusy, setVoiceBusy] = useState(false);
+
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [channelDefaults, setChannelDefaults] = useState<ChannelDefault[]>([]);
   const [aiBusy, setAiBusy] = useState(false);
@@ -126,6 +149,18 @@ export default function InboxPage() {
     fetchAssignments().then(setDemoAssignments);
     fetchChannelDefaults().then(setChannelDefaults);
     fetchTeamMembers().then(setTeam);
+    // Voice list for voice notes: your own cloned voices first, then premade.
+    Promise.all([
+      fetchCustomVoices().catch(() => []),
+      fetch("/api/voice/list").then((r) => r.json()).catch(() => ({ voices: [] })),
+    ]).then(([custom, lib]) => {
+      const mine: VoiceOption[] = custom.map((v) => ({ id: v.voiceId, label: `★ ${v.name} (your voice)` }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const premade: VoiceOption[] = (lib.voices ?? []).map((v: any) => ({ id: v.id, label: `${v.name}${v.gender ? ` · ${v.gender}` : ""}` }));
+      const all = [...mine, ...premade];
+      setVoices(all);
+      setVoiceId((cur) => cur || all[0]?.id || "");
+    });
   }, []);
 
   const refreshLive = useCallback(() => {
@@ -233,12 +268,13 @@ export default function InboxPage() {
   const demoConvo = active && !active.live ? conversations.find((c) => c.id === active.id) : undefined;
   const patient = active?.patientId ? [...livePatients, ...mockPatients].find((p) => p.id === active.patientId) : undefined;
 
-  // Active thread (normalized).
-  const thread: { id: string; direction: "inbound" | "outbound"; author: string; body: string; time: string; byBot?: boolean }[] = active?.live
+  // Active thread (normalized). `audioUrl` carries voice notes generated with ElevenLabs.
+  const baseThread: ThreadItem[] = active?.live
     ? liveMessages.map((m) => ({ id: m.id, direction: m.direction, author: m.author, body: m.body, time: fmtTime(m.createdAt), byBot: m.byBot }))
     : demoConvo
       ? [...demoConvo.messages, ...(extraMessages[active!.id] ?? [])]
       : [];
+  const thread: ThreadItem[] = active ? [...baseThread, ...(voiceNotes[active.id] ?? [])] : baseThread;
 
   // Always open on the latest message; re-scroll as new ones arrive.
   useEffect(() => {
@@ -289,6 +325,35 @@ export default function InboxPage() {
       setDraft("");
       const msg: Message = { id: nextId("local"), direction: "outbound", author: ME, body: text, time: "Just now" };
       setExtraMessages((prev) => ({ ...prev, [active.id]: [...(prev[active.id] ?? []), msg] }));
+    }
+  }
+
+  // Turn the typed message into a voice note with the selected ElevenLabs voice
+  // (premade or your own cloned voice) and drop it into the thread.
+  async function sendVoiceNote() {
+    const text = draft.trim();
+    if (!text || !active || voiceBusy) return;
+    if (!voiceId) { toast("Pick a voice first — add ELEVENLABS_API_KEY in Netlify if the list is empty.", "info"); return; }
+    setVoiceBusy(true);
+    try {
+      const res = await fetch("/api/voice/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voiceId, text }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error ?? "Voice note failed");
+      }
+      const audioUrl = URL.createObjectURL(await res.blob());
+      const note: ThreadItem = { id: nextId("vn"), direction: "outbound", author: ME, body: text, time: "Just now", audioUrl };
+      setVoiceNotes((prev) => ({ ...prev, [active.id]: [...(prev[active.id] ?? []), note] }));
+      setDraft("");
+      toast("Voice note ready — recorded in your selected voice.", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not create the voice note", "info");
+    } finally {
+      setVoiceBusy(false);
     }
   }
 
@@ -505,7 +570,8 @@ export default function InboxPage() {
           {thread.map((m) => (
             <div key={m.id} className={`flex ${m.direction === "outbound" ? "justify-end" : "justify-start"}`}>
               <div className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.direction === "outbound" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>
-                <p className={`mb-1 flex items-center gap-1 text-[11px] font-semibold ${m.direction === "outbound" ? "text-brand-100" : "text-ink-400"}`}>{m.byBot && <Bot className="h-3 w-3" />} {m.author} · {m.time}</p>
+                <p className={`mb-1 flex items-center gap-1 text-[11px] font-semibold ${m.direction === "outbound" ? "text-brand-100" : "text-ink-400"}`}>{m.byBot && <Bot className="h-3 w-3" />}{m.audioUrl && <Mic className="h-3 w-3" />} {m.author} · {m.time}{m.audioUrl ? " · voice note" : ""}</p>
+                {m.audioUrl && <audio controls src={m.audioUrl} className="mb-1.5 w-56 max-w-full" />}
                 {m.body}
               </div>
             </div>
@@ -536,6 +602,27 @@ export default function InboxPage() {
               Not delivered: {sendError}
             </p>
           )}
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-ink-500"><Mic className="h-3.5 w-3.5 text-brand-500" /> Voice note</span>
+            <select
+              value={voiceId}
+              onChange={(e) => setVoiceId(e.target.value)}
+              className="rounded-lg border border-ink-200 bg-surface px-2 py-1.5 text-xs font-medium text-ink-700 outline-none"
+              title="Voice for the note (your cloned voice or a premade one)"
+            >
+              {voices.length === 0 && <option value="">No voices — add ELEVENLABS_API_KEY</option>}
+              {voices.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+            </select>
+            <button
+              onClick={sendVoiceNote}
+              disabled={voiceBusy || !draft.trim()}
+              title="Turn your typed message into a voice note in the selected voice"
+              className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:text-brand-300"
+            >
+              <Mic className={`h-3.5 w-3.5 ${voiceBusy ? "animate-pulse" : ""}`} /> {voiceBusy ? "Generating…" : "Send as voice note"}
+            </button>
+            <Link href="/dashboard/agents/voice" className="text-xs text-ink-400 hover:text-brand-600">+ Create your own voice</Link>
+          </div>
           <div className="flex items-end gap-2">
             <button onClick={() => toast("Template picker opens here — choose an approved WhatsApp/Email template.", "info")} title="Insert a template" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><FileText className="h-5 w-5" /></button>
             <textarea value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} rows={2} placeholder={`Reply on ${channelMeta[active.channel].label}…`} className="flex-1 resize-none rounded-xl border border-ink-200 bg-surface px-3.5 py-2.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400" />
