@@ -43,6 +43,10 @@ function buildSystem(input: AgentReplyInput): string {
     patientContext && `PATIENT CONTEXT:\n${patientContext}`,
     sessionNote && `SESSION NOTE:\n${sessionNote}`,
     "Keep replies short (1-3 sentences), warm and professional. Never invent medical advice or diagnosis.",
+    "CRITICAL — use the conversation above as your memory:\n" +
+      "• Do NOT repeat a message you already sent, and do NOT re-list information (like a list of doctors or services) you already gave — answer the patient's LATEST message directly.\n" +
+      "• Never make up facts, doctor names, counts, prices, hours or availability. Use only the knowledge base; if something isn't there, say you'll check with the team.\n" +
+      "• Move the conversation forward one step at a time; ask only one question at a time and remember what the patient already told you.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -66,7 +70,7 @@ export async function generateAgentReply(input: AgentReplyInput): Promise<{ repl
   if (!apiKey) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
   try {
     const data = await callOpenRouter(apiKey, input.model ?? "openai/gpt-4o-mini", {
-      messages: [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-12)],
+      messages: [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-20)],
     });
     return { reply: data.choices?.[0]?.message?.content ?? "", status: 200 };
   } catch (e) {
@@ -146,7 +150,7 @@ export async function generateAgentReplyWithTools(
   const tools = toolsFor(input.capabilities ?? {});
   if (tools.length === 0) return generateAgentReply(input);
 
-  const messages: any[] = [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-12)];
+  const messages: any[] = [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-20)];
   try {
     for (let round = 0; round < 4; round++) {
       const data = await callOpenRouter(apiKey, model, { messages, tools, tool_choice: "auto" });

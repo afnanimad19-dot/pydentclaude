@@ -395,12 +395,16 @@ async function storeInbound(
     return;
   }
 
-  const { data: history } = await supabase
+  // The MOST RECENT messages, in chronological order. (Fetch newest-first then
+  // reverse — otherwise a long chat freezes on its oldest 12 messages and the
+  // agent loops, never seeing what the patient just said.)
+  const { data: historyRows } = await supabase
     .from("wa_messages")
-    .select("direction, body")
+    .select("direction, body, created_at")
     .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true })
-    .limit(12);
+    .order("created_at", { ascending: false })
+    .limit(20);
+  const history = (historyRows ?? []).slice().reverse();
 
   // A returning contact (existing conversation, idle past the session window) gets
   // a "welcome back" with a choice instead of starting cold. Default 15 minutes.
@@ -411,9 +415,10 @@ async function storeInbound(
     const gap = Date.now() - new Date(convo.last_time).getTime();
     if (gap > RETURNING_MS) {
       sessionNote =
-        `This is a RETURNING contact who last messaged a while ago — you already know them. ` +
-        `Greet them warmly by name and say it's good to hear from them again. Then offer exactly three choices and ask them to reply with the number: ` +
-        `1) Continue our previous conversation, 2) Check or follow up on your existing appointment, 3) Book a new appointment. Keep it brief and friendly.`;
+        `FOR THIS REPLY ONLY (this overrides other instructions for this one message): the patient is RETURNING after a gap ` +
+        `(their previous chat was a while ago). Whatever they just typed, do NOT continue the old topic yet. Instead: greet them ` +
+        `warmly by name, say it's good to hear from them again, then offer exactly these three choices and ask them to reply with the number — ` +
+        `1) Continue our previous conversation, 2) Check or follow up on your existing appointment, 3) Book a new appointment. Keep it short and friendly.`;
     }
   }
 
