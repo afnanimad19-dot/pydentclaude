@@ -47,9 +47,13 @@ const PROVIDERS: Provider[] = [
   { key: "notion", name: "Notion", detail: "Sync notes & docs.", group: "data", badge: "N", color: "bg-black text-white" },
 ];
 
+// Catalog keys that are Google products (use the Google OAuth flow).
+const GOOGLE_KEYS = new Set(["google_analytics", "google_search_console", "google_business", "google_ads", "google_drive", "google_calendar", "youtube"]);
+
 export function IntegrationsPanel() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [googleReady, setGoogleReady] = useState<boolean | null>(null);
+  const [genericReady, setGenericReady] = useState<Record<string, boolean>>({});
   const [ws, setWs] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -64,7 +68,18 @@ export function IntegrationsPanel() {
     refresh();
     getWorkspaceId().then(setWs);
     fetch("/api/health").then((r) => r.json()).then((h) => setGoogleReady(!!h.google)).catch(() => setGoogleReady(false));
+    fetch("/api/oauth/configured").then((r) => r.json()).then((d) => setGenericReady(d.configured ?? {})).catch(() => setGenericReady({}));
   }, [refresh]);
+
+  // Open a popup OAuth window and refresh when it closes / messages back.
+  function openPopup(url: string, key: string) {
+    setBusy(key);
+    const popup = window.open(url, "pydent-oauth", "width=520,height=680");
+    if (!popup) { window.location.assign(url.replace("&popup=1", "")); return; }
+    const timer = setInterval(() => {
+      if (popup.closed) { clearInterval(timer); setBusy(null); refresh(); }
+    }, 800);
+  }
 
   useEffect(() => {
     function onMsg(e: MessageEvent) {
@@ -80,22 +95,20 @@ export function IntegrationsPanel() {
   }, [refresh]);
 
   function connect(p: Provider) {
-    if (p.oauth === "google") {
-      if (!googleReady) {
-        toast("Add GOOGLE_OAUTH_CLIENT_ID / SECRET in Netlify to enable Google connections.", "info");
-        return;
-      }
-      if (!ws) { toast("Sign in first.", "info"); return; }
-      setBusy(p.key);
-      const url = `/api/google/oauth?provider=${p.key}&ws=${encodeURIComponent(ws)}&popup=1`;
-      const popup = window.open(url, "pydent-oauth", "width=520,height=680");
-      if (!popup) { window.location.assign(url.replace("&popup=1", "")); return; }
-      const timer = setInterval(() => {
-        if (popup.closed) { clearInterval(timer); setBusy(null); refresh(); }
-      }, 800);
+    if (!ws) { toast("Sign in first.", "info"); return; }
+    // Google products (incl. YouTube) use the Google OAuth flow.
+    if (GOOGLE_KEYS.has(p.key)) {
+      if (!googleReady) { toast("Add GOOGLE_OAUTH_CLIENT_ID / SECRET in Netlify to enable Google connections.", "info"); return; }
+      openPopup(`/api/google/oauth?provider=${p.key}&ws=${encodeURIComponent(ws)}&popup=1`, p.key);
       return;
     }
-    // Non-Google providers need their own app credentials — explain the setup.
+    // Generic OAuth2 providers (Meta, LinkedIn, Reddit, Pinterest, TikTok, WordPress…).
+    if (p.key in genericReady) {
+      if (!genericReady[p.key]) { setSetupFor(p); return; }
+      openPopup(`/api/oauth/${p.key}?ws=${encodeURIComponent(ws)}&popup=1`, p.key);
+      return;
+    }
+    // Special providers that need a bespoke flow — explain the setup.
     setSetupFor(p);
   }
 
