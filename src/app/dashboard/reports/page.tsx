@@ -1,87 +1,56 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  Users,
-  CalendarClock,
-  CircleDollarSign,
-  TrendingUp,
-  BellRing,
-  Bot,
-  PhoneCall,
-  Megaphone,
-} from "lucide-react";
-import { Card, PageHeader, DemoBanner, StatCard } from "@/components/ui";
-import { ConversationsChart, RevenueChart } from "@/components/dashboard/charts";
-import { fetchPatients, fetchAppointments, fetchWaConversations, type DataSource } from "@/lib/db";
-import {
-  patients as mockPatients,
-  appointments as mockAppointments,
-  pipeline,
-  broadcasts,
-  voiceCalls,
-  channelMeta,
-  formatMoney,
-  type Patient,
-  type Appointment,
-  type Channel,
-} from "@/lib/mock-data";
+import { useEffect, useMemo, useState } from "react";
+import { Users, CalendarClock, UserPlus, CalendarCheck2, Download } from "lucide-react";
+import { Card, PageHeader, DemoBanner, StatCard, StatusBadge } from "@/components/ui";
+import { fetchPatients, fetchAppointments, type DataSource } from "@/lib/db";
+import { patients as mockPatients, appointments as mockAppointments, type Patient, type Appointment } from "@/lib/mock-data";
+
+const aptTone = {
+  Confirmed: "green", Scheduled: "blue", Unconfirmed: "amber", Completed: "gray", Broken: "red",
+} as const;
+
+function downloadCsv(filename: string, rows: (string | number)[][]) {
+  const esc = (v: string | number) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const csv = rows.map((r) => r.map(esc).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function ReportsPage() {
   const [patients, setPatients] = useState<Patient[]>(mockPatients);
   const [appointments, setAppointments] = useState<Appointment[]>(mockAppointments);
   const [source, setSource] = useState<DataSource>("demo");
-  const [liveLeadCount, setLiveLeadCount] = useState(0);
+  const [{ today, in7 }] = useState(() => {
+    const now = Date.now();
+    return { today: new Date(now).toISOString().slice(0, 10), in7: new Date(now + 7 * 86400000).toISOString().slice(0, 10) };
+  });
 
   useEffect(() => {
-    fetchPatients().then((r) => {
-      setPatients(r.patients);
-      setSource(r.source);
-    });
+    fetchPatients().then((r) => { setPatients(r.patients); setSource(r.source); });
     fetchAppointments().then((r) => setAppointments(r.appointments));
-    fetchWaConversations().then((c) => setLiveLeadCount(c.length));
   }, []);
 
-  const allDeals = pipeline.flatMap((s) => s.deals);
-  const pipelineValue = allDeals.reduce((sum, d) => sum + d.value, 0);
-  const accepted = pipeline[pipeline.length - 1]?.deals ?? [];
-  const acceptedValue = accepted.reduce((sum, d) => sum + d.value, 0);
-  const acceptanceRate = allDeals.length ? Math.round((accepted.length / allDeals.length) * 100) : 0;
-
-  // New patients (and pipeline leads) grouped by the channel they came from.
-  const bySource = (() => {
-    const counts: Record<string, number> = {};
-    allDeals.forEach((d) => {
-      counts[d.source] = (counts[d.source] ?? 0) + 1;
-    });
-    // Fold in live WhatsApp leads captured from the inbox.
-    if (liveLeadCount) counts.whatsapp = (counts.whatsapp ?? 0) + liveLeadCount;
-    const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .map(([key, count]) => ({ key, count, pct: Math.round((count / total) * 100) }));
-  })();
-
-  // Voice-call outcomes for the agent-performance panel.
-  const callOutcomes = (() => {
-    const counts: Record<string, number> = {};
-    voiceCalls.forEach((c) => {
-      counts[c.outcome] = (counts[c.outcome] ?? 0) + 1;
-    });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  })();
-
+  const upcoming = useMemo(
+    () => appointments.filter((a) => a.date >= today && a.status !== "Broken").sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)),
+    [appointments, today]
+  );
+  const thisWeek = upcoming.filter((a) => a.date <= in7);
   const newPatients = patients.filter((p) => p.status === "New").length;
-  const recallDue = patients.filter((p) => p.recallDue).length;
-  const totalBroadcastBooked = broadcasts.reduce((sum, b) => sum + b.booked, 0);
 
-  function sourceColor(key: string): string {
-    if (key in channelMeta) return channelMeta[key as Channel].color;
-    return "#94a3b8";
+  function exportAppointments() {
+    const rows: (string | number)[][] = [["Patient", "Service", "Date", "Time", "Provider", "Status"]];
+    upcoming.forEach((a) => rows.push([a.patientName, a.procedure, a.date, a.time, a.provider, a.status]));
+    downloadCsv(`appointments-${today}.csv`, rows);
   }
-  function sourceLabel(key: string): string {
-    if (key in channelMeta) return channelMeta[key as Channel].label;
-    return key.charAt(0).toUpperCase() + key.slice(1);
+  function exportPatients() {
+    const rows: (string | number)[][] = [["Name", "Phone", "Email", "Status", "Last visit", "Next appointment"]];
+    patients.forEach((p) => rows.push([p.name, p.phone, p.email, p.status, p.lastVisit ?? "", p.nextAppointment ?? ""]));
+    downloadCsv(`patients-${today}.csv`, rows);
   }
 
   return (
@@ -89,107 +58,68 @@ export default function ReportsPage() {
       {source === "live" ? (
         <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-600">
           <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" />
-          <span><strong className="font-semibold">Live database</strong> — patient counts are read from your Supabase project.</span>
+          <span><strong className="font-semibold">Live database</strong> — these numbers come from your real patients & appointments.</span>
         </div>
       ) : (
-        <DemoBanner context="Showing analytics over the bundled sample practice — connect your database to report on real patients." />
+        <DemoBanner context="Showing sample data — connect your database (or turn off sample data) to report on real patients." />
       )}
 
       <PageHeader
-        title="Reports & analytics"
-        subtitle="How your practice and your AI team are performing — patients, production, channels and agents at a glance."
+        title="Reports"
+        subtitle="Your real numbers — patients on file and who's coming in. Export any list to a spreadsheet."
+        actions={
+          <div className="flex items-center gap-2">
+            <button onClick={exportPatients} className="flex items-center gap-2 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50">
+              <Download className="h-4 w-4" /> Patients CSV
+            </button>
+            <button onClick={exportAppointments} className="flex items-center gap-2 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+              <Download className="h-4 w-4" /> Appointments CSV
+            </button>
+          </div>
+        }
       />
 
-      {/* Headline KPIs */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={Users} label="Patients on file" value={String(patients.length)} hint={`${newPatients} new this period`} accent="brand" />
-        <StatCard icon={CalendarClock} label="Upcoming appointments" value={String(appointments.length)} hint={`${appointments.filter((a) => a.status === "Unconfirmed").length} unconfirmed`} accent="violet" />
-        <StatCard icon={CircleDollarSign} label="Pipeline value" value={formatMoney(pipelineValue)} hint={`${allDeals.length} open opportunities`} accent="green" />
-        <StatCard icon={TrendingUp} label="Case acceptance" value={`${acceptanceRate}%`} hint={`${formatMoney(acceptedValue)} accepted`} accent="amber" />
+        <StatCard icon={Users} label="Patients on file" value={String(patients.length)} hint="total contacts" accent="brand" />
+        <StatCard icon={UserPlus} label="New patients" value={String(newPatients)} hint="status: new" accent="green" />
+        <StatCard icon={CalendarClock} label="Upcoming appointments" value={String(upcoming.length)} hint="today onward" accent="violet" />
+        <StatCard icon={CalendarCheck2} label="Coming this week" value={String(thisWeek.length)} hint="next 7 days" accent="amber" />
       </div>
 
-      {/* Production */}
-      <Card className="mt-6 scroll-mt-20 p-5" id="production">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-ink-900">Production trend</h2>
-            <p className="text-sm text-ink-500">Total production vs. revenue booked through Pydent agents.</p>
+      <Card className="mt-6 p-5">
+        <h2 className="mb-1 font-semibold text-ink-900">Upcoming appointments</h2>
+        <p className="mb-4 text-sm text-ink-500">Everyone booked from today onward, soonest first.</p>
+        {upcoming.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-ink-200 px-4 py-8 text-center text-sm text-ink-400">No upcoming appointments yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="border-b border-ink-200 text-left text-xs uppercase tracking-wide text-ink-400">
+                  <th className="py-2 pr-4 font-semibold">Patient</th>
+                  <th className="py-2 pr-4 font-semibold">Service</th>
+                  <th className="py-2 pr-4 font-semibold">Date</th>
+                  <th className="py-2 pr-4 font-semibold">Time</th>
+                  <th className="py-2 pr-4 font-semibold">Provider</th>
+                  <th className="py-2 font-semibold">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {upcoming.map((a) => (
+                  <tr key={a.id} className="border-b border-ink-100 last:border-0">
+                    <td className="py-2.5 pr-4 font-medium text-ink-900">{a.patientName}</td>
+                    <td className="py-2.5 pr-4 text-ink-600">{a.procedure}</td>
+                    <td className="py-2.5 pr-4 text-ink-600">{a.date}</td>
+                    <td className="py-2.5 pr-4 text-ink-600">{a.time}</td>
+                    <td className="py-2.5 pr-4 text-ink-600">{a.provider || "—"}</td>
+                    <td className="py-2.5"><StatusBadge status={a.status} tone={aptTone[a.status]} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
-        <RevenueChart />
+        )}
       </Card>
-
-      <div className="mt-6 grid gap-6 xl:grid-cols-2">
-        {/* New patients by source */}
-        <Card className="scroll-mt-20 p-5" id="channels">
-          <h2 className="font-semibold text-ink-900">New leads by source</h2>
-          <p className="mb-4 text-sm text-ink-500">Which channel each new opportunity came in through.</p>
-          <div className="space-y-3">
-            {bySource.map((s) => (
-              <div key={s.key}>
-                <div className="mb-1 flex items-center justify-between text-sm">
-                  <span className="font-medium text-ink-800">{sourceLabel(s.key)}</span>
-                  <span className="text-ink-500">{s.count} · {s.pct}%</span>
-                </div>
-                <div className="h-2.5 overflow-hidden rounded-full bg-ink-100">
-                  <div className="h-full rounded-full" style={{ width: `${s.pct}%`, backgroundColor: sourceColor(s.key) }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        {/* Conversation volume */}
-        <Card className="p-5">
-          <h2 className="font-semibold text-ink-900">Conversation volume</h2>
-          <p className="mb-4 text-sm text-ink-500">Messages handled across every channel this week.</p>
-          <ConversationsChart />
-        </Card>
-      </div>
-
-      <div className="mt-6 grid gap-6 xl:grid-cols-3">
-        {/* AI agent contribution */}
-        <Card className="p-5">
-          <h2 className="flex items-center gap-2 font-semibold text-ink-900"><Bot className="h-4 w-4 text-brand-500" /> AI contribution</h2>
-          <ul className="mt-4 space-y-3 text-sm">
-            <li className="flex items-center justify-between"><span className="text-ink-600">Live WhatsApp leads</span><span className="font-semibold text-emerald-600">{liveLeadCount}</span></li>
-            <li className="flex items-center justify-between"><span className="text-ink-600">Leads handled by agents</span><span className="font-semibold text-ink-900">{allDeals.filter((d) => d.owner.includes("AI")).length}/{allDeals.length}</span></li>
-            <li className="flex items-center justify-between"><span className="text-ink-600">Recall-due patients</span><span className="font-semibold text-ink-900">{recallDue}</span></li>
-            <li className="flex items-center justify-between"><span className="text-ink-600">Bookings via broadcasts</span><span className="font-semibold text-ink-900">{totalBroadcastBooked}</span></li>
-          </ul>
-        </Card>
-
-        {/* Voice outcomes */}
-        <Card className="p-5">
-          <h2 className="flex items-center gap-2 font-semibold text-ink-900"><PhoneCall className="h-4 w-4 text-orange-500" /> Voice call outcomes</h2>
-          <ul className="mt-4 space-y-2.5 text-sm">
-            {callOutcomes.map(([outcome, count]) => (
-              <li key={outcome} className="flex items-center justify-between">
-                <span className="text-ink-600">{outcome}</span>
-                <span className="rounded-full bg-ink-100 px-2 py-0.5 text-xs font-semibold text-ink-700">{count}</span>
-              </li>
-            ))}
-          </ul>
-        </Card>
-
-        {/* Broadcast performance */}
-        <Card className="p-5">
-          <h2 className="flex items-center gap-2 font-semibold text-ink-900"><Megaphone className="h-4 w-4 text-brand-500" /> Recent broadcasts</h2>
-          <ul className="mt-4 space-y-3 text-sm">
-            {broadcasts.filter((b) => b.status === "Sent").slice(0, 4).map((b) => (
-              <li key={b.id}>
-                <p className="truncate font-medium text-ink-800">{b.name}</p>
-                <p className="text-xs text-ink-500">{b.delivered} delivered · {b.replied} replies · {b.booked} booked</p>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      </div>
-
-      <div className="mt-6 flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 text-sm text-amber-600">
-        <BellRing className="h-4 w-4 shrink-0" />
-        <span>{recallDue} patients are due for recall — run a WhatsApp or SMS broadcast to bring them back in.</span>
-      </div>
     </>
   );
 }

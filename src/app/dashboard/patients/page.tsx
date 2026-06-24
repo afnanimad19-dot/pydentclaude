@@ -344,7 +344,7 @@ export default function PatientsPage() {
         </div>
       </Card>
 
-      <div className="mt-6 grid gap-4 xl:grid-cols-2">
+      <div className="mt-6">
         <Card className="scroll-mt-20 p-5" id="appointments">
           <h2 className="mb-4 font-semibold text-ink-900">Upcoming appointments</h2>
           <ul className="space-y-2.5">
@@ -364,32 +364,6 @@ export default function PatientsPage() {
                   )}
                   <StatusBadge status={a.status} tone={aptTone[a.status]} />
                 </div>
-              </li>
-            ))}
-          </ul>
-        </Card>
-
-        <Card className="scroll-mt-20 p-5" id="recall">
-          <h2 className="mb-1 font-semibold text-ink-900">Recall worklist</h2>
-          <p className="mb-4 text-sm text-ink-500">
-            Patients overdue for hygiene — automatically enrolled in the WhatsApp recall flow.
-          </p>
-          <ul className="space-y-2.5">
-            {recallDue.map((p) => (
-              <li key={p.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <Avatar name={p.name} size="sm" />
-                  <div>
-                    <p className="text-sm font-medium text-ink-900">{p.name}</p>
-                    <p className="text-xs text-ink-500">Last visit {p.lastVisit} · {p.phone}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => toast(`Recall message queued for ${p.name} — it sends the moment WhatsApp/SMS is connected.`, "info")}
-                  className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
-                >
-                  Send recall
-                </button>
               </li>
             ))}
           </ul>

@@ -1396,6 +1396,7 @@ export interface Connection {
   provider: string;
   status: string;
   accountLabel: string;
+  accessMode: "read" | "write";
 }
 
 // This clinic's connected integrations (Google, etc.). Status only — no tokens.
@@ -1403,9 +1404,19 @@ export async function fetchConnections(): Promise<Connection[]> {
   try {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("connections").select("*").eq("workspace_id", ws);
-    return (data ?? []).map((r) => ({ provider: r.provider, status: r.status ?? "connected", accountLabel: r.account_label ?? "" }));
+    return (data ?? []).map((r) => ({ provider: r.provider, status: r.status ?? "connected", accountLabel: r.account_label ?? "", accessMode: r.access_mode === "write" ? "write" : "read" }));
   } catch {
     return [];
+  }
+}
+
+export async function setConnectionAccessMode(provider: string, mode: "read" | "write"): Promise<void> {
+  const ws = await getWorkspaceId();
+  if (!ws) return;
+  try {
+    await supabase.from("connections").update({ access_mode: mode }).eq("workspace_id", ws).eq("provider", provider);
+  } catch {
+    /* column may not exist yet */
   }
 }
 

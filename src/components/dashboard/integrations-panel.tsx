@@ -5,7 +5,7 @@ import { Search, CheckCircle2, CircleAlert, X } from "lucide-react";
 import { Card } from "@/components/ui";
 import { Modal } from "@/components/modal";
 import { toast } from "@/components/toast";
-import { fetchConnections, disconnectConnection, getWorkspaceId, type Connection } from "@/lib/db";
+import { fetchConnections, disconnectConnection, setConnectionAccessMode, getWorkspaceId, type Connection } from "@/lib/db";
 
 // A provider in the catalog. `oauth: "google"` ones connect for real (popup);
 // the rest render as cards and explain the one-time app setup they need.
@@ -54,6 +54,7 @@ export function IntegrationsPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [setupFor, setSetupFor] = useState<Provider | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState<Provider | null>(null);
 
   const refresh = useCallback(() => {
     fetchConnections().then(setConnections);
@@ -98,12 +99,19 @@ export function IntegrationsPanel() {
     setSetupFor(p);
   }
 
-  async function disconnect(p: Provider) {
+  async function doDisconnect(p: Provider) {
+    setConfirmDisconnect(null);
     setBusy(p.key);
     await disconnectConnection(p.key);
     setBusy(null);
     refresh();
     toast("Disconnected.", "success");
+  }
+
+  async function changeMode(p: Provider, mode: "read" | "write") {
+    // Optimistic: update the card immediately, then persist.
+    setConnections((prev) => prev.map((c) => (c.provider === p.key ? { ...c, accessMode: mode } : c)));
+    await setConnectionAccessMode(p.key, mode);
   }
 
   const byProvider = Object.fromEntries(connections.map((c) => [c.provider, c]));
@@ -116,11 +124,20 @@ export function IntegrationsPanel() {
   const data = filtered.filter((p) => p.group === "data");
 
   const grid = (items: Provider[]) => (
-    <Grid items={items} byProvider={byProvider} busy={busy} onConnect={connect} onDisconnect={disconnect} />
+    <Grid items={items} byProvider={byProvider} busy={busy} onConnect={connect} onDisconnect={(p) => setConfirmDisconnect(p)} onChangeMode={changeMode} />
   );
 
   return (
     <div className="space-y-6">
+      {confirmDisconnect && (
+        <Modal open onClose={() => setConfirmDisconnect(null)} title={`Disconnect ${confirmDisconnect.name}?`} subtitle="The clinic will need to reconnect to use it again." z="z-[60]">
+          <p className="text-sm text-ink-600">This removes the stored access for <strong>{confirmDisconnect.name}</strong>. You can reconnect any time.</p>
+          <div className="mt-5 flex gap-2">
+            <button onClick={() => setConfirmDisconnect(null)} className="flex-1 rounded-xl border border-ink-200 py-2.5 text-sm font-semibold text-ink-700 hover:bg-ink-50">Go back</button>
+            <button onClick={() => doDisconnect(confirmDisconnect)} className="flex-1 rounded-xl bg-rose-600 py-2.5 text-sm font-semibold text-white hover:bg-rose-700">Disconnect</button>
+          </div>
+        </Modal>
+      )}
       {setupFor && (
         <Modal open onClose={() => setSetupFor(null)} title={`Connect ${setupFor.name}`} subtitle="One-time app setup needed">
           <div className="space-y-3 text-sm text-ink-600">
@@ -193,12 +210,14 @@ function Grid({
   busy,
   onConnect,
   onDisconnect,
+  onChangeMode,
 }: {
   items: Provider[];
   byProvider: Record<string, Connection>;
   busy: string | null;
   onConnect: (p: Provider) => void;
   onDisconnect: (p: Provider) => void;
+  onChangeMode: (p: Provider, mode: "read" | "write") => void;
 }) {
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -221,11 +240,31 @@ function Grid({
             </div>
             <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-ink-500">{p.detail}</p>
             {connected ? (
-              <div className="mt-3 flex gap-2">
-                <span className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-500/15 py-2 text-xs font-semibold text-emerald-600">
-                  <CheckCircle2 className="h-3.5 w-3.5" /> Connected
-                </span>
-                <button onClick={() => onDisconnect(p)} disabled={busy === p.key} className="rounded-lg border border-ink-200 px-3 py-2 text-xs font-medium text-ink-600 hover:bg-ink-50 disabled:opacity-50">Disconnect</button>
+              <div className="mt-3 space-y-2">
+                {/* Access mode: read-only vs read & write */}
+                <div className="flex items-center justify-between rounded-lg border border-ink-100 bg-ink-50 px-2.5 py-1.5">
+                  <span className="text-[11px] font-medium text-ink-500">Access</span>
+                  <div className="flex rounded-md border border-ink-200 bg-surface p-0.5 text-[11px] font-semibold">
+                    <button
+                      onClick={() => onChangeMode(p, "read")}
+                      className={`rounded px-2 py-0.5 ${conn.accessMode !== "write" ? "bg-brand-600 text-white" : "text-ink-500"}`}
+                    >
+                      Read-only
+                    </button>
+                    <button
+                      onClick={() => onChangeMode(p, "write")}
+                      className={`rounded px-2 py-0.5 ${conn.accessMode === "write" ? "bg-brand-600 text-white" : "text-ink-500"}`}
+                    >
+                      Read &amp; write
+                    </button>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <span className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-500/15 py-2 text-xs font-semibold text-emerald-600">
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Connected
+                  </span>
+                  <button onClick={() => onDisconnect(p)} disabled={busy === p.key} className="rounded-lg border border-ink-200 px-3 py-2 text-xs font-medium text-ink-600 hover:bg-ink-50 disabled:opacity-50">Disconnect</button>
+                </div>
               </div>
             ) : (
               <button onClick={() => onConnect(p)} disabled={busy === p.key} className="mt-3 rounded-lg border border-ink-200 py-2 text-xs font-semibold text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:text-brand-300">
