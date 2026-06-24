@@ -1390,6 +1390,72 @@ export async function setWaAssignee(conversationId: string, assignee: string | n
   }
 }
 
+// ----------------------------------------------------------- learning agent (0029)
+
+export interface LearningQuestion {
+  id: string;
+  agentId: string | null;
+  agentName: string;
+  question: string;
+  timesAsked: number;
+  status: "open" | "taught";
+  lastSeen: string;
+}
+
+export async function fetchLearningQuestions(): Promise<LearningQuestion[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase
+      .from("learning_questions")
+      .select("*")
+      .eq("workspace_id", ws)
+      .order("status")
+      .order("times_asked", { ascending: false })
+      .order("last_seen", { ascending: false });
+    return (data ?? []).map((r) => ({
+      id: r.id,
+      agentId: r.agent_id ?? null,
+      agentName: r.agent_name ?? "",
+      question: r.question,
+      timesAsked: r.times_asked ?? 1,
+      status: r.status === "taught" ? "taught" : "open",
+      lastSeen: r.last_seen ?? r.created_at,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Teach an agent: append a Q&A to the chosen field (knowledge base / instructions /
+// behavior), then mark the question taught.
+export async function teachAgent(
+  questionId: string,
+  agentId: string,
+  field: "knowledgeBase" | "instructions" | "behavior",
+  question: string,
+  answer: string
+): Promise<{ ok: boolean; message: string }> {
+  const col = field === "knowledgeBase" ? "knowledge_base" : field;
+  const { data: agent } = await supabase.from("agents").select(`id, name, ${col}`).eq("id", agentId).maybeSingle();
+  if (!agent) return { ok: false, message: "Agent not found." };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const existing = (agent as any)[col] ?? "";
+  const addition = `\n\nQ: ${question.trim()}\nA: ${answer.trim()}`;
+  const { error } = await supabase.from("agents").update({ [col]: `${existing}${addition}`.trim() }).eq("id", agentId);
+  if (error) return { ok: false, message: error.message };
+  await supabase.from("learning_questions").update({ status: "taught" }).eq("id", questionId);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return { ok: true, message: `Taught to ${(agent as any).name}.` };
+}
+
+export async function deleteLearningQuestion(id: string): Promise<void> {
+  try {
+    await supabase.from("learning_questions").delete().eq("id", id);
+  } catch {
+    /* ignore */
+  }
+}
+
 // ----------------------------------------------------------- connections (0026)
 
 export interface Connection {

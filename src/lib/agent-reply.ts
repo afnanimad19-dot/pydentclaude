@@ -38,7 +38,9 @@ function buildSystem(input: AgentReplyInput): string {
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
     instructions,
     behavior && `BEHAVIOR RULES (follow strictly — how to act):\n${behavior}`,
-    knowledgeBase && `KNOWLEDGE BASE (answer only from this; if the answer isn't here, say you'll check with the team):\n${knowledgeBase}`,
+    // Cap the knowledge base sent per message — a huge KB (e.g. a full website
+    // import) makes every reply slow and costly. ~12k chars is plenty of context.
+    knowledgeBase && `KNOWLEDGE BASE (answer only from this; if the answer isn't here, say you'll check with the team):\n${knowledgeBase.slice(0, 12000)}`,
     abilities && `You are allowed to: ${abilities}.`,
     capabilities.canBook
       ? "BOOKING — read carefully: You can ONLY book by calling the book_appointment tool. Saying 'booked' in words does NOT book anything. " +

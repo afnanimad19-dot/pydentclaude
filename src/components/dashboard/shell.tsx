@@ -51,6 +51,7 @@ const nav: NavItem[] = [
       { href: "/dashboard/agents/chat", label: "Chat agents" },
       { href: "/dashboard/agents/voice", label: "Voice agents" },
       { href: "/dashboard/agents/hub", label: "Agent Hub" },
+      { href: "/dashboard/agents/learning", label: "Learning Agent" },
       { href: "/dashboard/voice", label: "Call log" },
     ],
   },

@@ -339,6 +339,40 @@ async function cancelAppt(ws: string | null, patientId: string | null, name: str
   return "Your appointment has been cancelled.";
 }
 
+// Did the agent defer / not know the answer? (Heuristic on the reply text.)
+function looksLikeDefer(reply: string): boolean {
+  const r = reply.toLowerCase();
+  return /check with (the|our) team|get back to you|i('?| a)?m not sure|i don'?t have (that|this|the)|i don'?t know|let me (check|find out|confirm)|our team will|someone (from )?(the )?team|connect you (to|with) (a|our|the)|direct you to|reception|i'?ll have (someone|the)|follow up with you|can'?t answer that|not able to (help|answer)/.test(
+    r
+  );
+}
+
+// Record an unanswered question for the Learning Agent. Summarized: the same
+// question from the same agent increments a counter instead of duplicating.
+async function captureLearning(ws: string | null, agentId: string | null, agentName: string, question: string) {
+  const q = (question || "").trim();
+  if (!ws || !q || q.length < 4 || q.startsWith("[")) return;
+  const norm = q.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim().slice(0, 300);
+  if (!norm) return;
+  try {
+    const { data: existing } = await supabase
+      .from("learning_questions")
+      .select("id, times_asked")
+      .eq("workspace_id", ws)
+      .eq("agent_id", agentId)
+      .eq("question_norm", norm)
+      .eq("status", "open")
+      .maybeSingle();
+    if (existing) {
+      await supabase.from("learning_questions").update({ times_asked: (existing.times_asked ?? 1) + 1, last_seen: new Date().toISOString() }).eq("id", existing.id);
+    } else {
+      await supabase.from("learning_questions").insert({ workspace_id: ws, agent_id: agentId, agent_name: agentName, question: q.slice(0, 500), question_norm: norm });
+    }
+  } catch {
+    /* table may not exist yet */
+  }
+}
+
 // Generic inbound handler shared by every channel.
 async function storeInbound(
   channel: string,
@@ -479,6 +513,12 @@ async function storeInbound(
   if (result.error || !result.reply) {
     await logEvent(`⚠️ AI reply failed (${result.error ?? "empty reply"}). Check OPENROUTER_API_KEY in Netlify.`);
     return;
+  }
+
+  // Learning agent: if the agent deferred (didn't know), record the patient's
+  // question so the clinic can teach the answer later.
+  if (looksLikeDefer(result.reply)) {
+    await captureLearning(ws, agentId, agent.name, body);
   }
 
   const sent = await sendByChannel(channel, contactId, result.reply, sendCreds);
