@@ -18,6 +18,9 @@ export interface BookingArgs {
   service: string;
   doctor?: string;
   datetime: string; // ISO 8601, e.g. 2026-06-22T14:00
+  firstName?: string;
+  lastName?: string;
+  email?: string;
 }
 
 function buildSystem(input: AgentReplyInput): string {
@@ -37,7 +40,11 @@ function buildSystem(input: AgentReplyInput): string {
     behavior && `BEHAVIOR RULES (follow strictly — how to act):\n${behavior}`,
     knowledgeBase && `KNOWLEDGE BASE (answer only from this; if the answer isn't here, say you'll check with the team):\n${knowledgeBase}`,
     abilities && `You are allowed to: ${abilities}.`,
-    capabilities.canBook && "When the patient has agreed on a specific date AND time, call the book_appointment tool. Before offering times, call get_available_slots to fetch real open slots and only offer those. Do not claim an appointment is booked unless the tool succeeded.",
+    capabilities.canBook
+      ? "BOOKING — read carefully: You can ONLY book by calling the book_appointment tool. Saying 'booked' in words does NOT book anything. " +
+        "Collect the patient's first name, last name, email, the service, and a specific date AND time. Use get_available_slots first and only offer real open times. " +
+        "Once you have name + email + service + a specific date and time, you MUST call book_appointment. NEVER tell the patient it is booked unless the tool returned success."
+      : "You cannot book appointments yourself. If the patient wants to book, collect their preferred date/time and say the team will confirm — NEVER claim an appointment is already booked.",
     capabilities.canReschedule && "To move an existing appointment, confirm the new time then call reschedule_appointment.",
     capabilities.canCancel && "To cancel an existing appointment, confirm with the patient then call cancel_appointment.",
     patientContext && `PATIENT CONTEXT:\n${patientContext}`,
@@ -102,10 +109,13 @@ function toolsFor(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?
       type: "function",
       function: {
         name: "book_appointment",
-        description: "Book a dental appointment once the patient has agreed on a specific date and time.",
+        description: "Book a dental appointment once the patient has agreed on a specific date and time. Provide the patient's name and email so the booking is complete.",
         parameters: {
           type: "object",
           properties: {
+            firstName: { type: "string", description: "Patient first name" },
+            lastName: { type: "string", description: "Patient last name" },
+            email: { type: "string", description: "Patient email if given" },
             service: { type: "string" },
             doctor: { type: "string" },
             datetime: { type: "string", description: "ISO 8601 date-time, e.g. 2026-06-22T14:00" },

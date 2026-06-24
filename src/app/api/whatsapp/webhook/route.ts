@@ -266,11 +266,25 @@ async function bookAppointment(ws: string | null, patientId: string | null, name
   const { data: clash } = await conflictQ.limit(1).maybeSingle();
   if (clash) return `That slot (${date} ${time}) is already taken — offer the patient a different open time.`;
 
-  const { data: appt } = await supabase
+  // Fill in the lead's name/email if the agent collected them, so the calendar
+  // card and contact record are complete.
+  const fullName = [args.firstName, args.lastName].filter(Boolean).join(" ").trim();
+  if (patientId && (fullName || args.email)) {
+    const patch: Record<string, string> = {};
+    if (fullName) patch.name = fullName;
+    if (args.email) patch.email = args.email;
+    if (Object.keys(patch).length) await supabase.from("patients").update(patch).eq("id", patientId);
+  }
+
+  const { data: appt, error: apptErr } = await supabase
     .from("appointments")
     .insert({ workspace_id: ws, patient_id: patientId, provider: args.doctor || "", procedure: args.service || "Consultation", date, time, status: "Scheduled", confirmed_via: "whatsapp" })
     .select("id")
     .single();
+  if (apptErr || !appt) {
+    await logEvent(`⚠️ Booking NOT saved to calendar: ${apptErr?.message ?? "insert failed"}.`);
+    return `Could not save the appointment (${apptErr?.message ?? "database error"}). Tell the patient you'll confirm shortly — do not say it is booked.`;
+  }
 
   let odNote = "";
   try {
@@ -417,8 +431,9 @@ async function storeInbound(
       sessionNote =
         `FOR THIS REPLY ONLY (this overrides other instructions for this one message): the patient is RETURNING after a gap ` +
         `(their previous chat was a while ago). Whatever they just typed, do NOT continue the old topic yet. Instead: greet them ` +
-        `warmly by name, say it's good to hear from them again, then offer exactly these three choices and ask them to reply with the number — ` +
-        `1) Continue our previous conversation, 2) Check or follow up on your existing appointment, 3) Book a new appointment. Keep it short and friendly.`;
+        `warmly by name, say it's good to hear from them again, then offer exactly these four choices and ask them to reply with the number — ` +
+        `1) Start a new chat, 2) Continue our previous conversation, 3) Follow up or change an existing appointment, 4) Just ask questions / learn about the clinic (hours, services, prices). ` +
+        `If they later say they want to book, begin booking and collect: first name, last name, email, phone, the service, and a date and time. Keep it short and friendly.`;
     }
   }
 
