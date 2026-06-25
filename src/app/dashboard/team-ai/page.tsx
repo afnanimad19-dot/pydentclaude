@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2 } from "lucide-react";
+import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, BrainCircuit } from "lucide-react";
 import Link from "next/link";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
@@ -131,6 +131,23 @@ const AGENTS: TeamAgent[] = [
       { key: "email", label: "Email", builtin: true },
     ],
   },
+  {
+    key: "remy",
+    name: "Remy",
+    role: "AI Knowledge & Memory Manager",
+    blurb: "Remembers your clinic's facts, promos, staff & decisions so the team stays accurate.",
+    gradient: "from-amber-100 to-orange-100",
+    icon: BrainCircuit,
+    brief:
+      "You are Remy, the clinic's AI Knowledge & Memory Manager. You keep a reliable long-term memory of the clinic's facts so the whole AI team stays accurate.",
+    features: [
+      "Remember facts you tell it — promos, staff, policies, services",
+      "Recall anything on request",
+      "Keep the AI team up to date with the latest clinic info",
+      "Never invents — only stores what you tell it",
+    ],
+    channels: [{ key: "memory", label: "Memory", builtin: true }],
+  },
 ];
 
 const UNLOCKED = new Set(AGENTS.map((a) => a.key)); // package gating comes with the admin panel
@@ -233,7 +250,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     if (cid) appendTeamChatMessage(cid, "user", text);
 
     try {
-      const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam", kai: "/api/team/kai", angela: "/api/team/angela" };
+      const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam", kai: "/api/team/kai", angela: "/api/team/angela", remy: "/api/team/remy" };
       const toolRoute = TOOL_ROUTES[agent.key];
       const res = await fetch(toolRoute ?? "/api/chat", {
         method: "POST",
@@ -358,7 +375,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
             )}
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>{m.content}</div>
+                <div className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>{linkify(m.content)}</div>
               </div>
             ))}
             {busy && <div className="flex justify-start"><div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-ink-200 bg-surface px-3.5 py-2 text-sm text-ink-400"><Bot className="h-4 w-4 animate-pulse" /> {agent.name} is thinking…</div></div>}
@@ -410,5 +427,17 @@ function BrandModal({ brand, onClose, onSaved }: { brand: BrandKnowledge; onClos
       </div>
       <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save brand knowledge"} onSubmit={submit} />
     </Modal>
+  );
+}
+
+// Turn URLs in agent replies into clickable links (download links, post URLs).
+function linkify(text: string) {
+  const parts = text.split(/(https?:\/\/[^\s)]+)/g);
+  return parts.map((p, i) =>
+    /^https?:\/\//.test(p) ? (
+      <a key={i} href={p} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 underline underline-offset-2 hover:text-brand-700">{p}</a>
+    ) : (
+      <span key={i}>{p}</span>
+    )
   );
 }

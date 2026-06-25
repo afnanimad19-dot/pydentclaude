@@ -30,8 +30,34 @@ async function dfs(path: string, task: Record<string, any>): Promise<any | strin
 
 const domainOf = (s: string) => String(s || "").replace(/^https?:\/\//i, "").replace(/\/.*$/, "").trim();
 
-// 1) Keyword ideas with search volume / competition / CPC for a seed term.
+// Free fallback (no key): real "what people search" terms from Google Autocomplete.
+// No search volumes, but genuine related queries — useful until DataForSEO is on.
+export async function googleSuggest(seed: string): Promise<string> {
+  const s = String(seed || "").trim();
+  if (!s) return "Give me a seed keyword.";
+  try {
+    const out = new Set<string>();
+    // Base + a few alphabet expansions for breadth.
+    const queries = [s, `${s} `, `best ${s}`, `${s} cost`, `${s} near me`];
+    for (const q of queries) {
+      const res = await fetch(`https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const data = await res.json();
+      (data?.[1] ?? []).forEach((k: string) => out.add(k));
+      if (out.size > 25) break;
+    }
+    const list = [...out].slice(0, 20);
+    if (!list.length) return `No suggestions found for "${s}".`;
+    return `Related searches for "${s}" (Google Autocomplete — real queries, no volumes yet):\n${list.map((k) => `  • ${k}`).join("\n")}\n(Add DATAFORSEO_API_KEY for monthly volumes, competition & CPC.)`;
+  } catch (e) {
+    return `Suggestion lookup failed: ${e instanceof Error ? e.message : "error"}`;
+  }
+}
+
+// 1) Keyword ideas with search volume / competition / CPC. Falls back to free
+// Google Autocomplete when DataForSEO isn't configured yet.
 export async function keywordResearch(seed: string, locationCode = 2840, language = "en"): Promise<string> {
+  if (!process.env.DATAFORSEO_API_KEY) return googleSuggest(seed);
   const r = await dfs("/v3/dataforseo_labs/google/keyword_ideas/live", { keywords: [seed], location_code: locationCode, language_code: language, limit: 12, order_by: ["keyword_info.search_volume,desc"] });
   if (typeof r === "string") return r;
   const items = r?.[0]?.items ?? [];

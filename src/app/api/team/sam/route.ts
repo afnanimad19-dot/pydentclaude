@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runSearchConsoleReport, runSearchConsolePages, postToGoogleBusiness } from "@/lib/google-api";
 import { auditPageSeo } from "@/lib/seo-audit";
 import { keywordResearch, findCompetitors, rankedKeywords, backlinksSummary, serpCheck } from "@/lib/dataforseo";
+import { saveReport } from "@/lib/report-render";
 
 // Sam — AI Dental SEO / Local Search Manager. Real tools: Search Console rankings
 // (queries + pages), a live on-page SEO audit, and Google Business Profile posts.
@@ -95,6 +96,14 @@ const TOOLS = [
       parameters: { type: "object", properties: { keyword: { type: "string" }, location_code: { type: "number" }, language: { type: "string" } }, required: ["keyword"] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "create_report",
+      description: "Save an SEO report/document and return download links (Word .docx and a print-to-PDF page).",
+      parameters: { type: "object", properties: { title: { type: "string" }, content_markdown: { type: "string", description: "Full report in Markdown (#/## headings, - bullets, **bold**)." } }, required: ["title", "content_markdown"] },
+    },
+  },
 ];
 
 export async function POST(req: NextRequest) {
@@ -111,9 +120,15 @@ export async function POST(req: NextRequest) {
     "Default DataForSEO location is 2840 (US); if the clinic is elsewhere, ask for the country or pass the right location code. Give specific, dental-relevant recommendations with the real numbers. Keep claims compliant (no guarantees, no medical advice).",
   ].filter(Boolean).join("\n\n");
 
+  const origin = req.nextUrl.origin;
   const msgs: any[] = [{ role: "system", content: system }, ...(messages ?? []).slice(-16)];
 
   async function exec(name: string, args: any): Promise<string> {
+    if (name === "create_report") {
+      const id = await saveReport(workspaceId, "sam", String(args.title || "SEO Report"), String(args.content_markdown || ""));
+      if (!id) return "Could not save the report (server storage not configured).";
+      return `Report saved. Download: ${origin}/api/team/report/${id}?format=docx (Word) — or open/print to PDF: ${origin}/api/team/report/${id}`;
+    }
     if (name === "get_top_queries") return runSearchConsoleReport(workspaceId, Number(args.days) || 28);
     if (name === "get_top_pages") return runSearchConsolePages(workspaceId, Number(args.days) || 28);
     if (name === "audit_page_seo") return auditPageSeo(String(args.url || website || ""));

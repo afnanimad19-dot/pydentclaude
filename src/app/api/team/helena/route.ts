@@ -3,6 +3,7 @@ import { wpPublishPost, wpUploadMedia } from "@/lib/wp-publish";
 import { generateImage } from "@/lib/image-gen";
 import { runAnalyticsReport, runSearchConsoleReport } from "@/lib/google-api";
 import { postToFacebookPage, postToInstagram } from "@/lib/meta-api";
+import { saveReport } from "@/lib/report-render";
 
 // Helena — AI Dental Marketing Manager with real tools:
 //  • generate_featured_image → make an image + upload to WordPress
@@ -88,6 +89,14 @@ const TOOLS = [
       parameters: { type: "object", properties: { caption: { type: "string" }, image_prompt: { type: "string", description: "Description of the photo to generate for the post." } }, required: ["caption", "image_prompt"] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "create_report",
+      description: "Save a written report/document and return download links (Word .docx and a print-to-PDF page). Use for marketing reports, content plans, summaries.",
+      parameters: { type: "object", properties: { title: { type: "string" }, content_markdown: { type: "string", description: "The full report in Markdown (#/## headings, - bullets, **bold**)." } }, required: ["title", "content_markdown"] },
+    },
+  },
 ];
 
 export async function POST(req: NextRequest) {
@@ -106,9 +115,15 @@ export async function POST(req: NextRequest) {
     "Keep dental claims compliant: no guarantees, no medical advice, no diagnosis. After a tool runs, tell the user plainly what happened and share the link/result.",
   ].filter(Boolean).join("\n\n");
 
+  const origin = req.nextUrl.origin;
   const msgs: any[] = [{ role: "system", content: system }, ...(messages ?? []).slice(-16)];
 
   async function exec(name: string, args: any): Promise<string> {
+    if (name === "create_report") {
+      const id = await saveReport(workspaceId, "helena", String(args.title || "Report"), String(args.content_markdown || ""));
+      if (!id) return "Could not save the report (server storage not configured).";
+      return `Report saved. Download: ${origin}/api/team/report/${id}?format=docx (Word) — or open/print to PDF: ${origin}/api/team/report/${id}`;
+    }
     if (name === "generate_featured_image") {
       const img = await generateImage(String(args.prompt || ""));
       if (!img.ok || !img.bytes) return `Image not created: ${img.error}`;
