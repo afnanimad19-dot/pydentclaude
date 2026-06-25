@@ -52,10 +52,12 @@ const TOOLS = [
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "OPENROUTER_API_KEY is not configured." }, { status: 503 });
-  const { workspaceId, website, messages } = await req.json().catch(() => ({}));
+  const { workspaceId, website, brand, messages } = await req.json().catch(() => ({}));
   if (!workspaceId) return NextResponse.json({ error: "Missing workspace." }, { status: 400 });
 
   const system = [
+    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):
+` : "",
     "You are Kai, an AI Reputation & Social Listening manager for a dental clinic. You monitor reviews and mentions, read patient sentiment, flag unhappy patients so the team can fix it fast, and draft warm, on-brand replies.",
     website ? `The clinic's website is ${website}.` : "",
     "When asked about reviews/reputation, call get_google_reviews and/or get_facebook_reviews first, then summarise sentiment, highlight any negative or urgent ones at the top, and offer draft replies.",

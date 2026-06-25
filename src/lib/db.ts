@@ -1390,6 +1390,86 @@ export async function setWaAssignee(conversationId: string, assignee: string | n
   }
 }
 
+// ----------------------------------------------------------- AI Team: brand + chats (0030)
+
+export interface BrandKnowledge {
+  profile: string;
+  logoUrl: string;
+  colors: string;
+}
+
+export async function fetchBrandKnowledge(): Promise<BrandKnowledge> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("brand_knowledge").select("*").eq("workspace_id", ws).maybeSingle();
+    return { profile: data?.profile ?? "", logoUrl: data?.logo_url ?? "", colors: data?.colors ?? "" };
+  } catch {
+    return { profile: "", logoUrl: "", colors: "" };
+  }
+}
+
+export async function saveBrandKnowledge(b: BrandKnowledge): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { data: existing } = await supabase.from("brand_knowledge").select("workspace_id").eq("workspace_id", ws).maybeSingle();
+  const row = { profile: b.profile, logo_url: b.logoUrl, colors: b.colors, updated_at: new Date().toISOString() };
+  const { error } = existing
+    ? await supabase.from("brand_knowledge").update(row).eq("workspace_id", ws)
+    : await supabase.from("brand_knowledge").insert({ workspace_id: ws, ...row });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Brand knowledge saved." };
+}
+
+export interface TeamChat {
+  id: string;
+  agentKey: string;
+  title: string;
+  updatedAt: string;
+}
+
+export async function listTeamChats(agentKey: string): Promise<TeamChat[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("team_chats").select("id, agent_key, title, updated_at").eq("workspace_id", ws).eq("agent_key", agentKey).order("updated_at", { ascending: false }).limit(50);
+    return (data ?? []).map((r) => ({ id: r.id, agentKey: r.agent_key, title: r.title ?? "Chat", updatedAt: r.updated_at }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createTeamChat(agentKey: string, title: string): Promise<string | null> {
+  const ws = await getWorkspaceId();
+  if (!ws) return null;
+  const { data } = await supabase.from("team_chats").insert({ workspace_id: ws, agent_key: agentKey, title: title.slice(0, 80) || "New chat" }).select("id").single();
+  return data?.id ?? null;
+}
+
+export async function fetchTeamChatMessages(chatId: string): Promise<{ role: "user" | "assistant"; content: string }[]> {
+  try {
+    const { data } = await supabase.from("team_chat_messages").select("role, content").eq("chat_id", chatId).order("created_at");
+    return (data ?? []).map((r) => ({ role: r.role === "assistant" ? "assistant" : "user", content: r.content }));
+  } catch {
+    return [];
+  }
+}
+
+export async function appendTeamChatMessage(chatId: string, role: "user" | "assistant", content: string): Promise<void> {
+  try {
+    await supabase.from("team_chat_messages").insert({ chat_id: chatId, role, content });
+    await supabase.from("team_chats").update({ updated_at: new Date().toISOString() }).eq("id", chatId);
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function deleteTeamChat(chatId: string): Promise<void> {
+  try {
+    await supabase.from("team_chats").delete().eq("id", chatId);
+  } catch {
+    /* ignore */
+  }
+}
+
 // ----------------------------------------------------------- learning agent (0029)
 
 export interface LearningQuestion {

@@ -1,11 +1,25 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug } from "lucide-react";
+import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { Card, PageHeader } from "@/components/ui";
-import { inputCls } from "@/components/modal";
-import { fetchClinicSettings, fetchConnections, getWorkspaceId } from "@/lib/db";
+import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
+import { toast } from "@/components/toast";
+import {
+  fetchClinicSettings,
+  fetchConnections,
+  getWorkspaceId,
+  fetchBrandKnowledge,
+  saveBrandKnowledge,
+  listTeamChats,
+  createTeamChat,
+  fetchTeamChatMessages,
+  appendTeamChatMessage,
+  deleteTeamChat,
+  type BrandKnowledge,
+  type TeamChat,
+} from "@/lib/db";
 
 // Four DENTAL-specific pre-built marketing specialists (enrichlabs-style, tuned for
 // a clinic). Each lists what it can do and which connected channels it uses. Access
@@ -173,12 +187,36 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  const [brand, setBrand] = useState<BrandKnowledge>({ profile: "", logoUrl: "", colors: "" });
+  const [brandOpen, setBrandOpen] = useState(false);
+  const [chats, setChats] = useState<TeamChat[]>([]);
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  function refreshChats() { listTeamChats(agent.key).then(setChats); }
+
   useEffect(() => {
     fetchConnections().then((c) => setConnected(new Set(c.map((x) => x.provider))));
     fetchClinicSettings().then((s) => setWebsite(s.website));
+    fetchBrandKnowledge().then(setBrand);
     getWorkspaceId().then(setWs);
-  }, []);
+    refreshChats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.key]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  function newSession() {
+    setChatId(null);
+    setMessages([]);
+    setShowHistory(false);
+  }
+  async function openChat(c: TeamChat) {
+    setShowHistory(false);
+    setChatId(c.id);
+    setMessages(await fetchTeamChatMessages(c.id));
+  }
+
+  const brandContext = [brand.profile, brand.colors && `Brand colours: ${brand.colors}`].filter(Boolean).join("\n");
 
   async function send() {
     const text = draft.trim();
@@ -188,8 +226,13 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     const next = [...messages, { role: "user" as const, content: text }];
     setMessages(next);
     setBusy(true);
+
+    // Persist the conversation (create a session on the first message).
+    let cid = chatId;
+    if (!cid) { cid = await createTeamChat(agent.key, text); setChatId(cid); refreshChats(); }
+    if (cid) appendTeamChatMessage(cid, "user", text);
+
     try {
-      // Agents with real tools have their own backend route.
       const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam", kai: "/api/team/kai", angela: "/api/team/angela" };
       const toolRoute = TOOL_ROUTES[agent.key];
       const res = await fetch(toolRoute ?? "/api/chat", {
@@ -197,12 +240,12 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           toolRoute
-            ? { workspaceId: ws, website, messages: next }
+            ? { workspaceId: ws, website, brand: brandContext, messages: next }
             : {
                 model: "openai/gpt-4o-mini",
                 agentName: agent.name,
                 instructions: agent.brief,
-                knowledgeBase: website ? `The clinic's website is ${website}. Use it for brand, services and tone when relevant.` : "",
+                knowledgeBase: [website && `The clinic's website is ${website}.`, brandContext].filter(Boolean).join("\n"),
                 messages: next,
               }
         ),
@@ -210,6 +253,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "AI request failed");
       setMessages((m) => [...m, { role: "assistant", content: data.reply }]);
+      if (cid) appendTeamChatMessage(cid, "assistant", data.reply);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -219,6 +263,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
 
   return (
     <>
+      {brandOpen && <BrandModal brand={brand} onClose={() => setBrandOpen(false)} onSaved={(b) => { setBrand(b); setBrandOpen(false); }} />}
       <button onClick={onBack} className="mb-4 flex items-center gap-1.5 text-sm font-medium text-ink-500 hover:text-ink-800">
         <ArrowLeft className="h-4 w-4" /> Back to AI Team
       </button>
@@ -261,14 +306,49 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
           </Card>
 
           <Card className="p-5">
-            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-400">Brand</p>
-            <p className="text-sm text-ink-600">{website || "Add your website in Settings so I match your brand."}</p>
+            <div className="mb-1 flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Brand knowledge</p>
+              <button onClick={() => setBrandOpen(true)} className="flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"><Pencil className="h-3 w-3" /> Edit</button>
+            </div>
+            {brand.profile ? (
+              <p className="line-clamp-4 whitespace-pre-wrap text-sm text-ink-600">{brand.profile}</p>
+            ) : (
+              <p className="text-sm text-ink-400">Tell {agent.name} about your clinic — name, services, tone, key facts — so every reply sounds like you.</p>
+            )}
+            {website && <p className="mt-2 truncate text-xs text-ink-400">Website: {website}</p>}
           </Card>
         </div>
 
         {/* Right: chat */}
         <Card className="flex h-[calc(100vh-180px)] flex-col">
-          <div className="flex items-center gap-2 border-b border-ink-200 px-5 py-3 text-sm font-medium text-ink-600"><Bot className="h-4 w-4 text-brand-500" /> Chat with {agent.name}</div>
+          <div className="flex items-center justify-between gap-2 border-b border-ink-200 px-5 py-2.5">
+            <span className="flex items-center gap-2 text-sm font-medium text-ink-600"><Bot className="h-4 w-4 text-brand-500" /> {agent.name}</span>
+            <div className="relative flex items-center gap-1.5">
+              <button onClick={() => setShowHistory((v) => !v)} className="flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+                <History className="h-3.5 w-3.5" /> History{chats.length ? ` (${chats.length})` : ""}
+              </button>
+              <button onClick={newSession} className="flex items-center gap-1 rounded-lg bg-brand-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">
+                <Plus className="h-3.5 w-3.5" /> New chat
+              </button>
+              {showHistory && (
+                <div className="absolute right-0 top-9 z-10 max-h-80 w-72 overflow-y-auto rounded-xl border border-ink-200 bg-surface p-1.5 shadow-xl">
+                  {chats.length === 0 ? (
+                    <p className="px-3 py-4 text-center text-xs text-ink-400">No previous chats yet.</p>
+                  ) : (
+                    chats.map((c) => (
+                      <div key={c.id} className={`group flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-ink-50 ${c.id === chatId ? "bg-brand-50" : ""}`}>
+                        <button onClick={() => openChat(c)} className="min-w-0 flex-1 text-left">
+                          <p className="truncate text-ink-800">{c.title}</p>
+                          <p className="text-[11px] text-ink-400">{(c.updatedAt ?? "").slice(0, 10)}</p>
+                        </button>
+                        <button onClick={async () => { await deleteTeamChat(c.id); if (c.id === chatId) newSession(); refreshChats(); }} className="rounded p-1 text-ink-300 opacity-0 hover:text-rose-500 group-hover:opacity-100"><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
           <div className="flex-1 space-y-4 overflow-y-auto bg-ink-50/40 p-5">
             {messages.length === 0 && (
               <div className="m-auto max-w-md pt-10 text-center">
@@ -292,5 +372,43 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
         </Card>
       </div>
     </>
+  );
+}
+
+function BrandModal({ brand, onClose, onSaved }: { brand: BrandKnowledge; onClose: () => void; onSaved: (b: BrandKnowledge) => void }) {
+  const [profile, setProfile] = useState(brand.profile);
+  const [colors, setColors] = useState(brand.colors);
+  const [logoUrl, setLogoUrl] = useState(brand.logoUrl);
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    setSaving(true);
+    const next = { profile, colors, logoUrl };
+    const res = await saveBrandKnowledge(next);
+    setSaving(false);
+    if (!res.ok) { toast(res.message, "info"); return; }
+    toast("Brand knowledge saved — your AI team will use it.", "success");
+    onSaved(next);
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Brand knowledge" subtitle="What your AI team should know about your clinic." wide>
+      <div className="space-y-4">
+        <Field label="About the clinic (name, services, tone, key facts, do's & don'ts)">
+          <textarea
+            rows={8}
+            className={inputCls}
+            placeholder={"Clinic: Bright Smile Dental, Dubai Marina. We offer cleanings, implants, Invisalign, whitening and emergency care.\nTone: warm, professional, reassuring. Dr. Leila Hariri leads cosmetic & implants.\nAlways mention free consultation for implants. Never give medical advice or guarantees."}
+            value={profile}
+            onChange={(e) => setProfile(e.target.value)}
+          />
+        </Field>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Brand colours (optional)"><input className={inputCls} placeholder="#7c3aed, #10b981" value={colors} onChange={(e) => setColors(e.target.value)} /></Field>
+          <Field label="Logo URL (optional)"><input className={inputCls} placeholder="https://…/logo.png" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} /></Field>
+        </div>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save brand knowledge"} onSubmit={submit} />
+    </Modal>
   );
 }

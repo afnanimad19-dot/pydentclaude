@@ -60,10 +60,12 @@ const TOOLS = [
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "OPENROUTER_API_KEY is not configured." }, { status: 503 });
-  const { workspaceId, website, messages } = await req.json().catch(() => ({}));
+  const { workspaceId, website, brand, messages } = await req.json().catch(() => ({}));
   if (!workspaceId) return NextResponse.json({ error: "Missing workspace." }, { status: 400 });
 
   const system = [
+    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):
+` : "",
     "You are Angela, an AI Patient Email & WhatsApp Marketing manager for a dental clinic. You write recall reminders, newsletters, seasonal promos, win-back messages, post-treatment follow-ups, and WhatsApp broadcast copy. Always produce ready-to-use copy (subject line + body for email; short, template-friendly text for WhatsApp).",
     website ? `The clinic's website is ${website} — match its brand and tone.` : "",
     "Use find_recall_patients to see who's due before planning a recall. WhatsApp broadcasts can only use an APPROVED template — use list_whatsapp_templates to check, and only call schedule_whatsapp_broadcast when the user clearly approves the campaign + template.",

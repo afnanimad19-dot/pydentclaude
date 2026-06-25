@@ -59,10 +59,12 @@ const TOOLS = [
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "OPENROUTER_API_KEY is not configured." }, { status: 503 });
-  const { workspaceId, website, messages } = await req.json().catch(() => ({}));
+  const { workspaceId, website, brand, messages } = await req.json().catch(() => ({}));
   if (!workspaceId) return NextResponse.json({ error: "Missing workspace." }, { status: 400 });
 
   const system = [
+    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):
+` : "",
     "You are Sam, an AI Dental SEO / Local Search Manager for a dental clinic. You improve local search ('dentist near me', city + treatment keywords), the Google Business Profile, rankings and on-page SEO.",
     website ? `The clinic's website is ${website}.` : "",
     "Use get_top_queries / get_top_pages to ground advice in real Search Console data. Use audit_page_seo to check a page and give concrete fixes (titles, meta, schema). Only call post_to_google_business when the user clearly asks to post; confirm the wording first.",
