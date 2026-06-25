@@ -190,7 +190,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     setBusy(true);
     try {
       // Agents with real tools have their own backend route.
-      const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam", kai: "/api/team/kai" };
+      const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam", kai: "/api/team/kai", angela: "/api/team/angela" };
       const toolRoute = TOOL_ROUTES[agent.key];
       const res = await fetch(toolRoute ?? "/api/chat", {
         method: "POST",
