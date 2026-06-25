@@ -5,7 +5,7 @@ import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, C
 import Link from "next/link";
 import { Card, PageHeader } from "@/components/ui";
 import { inputCls } from "@/components/modal";
-import { fetchClinicSettings, fetchConnections } from "@/lib/db";
+import { fetchClinicSettings, fetchConnections, getWorkspaceId } from "@/lib/db";
 
 // Four DENTAL-specific pre-built marketing specialists (enrichlabs-style, tuned for
 // a clinic). Each lists what it can do and which connected channels it uses. Access
@@ -166,6 +166,7 @@ export default function TeamAiPage() {
 function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => void }) {
   const [connected, setConnected] = useState<Set<string>>(new Set());
   const [website, setWebsite] = useState("");
+  const [ws, setWs] = useState<string | null>(null);
   const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -175,6 +176,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   useEffect(() => {
     fetchConnections().then((c) => setConnected(new Set(c.map((x) => x.provider))));
     fetchClinicSettings().then((s) => setWebsite(s.website));
+    getWorkspaceId().then(setWs);
   }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
@@ -187,16 +189,22 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     setMessages(next);
     setBusy(true);
     try {
-      const res = await fetch("/api/chat", {
+      // Helena has real tools (write + publish to WordPress, generate images).
+      const useTools = agent.key === "helena";
+      const res = await fetch(useTools ? "/api/team/helena" : "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "openai/gpt-4o-mini",
-          agentName: agent.name,
-          instructions: agent.brief,
-          knowledgeBase: website ? `The clinic's website is ${website}. Use it for brand, services and tone when relevant.` : "",
-          messages: next,
-        }),
+        body: JSON.stringify(
+          useTools
+            ? { workspaceId: ws, website, messages: next }
+            : {
+                model: "openai/gpt-4o-mini",
+                agentName: agent.name,
+                instructions: agent.brief,
+                knowledgeBase: website ? `The clinic's website is ${website}. Use it for brand, services and tone when relevant.` : "",
+                messages: next,
+              }
+        ),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "AI request failed");
