@@ -106,3 +106,62 @@ with the GA4/Search Console metrics Helena already pulls.
 > Billing rule for all of it: you pay the providers (LLM tokens, images, etc.) and recover
 > it via the clinic's subscription + credit top-ups, always priced above cost. Details in
 > SOFTWARE_STACK_AND_COSTS.md.
+
+---
+
+## 5. MuAPI (images + video) — will your key work, and what it costs
+
+**Yes — a MuAPI key works.** MuAPI is "one API for all models" (Flux, Midjourney, Veo 3,
+Kling, Runway, Suno + tools like upscale/bg-removal/lip-sync). It's a **credit-based REST
+API**: you top up credits, each generation spends credits. We integrate it exactly like we
+did OpenAI — put `MUAPI_KEY` in Netlify, and our `generate_image` / new `generate_video`
+tools call MuAPI, pick a model, and use the result. **One key → images AND video for every
+agent.** (When you send the key I'll confirm the exact endpoint from their docs and finish
+the wiring.)
+
+### What each thing costs (per generation — approx; MuAPI bills credits, verify live rates)
+These are driven by the underlying model. MuAPI is competitive but adds a small margin.
+
+| Type | Model (quality) | ~Cost each |
+|---|---|---|
+| **Image — cheap/fast** | Flux Schnell | ~$0.003 |
+| **Image — standard** | Flux Dev | ~$0.02–0.03 |
+| **Image — professional** | Flux Pro / Kontext, Ideogram, Midjourney V7 | ~$0.04–0.08 |
+| **Image — DALL·E 3** | OpenAI | ~$0.04–0.12 |
+| **Video — budget** | Runway / Luma | ~$0.05–0.15 / second |
+| **Video — great** | Kling | ~$0.10–0.35 / second (5s ≈ $0.5–1.75) |
+| **Video — premium** | Veo 3 / Sora | ~$0.30–0.75 / second (5s ≈ $1.5–4+) |
+| **Music** | Suno | ~$0.05–0.10 / track |
+| **Tools** | upscale / bg-remove / lip-sync | ~$0.01–0.10 |
+| **Agent brain (text/reports)** | gpt-4o-mini (cheap) → Claude Sonnet / GPT-4o (pro) | fraction of a ¢ → a few ¢ per report |
+
+**Reading it:** images are pennies; **video is the expensive line** (a 5-second Reel is
+~$0.50–$4 depending on the model). So price video as a premium credit.
+
+## 6. "Professional results, not cheap" — how to match Helena/enrichlabs
+
+Same architecture, three quality levers (all one-line swaps):
+1. **Better media models** — use **Flux Pro / Ideogram** for images and **Kling / Veo** for
+   video instead of the cheapest. That's the difference between "AI-looking" and pro.
+2. **Better brain for writing & reports** — switch the agents from `gpt-4o-mini` to
+   **Claude Sonnet** (or GPT-4o) for blogs and reports. Claude writes excellent, on-brand
+   long-form — this is the single biggest quality jump, and it's just the model id.
+3. **Better inputs** — brand knowledge + real data (GA4, Search Console, ads) + strong
+   prompts → reports with substance, not filler.
+
+We'll add a **quality tier**: routine work uses cheap models (cents), "hero" work (a flagship
+blog, a campaign video, a client report) uses premium models. enrichlabs does exactly this.
+
+## 7. Can Claude do the reports? Should we charge?
+
+- **Yes — Claude can power the agents.** Via OpenRouter we can route any agent to **Claude
+  Sonnet/Opus** by changing one model string, so Helena/Sam produce **professional reports**
+  (e.g. a monthly SEO/traffic report from real GA4 + Search Console data, written by Claude,
+  exportable to PDF/email). That's a concrete feature we can build.
+- **Yes — charge for it.** Premium models cost more per use, so put pro images, video, and
+  Claude-written reports in **higher-tier packages** or have them **consume more credits**.
+  You pay the provider; the client pays you above cost. Cheap routine work stays in the base
+  plan; premium output is the upsell.
+
+**Bottom line:** matching enrichlabs' quality is a *model + prompt* choice, not a different
+build. Same pipes, premium models where it counts, billed as premium.
