@@ -12,6 +12,9 @@ import {
   getWorkspaceId,
   fetchBrandKnowledge,
   saveBrandKnowledge,
+  fetchBrandDocuments,
+  addBrandDocument,
+  deleteBrandDocument,
   listTeamChats,
   createTeamChat,
   fetchTeamChatMessages,
@@ -28,6 +31,7 @@ import {
   type AgentReport,
   type AgentActivity,
   type ScheduledTask,
+  type BrandDocument,
 } from "@/lib/db";
 
 // Four DENTAL-specific pre-built marketing specialists (enrichlabs-style, tuned for
@@ -162,13 +166,13 @@ export default function TeamAiPage() {
           return (
             <div key={a.key} className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${a.gradient} p-6`}>
               <div className="relative z-10 max-w-[72%]">
-                <p className="text-xs font-medium text-ink-500">{a.role}</p>
-                <h2 className="mt-1 text-2xl font-semibold text-ink-900">{a.name}</h2>
-                <p className="mt-2 text-sm text-ink-600">{a.blurb}</p>
+                <p className="text-xs font-medium text-slate-600">{a.role}</p>
+                <h2 className="mt-1 text-2xl font-semibold text-slate-900">{a.name}</h2>
+                <p className="mt-2 text-sm text-slate-700">{a.blurb}</p>
                 <button
                   onClick={() => unlocked && setActive(a)}
                   disabled={!unlocked}
-                  className={`mt-5 flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold ${unlocked ? "bg-white/80 text-ink-900 hover:bg-white" : "cursor-not-allowed bg-white/50 text-ink-400"}`}
+                  className={`mt-5 flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold shadow-sm ${unlocked ? "bg-white text-slate-900 hover:bg-white/90" : "cursor-not-allowed bg-white/60 text-slate-400"}`}
                 >
                   {unlocked ? (<><Sparkles className="h-4 w-4" /> Open</>) : (<><Lock className="h-4 w-4" /> Locked — upgrade</>)}
                 </button>
@@ -194,9 +198,10 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const [brand, setBrand] = useState<BrandKnowledge>({ profile: "", logoUrl: "", colors: "" });
+  const [brandDocs, setBrandDocs] = useState<BrandDocument[]>([]);
   const [brandOpen, setBrandOpen] = useState(false);
   const [chats, setChats] = useState<TeamChat[]>([]);
   const [chatId, setChatId] = useState<string | null>(null);
@@ -216,13 +221,16 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     fetchConnections().then((c) => setConnected(new Set(c.map((x) => x.provider))));
     fetchClinicSettings().then((s) => setWebsite(s.website));
     fetchBrandKnowledge().then(setBrand);
+    fetchBrandDocuments().then(setBrandDocs);
     getWorkspaceId().then(setWs);
     refreshChats();
     refreshWork();
     refreshTasks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.key]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // Keep the chat pinned to the latest message WITHIN the chat box only — never
+  // scroll the whole page (which caused the jump on the first message).
+  useEffect(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; }, [messages]);
 
   function newSession() {
     setChatId(null);
@@ -235,7 +243,8 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     setMessages(await fetchTeamChatMessages(c.id));
   }
 
-  const brandContext = [brand.profile, brand.colors && `Brand colours: ${brand.colors}`].filter(Boolean).join("\n");
+  const docsText = brandDocs.map((d) => `--- ${d.name} ---\n${d.content}`).filter(Boolean).join("\n\n").slice(0, 12000);
+  const brandContext = [brand.profile, brand.colors && `Brand colours: ${brand.colors}`, docsText && `BRAND DOCUMENTS:\n${docsText}`].filter(Boolean).join("\n\n");
 
   async function send() {
     const text = draft.trim();
@@ -283,7 +292,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
 
   return (
     <>
-      {brandOpen && <BrandModal brand={brand} onClose={() => setBrandOpen(false)} onSaved={(b) => { setBrand(b); setBrandOpen(false); }} />}
+      {brandOpen && <BrandModal brand={brand} onClose={() => setBrandOpen(false)} onSaved={(b) => { setBrand(b); setBrandOpen(false); }} onDocsChanged={() => fetchBrandDocuments().then(setBrandDocs)} />}
       {schedOpen && <ScheduleModal agentKey={agent.key} agentName={agent.name} onClose={() => setSchedOpen(false)} onSaved={() => { setSchedOpen(false); refreshTasks(); }} />}
       {docsOpen && (
         <div className="fixed inset-0 z-[60] flex">
@@ -371,9 +380,64 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
               <p className="text-sm text-ink-400">Tell {agent.name} about your clinic — name, services, tone, key facts — so every reply sounds like you.</p>
             )}
             {website && <p className="mt-2 truncate text-xs text-ink-400">Website: {website}</p>}
+            {brandDocs.length > 0 && <p className="mt-1 text-xs text-ink-400">📎 {brandDocs.length} document{brandDocs.length > 1 ? "s" : ""} uploaded</p>}
           </Card>
 
-          <Card className="p-5">
+        </div>
+
+        {/* Right: chat on top, work boxes beneath (uses the bottom space) */}
+        <div className="flex min-w-0 flex-col gap-5">
+        <Card className="flex h-[58vh] min-h-[420px] flex-col">
+          <div className="flex items-center justify-between gap-2 border-b border-ink-200 px-5 py-2.5">
+            <span className="flex items-center gap-2 text-sm font-medium text-ink-600"><Bot className="h-4 w-4 text-brand-500" /> {agent.name}</span>
+            <div className="relative flex items-center gap-1.5">
+              <button onClick={() => setShowHistory((v) => !v)} className="flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+                <History className="h-3.5 w-3.5" /> History{chats.length ? ` (${chats.length})` : ""}
+              </button>
+              <button onClick={newSession} className="flex items-center gap-1 rounded-lg bg-brand-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">
+                <Plus className="h-3.5 w-3.5" /> New chat
+              </button>
+              {showHistory && (
+                <div className="absolute right-0 top-9 z-10 max-h-80 w-72 overflow-y-auto rounded-xl border border-ink-200 bg-surface p-1.5 shadow-xl">
+                  {chats.length === 0 ? (
+                    <p className="px-3 py-4 text-center text-xs text-ink-400">No previous chats yet.</p>
+                  ) : (
+                    chats.map((c) => (
+                      <div key={c.id} className={`group flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-ink-50 ${c.id === chatId ? "bg-brand-50" : ""}`}>
+                        <button onClick={() => openChat(c)} className="min-w-0 flex-1 text-left">
+                          <p className="truncate text-ink-800">{c.title}</p>
+                          <p className="text-[11px] text-ink-400">{(c.updatedAt ?? "").slice(0, 10)}</p>
+                        </button>
+                        <button onClick={async () => { await deleteTeamChat(c.id); if (c.id === chatId) newSession(); refreshChats(); }} className="rounded p-1 text-ink-300 opacity-0 hover:text-rose-500 group-hover:opacity-100"><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+          <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto bg-ink-50/40 p-5">
+            {messages.length === 0 && (
+              <div className="m-auto max-w-md pt-10 text-center">
+                <p className="text-sm font-medium text-ink-700">Hi! I&apos;m {agent.name}, your {agent.role}.</p>
+                <p className="mt-1 text-sm text-ink-400">Try: “Plan next month&apos;s posts”, “Write a blog about teeth whitening”, or “Draft a recall message”.</p>
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>{linkify(m.content)}</div>
+              </div>
+            ))}
+            {busy && <div className="flex justify-start"><div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-ink-200 bg-surface px-3.5 py-2 text-sm text-ink-400"><Bot className="h-4 w-4 animate-pulse" /> {agent.name} is thinking…</div></div>}
+          </div>
+          {error && <p className="px-5 pt-2 text-sm text-amber-600">{error}</p>}
+          <div className="flex gap-2 border-t border-ink-200 p-4">
+            <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={`Message ${agent.name}…`} className={inputCls} />
+            <button onClick={send} disabled={busy} className="rounded-xl bg-brand-600 px-4 text-white hover:bg-brand-700 disabled:opacity-50"><Send className="h-5 w-5" /></button>
+          </div>
+        </Card>
+        <div className="grid gap-4 lg:grid-cols-3">
+<Card className="p-5">
             <div className="mb-2 flex items-center justify-between">
               <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-400"><FileText className="h-3.5 w-3.5" /> Documents</p>
               {reports.length > 0 && <button onClick={() => { setPreviewId(reports[0].id); setDocsOpen(true); }} className="text-xs font-medium text-brand-600 hover:text-brand-700">View all ({reports.length})</button>}
@@ -436,68 +500,51 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
             )}
           </Card>
         </div>
-
-        {/* Right: chat */}
-        <Card className="flex h-[calc(100vh-180px)] flex-col">
-          <div className="flex items-center justify-between gap-2 border-b border-ink-200 px-5 py-2.5">
-            <span className="flex items-center gap-2 text-sm font-medium text-ink-600"><Bot className="h-4 w-4 text-brand-500" /> {agent.name}</span>
-            <div className="relative flex items-center gap-1.5">
-              <button onClick={() => setShowHistory((v) => !v)} className="flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
-                <History className="h-3.5 w-3.5" /> History{chats.length ? ` (${chats.length})` : ""}
-              </button>
-              <button onClick={newSession} className="flex items-center gap-1 rounded-lg bg-brand-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">
-                <Plus className="h-3.5 w-3.5" /> New chat
-              </button>
-              {showHistory && (
-                <div className="absolute right-0 top-9 z-10 max-h-80 w-72 overflow-y-auto rounded-xl border border-ink-200 bg-surface p-1.5 shadow-xl">
-                  {chats.length === 0 ? (
-                    <p className="px-3 py-4 text-center text-xs text-ink-400">No previous chats yet.</p>
-                  ) : (
-                    chats.map((c) => (
-                      <div key={c.id} className={`group flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-ink-50 ${c.id === chatId ? "bg-brand-50" : ""}`}>
-                        <button onClick={() => openChat(c)} className="min-w-0 flex-1 text-left">
-                          <p className="truncate text-ink-800">{c.title}</p>
-                          <p className="text-[11px] text-ink-400">{(c.updatedAt ?? "").slice(0, 10)}</p>
-                        </button>
-                        <button onClick={async () => { await deleteTeamChat(c.id); if (c.id === chatId) newSession(); refreshChats(); }} className="rounded p-1 text-ink-300 opacity-0 hover:text-rose-500 group-hover:opacity-100"><Trash2 className="h-3.5 w-3.5" /></button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex-1 space-y-4 overflow-y-auto bg-ink-50/40 p-5">
-            {messages.length === 0 && (
-              <div className="m-auto max-w-md pt-10 text-center">
-                <p className="text-sm font-medium text-ink-700">Hi! I&apos;m {agent.name}, your {agent.role}.</p>
-                <p className="mt-1 text-sm text-ink-400">Try: “Plan next month&apos;s posts”, “Write a blog about teeth whitening”, or “Draft a recall message”.</p>
-              </div>
-            )}
-            {messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>{linkify(m.content)}</div>
-              </div>
-            ))}
-            {busy && <div className="flex justify-start"><div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-ink-200 bg-surface px-3.5 py-2 text-sm text-ink-400"><Bot className="h-4 w-4 animate-pulse" /> {agent.name} is thinking…</div></div>}
-            <div ref={bottomRef} />
-          </div>
-          {error && <p className="px-5 pt-2 text-sm text-amber-600">{error}</p>}
-          <div className="flex gap-2 border-t border-ink-200 p-4">
-            <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={`Message ${agent.name}…`} className={inputCls} />
-            <button onClick={send} disabled={busy} className="rounded-xl bg-brand-600 px-4 text-white hover:bg-brand-700 disabled:opacity-50"><Send className="h-5 w-5" /></button>
-          </div>
-        </Card>
+        </div>
       </div>
     </>
   );
 }
 
-function BrandModal({ brand, onClose, onSaved }: { brand: BrandKnowledge; onClose: () => void; onSaved: (b: BrandKnowledge) => void }) {
+function BrandModal({ brand, onClose, onSaved, onDocsChanged }: { brand: BrandKnowledge; onClose: () => void; onSaved: (b: BrandKnowledge) => void; onDocsChanged: () => void }) {
   const [profile, setProfile] = useState(brand.profile);
   const [colors, setColors] = useState(brand.colors);
   const [logoUrl, setLogoUrl] = useState(brand.logoUrl);
   const [saving, setSaving] = useState(false);
+  const [docs, setDocs] = useState<BrandDocument[]>([]);
+  const [uploading, setUploading] = useState<string[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { fetchBrandDocuments().then(setDocs); }, []);
+
+  async function onFiles(list: FileList | null) {
+    if (!list) return;
+    for (const file of Array.from(list)) {
+      setUploading((p) => [...p, file.name]);
+      try {
+        let text = "";
+        if (/\.(txt|md|csv|json)$/i.test(file.name)) text = await file.text();
+        else if (/\.(pdf|docx|doc)$/i.test(file.name)) {
+          const fd = new FormData(); fd.append("file", file, file.name); fd.append("name", file.name);
+          const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+          const data = await res.json();
+          text = res.ok ? data.text : `[Could not read ${file.name}: ${data.error ?? "extraction failed"}]`;
+        } else text = `[Uploaded file: ${file.name}]`;
+        await addBrandDocument(file.name, text);
+      } catch { /* skip */ } finally {
+        setUploading((p) => p.filter((n) => n !== file.name));
+      }
+    }
+    fetchBrandDocuments().then(setDocs);
+    onDocsChanged();
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  async function removeDoc(id: string) {
+    await deleteBrandDocument(id);
+    fetchBrandDocuments().then(setDocs);
+    onDocsChanged();
+  }
 
   async function submit() {
     setSaving(true);
@@ -524,6 +571,26 @@ function BrandModal({ brand, onClose, onSaved }: { brand: BrandKnowledge; onClos
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Brand colours (optional)"><input className={inputCls} placeholder="#7c3aed, #10b981" value={colors} onChange={(e) => setColors(e.target.value)} /></Field>
           <Field label="Logo URL (optional)"><input className={inputCls} placeholder="https://…/logo.png" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} /></Field>
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-sm font-medium text-ink-700">Brand documents — upload as many as you like</p>
+          <p className="mb-2 text-xs text-ink-400">Price lists, treatment guides, brand guidelines, FAQs… the team reads their text. PDF/Word text is extracted automatically.</p>
+          <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => onFiles(e.target.files)} />
+          <button onClick={() => fileRef.current?.click()} className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-ink-300 py-3 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600">
+            <FileText className="h-4 w-4" /> Upload documents (any type)
+          </button>
+          {uploading.length > 0 && <p className="mt-2 text-xs text-brand-600">Reading {uploading.join(", ")}…</p>}
+          {docs.length > 0 && (
+            <ul className="mt-2 space-y-1.5">
+              {docs.map((d) => (
+                <li key={d.id} className="flex items-center justify-between rounded-lg border border-ink-100 bg-ink-50 px-3 py-2 text-sm text-ink-700">
+                  <span className="flex min-w-0 items-center gap-2"><FileText className="h-4 w-4 shrink-0 text-brand-500" /> <span className="truncate">{d.name}</span></span>
+                  <button onClick={() => removeDoc(d.id)} className="rounded p-1 text-ink-400 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
       <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save brand knowledge"} onSubmit={submit} />

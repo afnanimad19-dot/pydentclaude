@@ -1499,6 +1499,34 @@ export async function saveBrandKnowledge(b: BrandKnowledge): Promise<{ ok: boole
   return { ok: true, message: "Brand knowledge saved." };
 }
 
+export interface BrandDocument {
+  id: string;
+  name: string;
+  content: string;
+}
+
+export async function fetchBrandDocuments(): Promise<BrandDocument[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("brand_documents").select("id, name, content").eq("workspace_id", ws).order("created_at", { ascending: false }).limit(100);
+    return (data ?? []).map((r) => ({ id: r.id, name: r.name ?? "Document", content: r.content ?? "" }));
+  } catch {
+    return [];
+  }
+}
+
+export async function addBrandDocument(name: string, content: string): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { error } = await supabase.from("brand_documents").insert({ workspace_id: ws, name: name.slice(0, 200), content: content.slice(0, 200000) });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Document added to brand knowledge." };
+}
+
+export async function deleteBrandDocument(id: string): Promise<void> {
+  try { await supabase.from("brand_documents").delete().eq("id", id); } catch { /* ignore */ }
+}
+
 export interface TeamChat {
   id: string;
   agentKey: string;
