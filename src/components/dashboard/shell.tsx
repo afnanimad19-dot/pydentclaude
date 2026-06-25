@@ -42,6 +42,7 @@ interface NavItem {
 const nav: NavItem[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/inbox", label: "Omnichannel Inbox", icon: Inbox },
+  { href: "/dashboard/team-ai", label: "AI Team", icon: Sparkles },
   {
     href: "/dashboard/agents",
     label: "AI Agents",
@@ -52,7 +53,6 @@ const nav: NavItem[] = [
       { href: "/dashboard/agents/voice", label: "Voice agents" },
       { href: "/dashboard/agents/hub", label: "Agent Hub" },
       { href: "/dashboard/agents/learning", label: "Learning Agent" },
-      { href: "/dashboard/marketing", label: "Marketing AI team" },
       { href: "/dashboard/voice", label: "Call log" },
     ],
   },
