@@ -189,13 +189,14 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     setMessages(next);
     setBusy(true);
     try {
-      // Helena has real tools (write + publish to WordPress, generate images).
-      const useTools = agent.key === "helena";
-      const res = await fetch(useTools ? "/api/team/helena" : "/api/chat", {
+      // Agents with real tools have their own backend route.
+      const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam" };
+      const toolRoute = TOOL_ROUTES[agent.key];
+      const res = await fetch(toolRoute ?? "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          useTools
+          toolRoute
             ? { workspaceId: ws, website, messages: next }
             : {
                 model: "openai/gpt-4o-mini",

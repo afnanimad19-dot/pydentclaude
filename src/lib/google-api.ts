@@ -79,7 +79,63 @@ export async function runAnalyticsReport(ws: string, days = 28): Promise<string>
   }
 }
 
-// Search Console: first verified site, top queries.
+// Search Console: top PAGES (by clicks) for the verified site.
+export async function runSearchConsolePages(ws: string, days = 28): Promise<string> {
+  const token = await getValidGoogleToken(ws, "google_search_console");
+  if (!token) return "Search Console isn't connected. Connect it in Settings → Connections.";
+  try {
+    const sitesRes = await fetch("https://www.googleapis.com/webmasters/v3/sites", { headers: { Authorization: `Bearer ${token}` } });
+    const sitesJson = await sitesRes.json();
+    if (!sitesRes.ok) return `Search Console error: ${sitesJson?.error?.message ?? sitesRes.status}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const site = (sitesJson.siteEntry ?? []).find((s: any) => s.permissionLevel !== "siteUnverifiedUser")?.siteUrl ?? sitesJson.siteEntry?.[0]?.siteUrl;
+    if (!site) return "No verified site found in Search Console.";
+    const { startDate, endDate } = range(days);
+    const q = await fetch(`https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(site)}/searchAnalytics/query`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ startDate, endDate, dimensions: ["page"], rowLimit: 5 }),
+    });
+    const qj = await q.json();
+    if (!q.ok) return `Search Console query error: ${qj?.error?.message ?? q.status}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = (qj.rows ?? []).map((r: any) => `  • ${r.keys?.[0]} — ${r.clicks} clicks, ${r.impressions} impressions, pos ${Math.round(r.position)}`).join("\n");
+    return `Search Console for ${site} (${startDate} → ${endDate}) — top pages:\n${rows || "  (no data yet)"}`;
+  } catch (e) {
+    return `Search Console failed: ${e instanceof Error ? e.message : "error"}`;
+  }
+}
+
+// Google Business Profile: publish a local post (update). Needs Business Profile
+// API access (Google must allowlist your project) — surfaces a clear error if not.
+export async function postToGoogleBusiness(ws: string, summary: string, ctaUrl?: string): Promise<string> {
+  const token = await getValidGoogleToken(ws, "google_business");
+  if (!token) return "Google Business Profile isn't connected. Connect it in Settings → Connections.";
+  try {
+    const accRes = await fetch("https://mybusinessaccountmanagement.googleapis.com/v1/accounts", { headers: { Authorization: `Bearer ${token}` } });
+    const accJson = await accRes.json();
+    if (!accRes.ok) return `Business Profile error: ${accJson?.error?.message ?? accRes.status} (your Google project may need Business Profile API access).`;
+    const account = accJson.accounts?.[0]?.name;
+    if (!account) return "No Business Profile account found.";
+    const locRes = await fetch(`https://mybusinessbusinessinformation.googleapis.com/v1/${account}/locations?readMask=name,title`, { headers: { Authorization: `Bearer ${token}` } });
+    const locJson = await locRes.json();
+    const location = locJson.locations?.[0]?.name;
+    if (!location) return "No location found on this Business Profile.";
+    const body: Record<string, unknown> = { languageCode: "en", summary: summary.slice(0, 1490), topicType: "STANDARD" };
+    if (ctaUrl) body.callToAction = { actionType: "LEARN_MORE", url: ctaUrl };
+    const postRes = await fetch(`https://mybusiness.googleapis.com/v4/${account}/${location}/localPosts`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const pj = await postRes.json();
+    if (!postRes.ok) return `Business Profile post failed: ${pj?.error?.message ?? postRes.status} (Business Profile posting requires Google API approval for your project).`;
+    return "Posted an update to your Google Business Profile.";
+  } catch (e) {
+    return `Business Profile failed: ${e instanceof Error ? e.message : "error"}`;
+  }
+}
+
 export async function runSearchConsoleReport(ws: string, days = 28): Promise<string> {
   const token = await getValidGoogleToken(ws, "google_search_console");
   if (!token) return "Search Console isn't connected. Connect it in Settings → Connections.";
