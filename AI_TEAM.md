@@ -165,3 +165,55 @@ blog, a campaign video, a client report) uses premium models. enrichlabs does ex
 
 **Bottom line:** matching enrichlabs' quality is a *model + prompt* choice, not a different
 build. Same pipes, premium models where it counts, billed as premium.
+
+---
+
+## 8. Using Claude for the AI Team (keys, free options, switching)
+
+### You do NOT need a separate Claude key — use OpenRouter
+Your existing **OpenRouter key already gives you Claude.** OpenRouter routes to the *real*
+Anthropic models, so Claude via OpenRouter behaves **exactly like native Claude** (same
+model, same quality) — you just name it. To switch all four agents to Claude, set ONE env
+var in Netlify and redeploy:
+```
+TEAM_AI_MODEL = anthropic/claude-sonnet-4
+```
+(Leave it unset to keep the cheap default `openai/gpt-4o-mini`.) That's the whole switch —
+the code reads `TEAM_AI_MODEL`.
+
+### Is Claude free? / Pro / Max?
+- **No free Claude API.** Claude Sonnet isn't free for API use — it's pennies per request
+  (paid). OpenRouter's *free* models are open-source ones (Llama, etc.), **not** Claude.
+- **Claude Pro / Max ($20 / $200) is NOT an API key.** Those are for the claude.ai chat app
+  only. They do **not** give API access. So a Pro/Max plan can't power Pydent.
+- **A real Anthropic API key** (if you ever want it directly) comes from
+  **console.anthropic.com → API Keys → Create** (billed per token, separate from Pro/Max).
+  But you don't need it — OpenRouter is simpler and already set up.
+
+### Where to get the keys
+- **OpenRouter key:** openrouter.ai → sign in → **Keys → Create Key** → add credit. (You
+  have this.) Put it in Netlify as `OPENROUTER_API_KEY`.
+- **Anthropic key (optional):** console.anthropic.com → **API Keys → Create**.
+
+## 9. "Create a document I can download" — how that works
+
+When you tell an agent "make a document/report", the model produces the **text**; an AI
+can't hand you a file by itself. To give a **downloadable file**, *we* convert that text
+into a document and provide a link. That's a small feature we can add:
+- Agent writes the report (Markdown/HTML).
+- We render it to a file — **PDF** (printable, branded) or **.docx** — store it, and return
+  a **download link** in the chat.
+- Best paired with Claude for the writing + the real data (GA4/Search Console) so the report
+  has substance.
+
+So yes — a downloadable report/document is buildable; it's a "render + link" step on top of
+what the agents already write. (Not built yet — it's on the list.)
+
+## What's already built on the agents (your question)
+- ✅ **Brand knowledge box** in each agent's left rail (editable) — and it's now actually
+  injected into all four agents (a bug where the text was dropped is fixed).
+- ✅ **Chat history / sessions** — New chat + History dropdown to reopen past chats.
+- ✅ **Channels** panel (live connected/not) + **website/brand** on the left rail.
+- ⏳ Still to do (the rest of the enrichlabs right rail): **activity feed** (blogs/posts/
+  images the agent made, with links), **metrics tiles**, **brand assets** (logo/colours
+  gallery), **weekly tasks / scheduling**, **document/report download**.
