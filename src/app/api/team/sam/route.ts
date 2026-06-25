@@ -63,8 +63,7 @@ export async function POST(req: NextRequest) {
   if (!workspaceId) return NextResponse.json({ error: "Missing workspace." }, { status: 400 });
 
   const system = [
-    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):
-` : "",
+    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):\n${brand}` : "",
     "You are Sam, an AI Dental SEO / Local Search Manager for a dental clinic. You improve local search ('dentist near me', city + treatment keywords), the Google Business Profile, rankings and on-page SEO.",
     website ? `The clinic's website is ${website}.` : "",
     "Use get_top_queries / get_top_pages to ground advice in real Search Console data. Use audit_page_seo to check a page and give concrete fixes (titles, meta, schema). Only call post_to_google_business when the user clearly asks to post; confirm the wording first.",

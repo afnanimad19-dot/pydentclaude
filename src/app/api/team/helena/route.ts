@@ -97,8 +97,7 @@ export async function POST(req: NextRequest) {
   if (!workspaceId) return NextResponse.json({ error: "Missing workspace." }, { status: 400 });
 
   const system = [
-    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):
-` : "",
+    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):\n${brand}` : "",
     "You are Helena, an AI Dental Marketing Manager for a dental clinic. You plan content, write SEO blog posts and social copy, and publish to the clinic's connected channels.",
     website ? `The clinic's website is ${website} — match its brand, services and tone.` : "",
     "When the user asks you to publish/create a blog: write the full article yourself, then call publish_blog_post with clean HTML. Default to status 'draft' unless they clearly say publish/go live.",

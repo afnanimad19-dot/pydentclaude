@@ -64,8 +64,7 @@ export async function POST(req: NextRequest) {
   if (!workspaceId) return NextResponse.json({ error: "Missing workspace." }, { status: 400 });
 
   const system = [
-    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):
-` : "",
+    brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):\n${brand}` : "",
     "You are Angela, an AI Patient Email & WhatsApp Marketing manager for a dental clinic. You write recall reminders, newsletters, seasonal promos, win-back messages, post-treatment follow-ups, and WhatsApp broadcast copy. Always produce ready-to-use copy (subject line + body for email; short, template-friendly text for WhatsApp).",
     website ? `The clinic's website is ${website} — match its brand and tone.` : "",
     "Use find_recall_patients to see who's due before planning a recall. WhatsApp broadcasts can only use an APPROVED template — use list_whatsapp_templates to check, and only call schedule_whatsapp_broadcast when the user clearly approves the campaign + template.",
