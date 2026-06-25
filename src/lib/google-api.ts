@@ -106,6 +106,60 @@ export async function runSearchConsolePages(ws: string, days = 28): Promise<stri
   }
 }
 
+// Find the first GBP account + location (shared by reviews / posts).
+async function getGbpLocation(token: string): Promise<{ account: string; location: string } | string> {
+  const accRes = await fetch("https://mybusinessaccountmanagement.googleapis.com/v1/accounts", { headers: { Authorization: `Bearer ${token}` } });
+  const accJson = await accRes.json();
+  if (!accRes.ok) return `Business Profile error: ${accJson?.error?.message ?? accRes.status} (your Google project may need Business Profile API access).`;
+  const account = accJson.accounts?.[0]?.name;
+  if (!account) return "No Business Profile account found.";
+  const locRes = await fetch(`https://mybusinessbusinessinformation.googleapis.com/v1/${account}/locations?readMask=name,title`, { headers: { Authorization: `Bearer ${token}` } });
+  const locJson = await locRes.json();
+  const location = locJson.locations?.[0]?.name;
+  if (!location) return "No location found on this Business Profile.";
+  return { account, location };
+}
+
+// Recent Google reviews (rating + text) for sentiment + reply drafting.
+export async function getGoogleReviews(ws: string, max = 10): Promise<string> {
+  const token = await getValidGoogleToken(ws, "google_business");
+  if (!token) return "Google Business Profile isn't connected. Connect it in Settings → Connections.";
+  try {
+    const loc = await getGbpLocation(token);
+    if (typeof loc === "string") return loc;
+    const res = await fetch(`https://mybusiness.googleapis.com/v4/${loc.account}/${loc.location}/reviews?pageSize=${max}&orderBy=updateTime desc`, { headers: { Authorization: `Bearer ${token}` } });
+    const j = await res.json();
+    if (!res.ok) return `Reviews error: ${j?.error?.message ?? res.status} (Business Profile reviews require Google API approval for your project).`;
+    const stars: Record<string, number> = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const list = (j.reviews ?? []).map((r: any) => `  • ${stars[r.starRating] ?? "?"}★ ${r.reviewer?.displayName ?? "Patient"} [id:${r.reviewId ?? r.name}]: ${(r.comment ?? "(no text)").replace(/\s+/g, " ").slice(0, 240)}${r.reviewReply ? " (already replied)" : ""}`).join("\n");
+    return `Google reviews (avg ${j.averageRating ?? "—"}, ${j.totalReviewCount ?? 0} total):\n${list || "  (none)"}`;
+  } catch (e) {
+    return `Reviews failed: ${e instanceof Error ? e.message : "error"}`;
+  }
+}
+
+// Reply to a Google review. reviewId is the value shown in get_google_reviews.
+export async function replyToGoogleReview(ws: string, reviewId: string, comment: string): Promise<string> {
+  const token = await getValidGoogleToken(ws, "google_business");
+  if (!token) return "Google Business Profile isn't connected.";
+  try {
+    const loc = await getGbpLocation(token);
+    if (typeof loc === "string") return loc;
+    const name = reviewId.includes("/") ? reviewId : `${loc.account}/${loc.location}/reviews/${reviewId}`;
+    const res = await fetch(`https://mybusiness.googleapis.com/v4/${name}/reply`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ comment: comment.slice(0, 4090) }),
+    });
+    const j = await res.json();
+    if (!res.ok) return `Reply failed: ${j?.error?.message ?? res.status}`;
+    return "Reply posted to the Google review.";
+  } catch (e) {
+    return `Reply failed: ${e instanceof Error ? e.message : "error"}`;
+  }
+}
+
 // Google Business Profile: publish a local post (update). Needs Business Profile
 // API access (Google must allowlist your project) — surfaces a clear error if not.
 export async function postToGoogleBusiness(ws: string, summary: string, ctaUrl?: string): Promise<string> {

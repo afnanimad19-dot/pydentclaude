@@ -44,6 +44,18 @@ export async function postToFacebookPage(ws: string, message: string, link?: str
   return `Posted to your Facebook Page. Post id: ${json.id}`;
 }
 
+// Recent Facebook Page recommendations / reviews for sentiment + reply drafting.
+export async function getFacebookReviews(ws: string): Promise<string> {
+  const page = await getPage(ws);
+  if (!page) return "Facebook isn't connected, or no Page is available on this account.";
+  const res = await fetch(`${GRAPH}/${page.pageId}/ratings?fields=reviewer{name},rating,review_text,recommendation_type,created_time&limit=15&access_token=${page.pageToken}`);
+  const j = await res.json();
+  if (!res.ok) return `Facebook reviews error: ${j?.error?.message ?? res.status}`;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const list = (j.data ?? []).map((r: any) => `  • ${r.recommendation_type ?? (r.rating ? `${r.rating}★` : "")} ${r.reviewer?.name ?? "Someone"}: ${(r.review_text ?? "(no text)").replace(/\s+/g, " ").slice(0, 240)}`).join("\n");
+  return list ? `Facebook recommendations:\n${list}` : "No Facebook recommendations found.";
+}
+
 // Instagram requires a PUBLIC image URL (e.g. one uploaded to WordPress media).
 export async function postToInstagram(ws: string, caption: string, imageUrl: string): Promise<string> {
   const page = await getPage(ws);
