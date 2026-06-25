@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runSearchConsoleReport, runSearchConsolePages, postToGoogleBusiness } from "@/lib/google-api";
 import { auditPageSeo } from "@/lib/seo-audit";
+import { keywordResearch, findCompetitors, rankedKeywords, backlinksSummary, serpCheck } from "@/lib/dataforseo";
 
 // Sam — AI Dental SEO / Local Search Manager. Real tools: Search Console rankings
 // (queries + pages), a live on-page SEO audit, and Google Business Profile posts.
@@ -54,6 +55,46 @@ const TOOLS = [
       parameters: { type: "object", properties: { summary: { type: "string" }, cta_url: { type: "string", description: "Optional 'Learn more' link." } }, required: ["summary"] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "keyword_research",
+      description: "Real keyword ideas with monthly search volume, competition and CPC for a seed term (e.g. 'dental implants').",
+      parameters: { type: "object", properties: { seed: { type: "string" }, location_code: { type: "number", description: "DataForSEO location code; default 2840 (US)." }, language: { type: "string", description: "e.g. 'en'" } }, required: ["seed"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_competitors",
+      description: "Find the clinic's top organic search competitors (other sites ranking for the same terms).",
+      parameters: { type: "object", properties: { domain: { type: "string", description: "Clinic domain, e.g. brightsmile.com" }, location_code: { type: "number" }, language: { type: "string" } }, required: ["domain"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ranked_keywords",
+      description: "List the keywords a domain (the clinic OR a competitor) already ranks for, with positions and volume.",
+      parameters: { type: "object", properties: { domain: { type: "string" }, location_code: { type: "number" }, language: { type: "string" } }, required: ["domain"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "backlinks_summary",
+      description: "Backlink profile of a domain — total backlinks, referring domains and domain rank.",
+      parameters: { type: "object", properties: { domain: { type: "string" } }, required: ["domain"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "serp_check",
+      description: "Live Google top-10 results for a keyword, so we can see who currently ranks.",
+      parameters: { type: "object", properties: { keyword: { type: "string" }, location_code: { type: "number" }, language: { type: "string" } }, required: ["keyword"] },
+    },
+  },
 ];
 
 export async function POST(req: NextRequest) {
@@ -66,8 +107,8 @@ export async function POST(req: NextRequest) {
     brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):\n${brand}` : "",
     "You are Sam, an AI Dental SEO / Local Search Manager for a dental clinic. You improve local search ('dentist near me', city + treatment keywords), the Google Business Profile, rankings and on-page SEO.",
     website ? `The clinic's website is ${website}.` : "",
-    "Use get_top_queries / get_top_pages to ground advice in real Search Console data. Use audit_page_seo to check a page and give concrete fixes (titles, meta, schema). Only call post_to_google_business when the user clearly asks to post; confirm the wording first.",
-    "Give specific, dental-relevant recommendations. Keep claims compliant (no guarantees, no medical advice).",
+    "Ground every recommendation in real data. Use get_top_queries / get_top_pages for the clinic's own Search Console; use keyword_research for volumes/competition, find_competitors + ranked_keywords for competitor gaps, backlinks_summary for authority, and serp_check to see who currently ranks. Use audit_page_seo for on-page fixes. Only call post_to_google_business when the user clearly asks to post; confirm the wording first.",
+    "Default DataForSEO location is 2840 (US); if the clinic is elsewhere, ask for the country or pass the right location code. Give specific, dental-relevant recommendations with the real numbers. Keep claims compliant (no guarantees, no medical advice).",
   ].filter(Boolean).join("\n\n");
 
   const msgs: any[] = [{ role: "system", content: system }, ...(messages ?? []).slice(-16)];
@@ -77,6 +118,11 @@ export async function POST(req: NextRequest) {
     if (name === "get_top_pages") return runSearchConsolePages(workspaceId, Number(args.days) || 28);
     if (name === "audit_page_seo") return auditPageSeo(String(args.url || website || ""));
     if (name === "post_to_google_business") return postToGoogleBusiness(workspaceId, String(args.summary || ""), args.cta_url ? String(args.cta_url) : undefined);
+    if (name === "keyword_research") return keywordResearch(String(args.seed || ""), Number(args.location_code) || 2840, String(args.language || "en"));
+    if (name === "find_competitors") return findCompetitors(String(args.domain || website || ""), Number(args.location_code) || 2840, String(args.language || "en"));
+    if (name === "ranked_keywords") return rankedKeywords(String(args.domain || website || ""), Number(args.location_code) || 2840, String(args.language || "en"));
+    if (name === "backlinks_summary") return backlinksSummary(String(args.domain || website || ""));
+    if (name === "serp_check") return serpCheck(String(args.keyword || ""), Number(args.location_code) || 2840, String(args.language || "en"));
     return "Unknown tool.";
   }
 

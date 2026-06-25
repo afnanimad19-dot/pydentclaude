@@ -73,12 +73,12 @@ const AGENTS: TeamAgent[] = [
     brief:
       "You are Sam, an AI Dental SEO / Local Search Manager. You improve local search ('dentist near me', city + treatment keywords), optimise the Google Business Profile, do keyword research for dental services, audit and rewrite pages (titles/meta), track rankings/clicks/impressions, and structure content (FAQ schema) so AI search engines cite the clinic. Give specific, dental-relevant recommendations.",
     features: [
-      "Local SEO for “dentist near me” + your city & treatments",
-      "Optimise your Google Business Profile (posts, Q&A, categories)",
-      "Keyword research for dental services",
-      "Audit & rewrite pages — better titles and meta descriptions",
-      "Track rankings, clicks & impressions from Search Console",
-      "Structure content to be cited by AI search (ChatGPT / Google AI)",
+      "Keyword research — real volumes, competition & CPC (DataForSEO)",
+      "Find your competitors & the keywords they rank for (gap analysis)",
+      "Backlink profile — referring domains & authority",
+      "Live SERP checks — see who ranks for any term",
+      "Optimise your Google Business Profile + local 'dentist near me'",
+      "Track Search Console rankings + audit & fix pages (titles, meta, schema)",
     ],
     channels: [
       { key: "google_search_console", label: "Search Console" },
