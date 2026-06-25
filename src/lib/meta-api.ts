@@ -44,6 +44,27 @@ export async function postToFacebookPage(ws: string, message: string, link?: str
   return `Posted to your Facebook Page. Post id: ${json.id}`;
 }
 
+// Meta (Facebook/Instagram) ad performance for the connected ad account.
+export async function getMetaAdsPerformance(ws: string): Promise<string> {
+  const token = await getMetaToken(ws);
+  if (!token) return "Meta isn't connected. Connect Meta Ads in Settings → Connections.";
+  try {
+    const acctRes = await fetch(`${GRAPH}/me/adaccounts?fields=name,account_id&access_token=${token}`);
+    const acctJson = await acctRes.json();
+    if (!acctRes.ok) return `Meta Ads error: ${acctJson?.error?.message ?? acctRes.status} (needs ads_read permission).`;
+    const acct = acctJson?.data?.[0];
+    if (!acct) return "No ad account found on this Meta connection.";
+    const insRes = await fetch(`${GRAPH}/${acct.id}/insights?fields=spend,impressions,clicks,ctr,cpc,reach&date_preset=last_30d&access_token=${token}`);
+    const insJson = await insRes.json();
+    if (!insRes.ok) return `Meta Ads insights error: ${insJson?.error?.message ?? insRes.status}`;
+    const d = insJson?.data?.[0];
+    if (!d) return `No ad activity in the last 30 days for ${acct.name}.`;
+    return `Meta Ads (${acct.name}, last 30 days): spend $${d.spend ?? 0}, ${d.impressions ?? 0} impressions, ${d.clicks ?? 0} clicks, CTR ${d.ctr ?? 0}%, CPC $${d.cpc ?? 0}, reach ${d.reach ?? 0}.`;
+  } catch (e) {
+    return `Meta Ads failed: ${e instanceof Error ? e.message : "error"}`;
+  }
+}
+
 // Recent Facebook Page recommendations / reviews for sentiment + reply drafting.
 export async function getFacebookReviews(ws: string): Promise<string> {
   const page = await getPage(ws);

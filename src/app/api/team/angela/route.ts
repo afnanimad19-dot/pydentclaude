@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRecallPatients, listTemplates, scheduleBroadcast } from "@/lib/angela-data";
 import { logActivity } from "@/lib/activity";
+import { sendEmail } from "@/lib/email-send";
 
 // Angela — AI Patient Email & WhatsApp Marketing. Writes recalls, newsletters,
 // win-backs and email/WhatsApp copy (in chat), and has real tools to find recall
@@ -56,6 +57,14 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "send_email",
+      description: "Send an email (e.g. a test, a recall, or a newsletter) to a recipient via the connected email provider.",
+      parameters: { type: "object", properties: { to: { type: "string" }, subject: { type: "string" }, html: { type: "string", description: "Email body as HTML." } }, required: ["to", "subject", "html"] },
+    },
+  },
 ];
 
 export async function POST(req: NextRequest) {
@@ -69,6 +78,7 @@ export async function POST(req: NextRequest) {
     "You are Angela, an AI Patient Email & WhatsApp Marketing manager for a dental clinic. You write recall reminders, newsletters, seasonal promos, win-back messages, post-treatment follow-ups, and WhatsApp broadcast copy. Always produce ready-to-use copy (subject line + body for email; short, template-friendly text for WhatsApp).",
     website ? `The clinic's website is ${website} — match its brand and tone.` : "",
     "Use find_recall_patients to see who's due before planning a recall. WhatsApp broadcasts can only use an APPROVED template — use list_whatsapp_templates to check, and only call schedule_whatsapp_broadcast when the user clearly approves the campaign + template.",
+    "You can send email via send_email (uses the clinic's connected email provider, Brevo). Only send when the user clearly approves the recipient + content; for bulk sends, suggest a test to one address first.",
     "Keep it compliant: no medical advice/guarantees, include an easy opt-out for email, and keep WhatsApp copy within template rules.",
   ].filter(Boolean).join("\n\n");
 
@@ -80,6 +90,11 @@ export async function POST(req: NextRequest) {
     if (name === "schedule_whatsapp_broadcast") {
       const res = await scheduleBroadcast(workspaceId, { name: String(args.name || "Campaign"), templateName: String(args.template_name || ""), folderName: args.folder_name ? String(args.folder_name) : undefined, scheduledFor: args.scheduled_for ? String(args.scheduled_for) : undefined });
       if (res.startsWith("Scheduled")) await logActivity(workspaceId, "angela", "Scheduled WhatsApp broadcast", String(args.name || "Campaign"));
+      return res;
+    }
+    if (name === "send_email") {
+      const res = await sendEmail({ to: String(args.to || ""), subject: String(args.subject || ""), html: String(args.html || ""), fromName: website ? new URL(website.startsWith("http") ? website : `https://${website}`).hostname : "Clinic" });
+      if (res.startsWith("Email sent")) await logActivity(workspaceId, "angela", "Sent email", String(args.subject || "").slice(0, 100));
       return res;
     }
     return "Unknown tool.";

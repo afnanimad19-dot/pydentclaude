@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { wpPublishPost, wpUploadMedia } from "@/lib/wp-publish";
 import { generateImage } from "@/lib/image-gen";
-import { runAnalyticsReport, runSearchConsoleReport } from "@/lib/google-api";
-import { postToFacebookPage, postToInstagram } from "@/lib/meta-api";
+import { runAnalyticsReport, runSearchConsoleReport, getGoogleAdsPerformance } from "@/lib/google-api";
+import { postToFacebookPage, postToInstagram, getMetaAdsPerformance } from "@/lib/meta-api";
 import { saveReport } from "@/lib/report-render";
 import { logActivity } from "@/lib/activity";
 
@@ -93,6 +93,22 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "get_meta_ads_performance",
+      description: "Pull Facebook/Instagram (Meta) ad performance for the last 30 days — spend, impressions, clicks, CTR, CPC.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_google_ads_performance",
+      description: "Pull Google Ads performance (spend, clicks) for the connected account.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_report",
       description: "Save a written report/document and return download links (Word .docx and a print-to-PDF page). Use for marketing reports, content plans, summaries.",
       parameters: { type: "object", properties: { title: { type: "string" }, content_markdown: { type: "string", description: "The full report in Markdown (#/## headings, - bullets, **bold**)." } }, required: ["title", "content_markdown"] },
@@ -145,8 +161,10 @@ export async function POST(req: NextRequest) {
       await logActivity(workspaceId, "helena", `Blog ${args.status === "publish" ? "published" : "drafted"} on WordPress`, String(args.title || ""), r.editLink ?? "");
       return `Saved as ${args.status === "publish" ? "published" : "draft"} on WordPress. Edit/preview: ${r.editLink}`;
     }
-    if (name === "get_analytics_report") return runAnalyticsReport(workspaceId, Number(args.days) || 28);
-    if (name === "get_search_console_report") return runSearchConsoleReport(workspaceId, Number(args.days) || 28);
+    if (name === "get_analytics_report") { await logActivity(workspaceId, "helena", "Pulled Google Analytics report"); return runAnalyticsReport(workspaceId, Number(args.days) || 28); }
+    if (name === "get_search_console_report") { await logActivity(workspaceId, "helena", "Pulled Search Console report"); return runSearchConsoleReport(workspaceId, Number(args.days) || 28); }
+    if (name === "get_meta_ads_performance") { await logActivity(workspaceId, "helena", "Pulled Meta Ads performance"); return getMetaAdsPerformance(workspaceId); }
+    if (name === "get_google_ads_performance") { await logActivity(workspaceId, "helena", "Pulled Google Ads performance"); return getGoogleAdsPerformance(workspaceId); }
     if (name === "post_to_facebook") {
       const res = await postToFacebookPage(workspaceId, String(args.message || ""), args.link ? String(args.link) : undefined);
       if (res.startsWith("Posted")) await logActivity(workspaceId, "helena", "Posted to Facebook", String(args.message || "").slice(0, 120));

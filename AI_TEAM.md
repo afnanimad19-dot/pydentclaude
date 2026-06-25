@@ -209,6 +209,30 @@ into a document and provide a link. That's a small feature we can add:
 So yes — a downloadable report/document is buildable; it's a "render + link" step on top of
 what the agents already write. (Not built yet — it's on the list.)
 
+## Autopilot (scheduling) — how to turn it on
+Each agent has an **Autopilot** card: schedule recurring work in plain English
+("every Monday, draft a blog", "daily, draft an Instagram post"). Tasks are saved in
+`scheduled_tasks` (migration 0032). To make them actually fire, point a scheduler at:
+```
+https://<your-site>/api/cron/run?key=<CRON_SECRET>
+```
+every ~15 minutes. Set `CRON_SECRET` in Netlify. Options for the scheduler:
+- **Netlify Scheduled Functions** (a tiny function that fetches the URL), or
+- **Supabase cron** (`select cron.schedule(... net.http_get('…/api/cron/run?key=…'))`), or
+- a free service like **cron-job.org**.
+The runner picks up due tasks, runs them through the agent (which uses its tools to
+generate + publish), logs an "Autopilot ran" activity, and reschedules.
+
+## Email sending (Angela) — provider options
+Angela can **send email** via **Brevo** (formerly Sendinblue) — set `BREVO_API_KEY` and
+`BREVO_FROM_EMAIL` (a verified sender) in Netlify. Brevo has a free tier and a simple API.
+Other platforms work the same way (swap `src/lib/email-send.ts`):
+- **Brevo** — easiest, free tier, good for clinics (recommended).
+- **Mailchimp / Klaviyo** — bigger marketing suites (lists, automations); more setup.
+- **SendFox** — cheap, simple newsletters.
+- **Resend** — developer-friendly transactional email.
+Without a key, Angela still writes the copy and says email sending isn't connected.
+
 ## What's already built on the agents (your question)
 - ✅ **Brand knowledge box** in each agent's left rail (editable) — and it's now actually
   injected into all four agents (a bug where the text was dropped is fixed).

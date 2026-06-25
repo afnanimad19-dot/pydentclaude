@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, FileText, Activity } from "lucide-react";
+import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, FileText, Activity, Clock, Play, Pause } from "lucide-react";
 import Link from "next/link";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
@@ -19,10 +19,15 @@ import {
   deleteTeamChat,
   fetchReports,
   fetchAgentActivity,
+  listScheduledTasks,
+  createScheduledTask,
+  setScheduledTaskStatus,
+  deleteScheduledTask,
   type BrandKnowledge,
   type TeamChat,
   type AgentReport,
   type AgentActivity,
+  type ScheduledTask,
 } from "@/lib/db";
 
 // Four DENTAL-specific pre-built marketing specialists (enrichlabs-style, tuned for
@@ -200,9 +205,12 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   const [activity, setActivity] = useState<AgentActivity[]>([]);
   const [docsOpen, setDocsOpen] = useState(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  const [schedOpen, setSchedOpen] = useState(false);
 
   function refreshChats() { listTeamChats(agent.key).then(setChats); }
   function refreshWork() { fetchReports(agent.key).then(setReports); fetchAgentActivity(agent.key).then(setActivity); }
+  function refreshTasks() { listScheduledTasks(agent.key).then(setTasks); }
 
   useEffect(() => {
     fetchConnections().then((c) => setConnected(new Set(c.map((x) => x.provider))));
@@ -211,6 +219,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     getWorkspaceId().then(setWs);
     refreshChats();
     refreshWork();
+    refreshTasks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.key]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -275,6 +284,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   return (
     <>
       {brandOpen && <BrandModal brand={brand} onClose={() => setBrandOpen(false)} onSaved={(b) => { setBrand(b); setBrandOpen(false); }} />}
+      {schedOpen && <ScheduleModal agentKey={agent.key} agentName={agent.name} onClose={() => setSchedOpen(false)} onSaved={() => { setSchedOpen(false); refreshTasks(); }} />}
       {docsOpen && (
         <div className="fixed inset-0 z-[60] flex">
           <div className="flex-1 bg-black/40" onClick={() => setDocsOpen(false)} />
@@ -398,6 +408,33 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
               </ul>
             )}
           </Card>
+
+          <Card className="p-5">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-400"><Clock className="h-3.5 w-3.5" /> Autopilot</p>
+              <button onClick={() => setSchedOpen(true)} className="flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"><Plus className="h-3 w-3" /> Schedule</button>
+            </div>
+            {tasks.length === 0 ? (
+              <p className="text-sm text-ink-400">Schedule recurring work — e.g. &ldquo;every Monday, draft a blog&rdquo; or &ldquo;daily, draft an Instagram post&rdquo;. {agent.name} runs it automatically.</p>
+            ) : (
+              <ul className="space-y-2">
+                {tasks.map((t) => (
+                  <li key={t.id} className="rounded-lg border border-ink-100 px-2.5 py-2 text-sm">
+                    <div className="flex items-start gap-2">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium text-ink-800">{t.title || t.instruction}</span>
+                        <span className="text-[11px] text-ink-400 capitalize">{t.cadence} · next {(t.nextRun ?? "").replace("T", " ").slice(0, 16)} · {t.status}</span>
+                      </span>
+                      <button onClick={() => { setScheduledTaskStatus(t.id, t.status === "active" ? "paused" : "active").then(refreshTasks); }} className="rounded p-1 text-ink-400 hover:text-brand-600" title={t.status === "active" ? "Pause" : "Resume"}>
+                        {t.status === "active" ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                      </button>
+                      <button onClick={() => deleteScheduledTask(t.id).then(refreshTasks)} className="rounded p-1 text-ink-300 hover:text-rose-500"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
         </div>
 
         {/* Right: chat */}
@@ -503,5 +540,50 @@ function linkify(text: string) {
     ) : (
       <span key={i}>{p}</span>
     )
+  );
+}
+
+function ScheduleModal({ agentKey, agentName, onClose, onSaved }: { agentKey: string; agentName: string; onClose: () => void; onSaved: () => void }) {
+  const [title, setTitle] = useState("");
+  const [instruction, setInstruction] = useState("");
+  const [cadence, setCadence] = useState("weekly");
+  const [firstRun, setFirstRun] = useState(() => {
+    const d = new Date(Date.now() + 86400000);
+    d.setMinutes(0, 0, 0);
+    return d.toISOString().slice(0, 16);
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!instruction.trim()) { toast("Describe what to do.", "info"); return; }
+    setSaving(true);
+    const res = await createScheduledTask({ agentKey, title: title.trim() || instruction.slice(0, 60), instruction: instruction.trim(), cadence, firstRun: new Date(firstRun).toISOString() });
+    setSaving(false);
+    if (!res.ok) { toast(res.message, "info"); return; }
+    toast("Autopilot task scheduled.", "success");
+    onSaved();
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Schedule ${agentName}`} subtitle="Recurring work — runs automatically.">
+      <div className="space-y-4">
+        <Field label="Name (optional)"><input className={inputCls} placeholder="Weekly blog" value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+        <Field label="What should it do? (plain English)">
+          <textarea rows={3} className={inputCls} placeholder="Write an SEO blog about a dental topic and draft it to WordPress with a featured image." value={instruction} onChange={(e) => setInstruction(e.target.value)} />
+        </Field>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="How often">
+            <select className={inputCls} value={cadence} onChange={(e) => setCadence(e.target.value)}>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </Field>
+          <Field label="First run"><input type="datetime-local" className={inputCls} value={firstRun} onChange={(e) => setFirstRun(e.target.value)} /></Field>
+        </div>
+        <p className="text-xs text-ink-400">Runs need the autopilot scheduler enabled (point a cron at /api/cron/run — see AI_TEAM.md). Until then, scheduled tasks are saved but won&apos;t fire.</p>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Scheduling…" : "Schedule"} onSubmit={submit} />
+    </Modal>
   );
 }

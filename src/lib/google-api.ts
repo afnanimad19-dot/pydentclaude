@@ -106,6 +106,16 @@ export async function runSearchConsolePages(ws: string, days = 28): Promise<stri
   }
 }
 
+// Google Ads performance. The Google Ads API needs a developer token (Google must
+// approve it) + a customer id, so this reports status until that's set up.
+export async function getGoogleAdsPerformance(ws: string): Promise<string> {
+  const token = await getValidGoogleToken(ws, "google_ads");
+  if (!token) return "Google Ads isn't connected. Connect it in Settings → Connections.";
+  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
+  if (!devToken) return "Google Ads is connected, but reporting needs a Google Ads API developer token (apply once in your Google Ads account → API Center) set as GOOGLE_ADS_DEVELOPER_TOKEN. Until then I can review and draft ad copy in chat.";
+  return "Google Ads reporting is configured but the customer-account query isn't wired for this account yet — tell me your Google Ads customer id to enable live spend/clicks reporting.";
+}
+
 // Find the first GBP account + location (shared by reviews / posts).
 async function getGbpLocation(token: string): Promise<{ account: string; location: string } | string> {
   const accRes = await fetch("https://mybusinessaccountmanagement.googleapis.com/v1/accounts", { headers: { Authorization: `Bearer ${token}` } });

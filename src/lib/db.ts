@@ -1390,6 +1390,46 @@ export async function setWaAssignee(conversationId: string, assignee: string | n
   }
 }
 
+// ----------------------------------------------------------- AI Team: autopilot (0032)
+
+export interface ScheduledTask {
+  id: string;
+  agentKey: string;
+  title: string;
+  instruction: string;
+  cadence: "daily" | "weekly" | "monthly";
+  nextRun: string;
+  status: "active" | "paused";
+  lastRun: string | null;
+  lastResult: string;
+}
+
+export async function listScheduledTasks(agentKey: string): Promise<ScheduledTask[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("scheduled_tasks").select("*").eq("workspace_id", ws).eq("agent_key", agentKey).order("created_at", { ascending: false });
+    return (data ?? []).map((r) => ({ id: r.id, agentKey: r.agent_key, title: r.title ?? "", instruction: r.instruction, cadence: r.cadence, nextRun: r.next_run, status: r.status, lastRun: r.last_run ?? null, lastResult: r.last_result ?? "" }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createScheduledTask(input: { agentKey: string; title: string; instruction: string; cadence: string; firstRun: string }): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { error } = await supabase.from("scheduled_tasks").insert({ workspace_id: ws, agent_key: input.agentKey, title: input.title, instruction: input.instruction, cadence: input.cadence, next_run: input.firstRun, status: "active" });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Autopilot task scheduled." };
+}
+
+export async function setScheduledTaskStatus(id: string, status: "active" | "paused"): Promise<void> {
+  try { await supabase.from("scheduled_tasks").update({ status }).eq("id", id); } catch { /* ignore */ }
+}
+
+export async function deleteScheduledTask(id: string): Promise<void> {
+  try { await supabase.from("scheduled_tasks").delete().eq("id", id); } catch { /* ignore */ }
+}
+
 // ----------------------------------------------------------- AI Team: reports + activity (0031)
 
 export interface AgentReport {
