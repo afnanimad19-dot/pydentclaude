@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Search, CheckCircle2, CircleAlert, X } from "lucide-react";
 import { Card } from "@/components/ui";
-import { Modal } from "@/components/modal";
+import { Modal, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { fetchConnections, disconnectConnection, setConnectionAccessMode, getWorkspaceId, type Connection } from "@/lib/db";
 
@@ -59,6 +59,7 @@ export function IntegrationsPanel() {
   const [query, setQuery] = useState("");
   const [setupFor, setSetupFor] = useState<Provider | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState<Provider | null>(null);
+  const [wpSelfOpen, setWpSelfOpen] = useState(false);
 
   const refresh = useCallback(() => {
     fetchConnections().then(setConnections);
@@ -96,6 +97,8 @@ export function IntegrationsPanel() {
 
   function connect(p: Provider) {
     if (!ws) { toast("Sign in first.", "info"); return; }
+    // Self-hosted WordPress uses a form (site URL + application password), not OAuth.
+    if (p.key === "wordpress_self") { setWpSelfOpen(true); return; }
     // Google products (incl. YouTube) use the Google OAuth flow.
     if (GOOGLE_KEYS.has(p.key)) {
       if (!googleReady) { toast("Add GOOGLE_OAUTH_CLIENT_ID / SECRET in Netlify to enable Google connections.", "info"); return; }
@@ -142,6 +145,9 @@ export function IntegrationsPanel() {
 
   return (
     <div className="space-y-6">
+      {wpSelfOpen && ws && (
+        <WordPressSelfModal ws={ws} onClose={() => setWpSelfOpen(false)} onConnected={() => { setWpSelfOpen(false); refresh(); }} />
+      )}
       {confirmDisconnect && (
         <Modal open onClose={() => setConfirmDisconnect(null)} title={`Disconnect ${confirmDisconnect.name}?`} subtitle="The clinic will need to reconnect to use it again." z="z-[60]">
           <p className="text-sm text-ink-600">This removes the stored access for <strong>{confirmDisconnect.name}</strong>. You can reconnect any time.</p>
@@ -288,5 +294,65 @@ function Grid({
         );
       })}
     </div>
+  );
+}
+
+function WordPressSelfModal({ ws, onClose, onConnected }: { ws: string; onClose: () => void; onConnected: () => void }) {
+  const [siteUrl, setSiteUrl] = useState("");
+  const [username, setUsername] = useState("");
+  const [appPassword, setAppPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!siteUrl.trim() || !username.trim() || !appPassword.trim()) {
+      toast("Fill in the site URL, username and application password.", "info");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/connections/wordpress-self", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId: ws, siteUrl, username, appPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Could not connect.");
+      toast("WordPress connected.", "success");
+      onConnected();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not connect to WordPress.", "info");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Connect WordPress (Self-Hosted)" subtitle="Use a WordPress Application Password — no plugin needed." z="z-[60]">
+      <div className="space-y-4">
+        <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-xs leading-relaxed text-ink-600">
+          In your WordPress admin: <strong>Users → Profile → Application Passwords</strong>, type a name
+          (e.g. &ldquo;Pydent&rdquo;) and click <strong>Add New Application Password</strong>. Copy the password it shows
+          and paste it below. (Needs WordPress 5.6+ over HTTPS.)
+        </div>
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-medium text-ink-700">Site URL</span>
+          <input className={inputCls} placeholder="https://yourclinic.com" value={siteUrl} onChange={(e) => setSiteUrl(e.target.value)} />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-medium text-ink-700">WordPress username</span>
+          <input className={inputCls} placeholder="admin" value={username} onChange={(e) => setUsername(e.target.value)} />
+        </label>
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-medium text-ink-700">Application password</span>
+          <input className={inputCls} placeholder="xxxx xxxx xxxx xxxx xxxx xxxx" value={appPassword} onChange={(e) => setAppPassword(e.target.value)} />
+        </label>
+      </div>
+      <div className="mt-5 flex gap-2">
+        <button onClick={onClose} className="flex-1 rounded-xl border border-ink-200 py-2.5 text-sm font-semibold text-ink-700 hover:bg-ink-50">Cancel</button>
+        <button onClick={submit} disabled={saving} className="flex-1 rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
+          {saving ? "Connecting…" : "Connect"}
+        </button>
+      </div>
+    </Modal>
   );
 }

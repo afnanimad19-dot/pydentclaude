@@ -57,8 +57,14 @@ These don't fit the standard popup and need a little custom work:
   PKCE flow. Env: `TWITTER_CLIENT_ID`, `TWITTER_CLIENT_SECRET`.
 - **Shopify** — asks for the clinic's **store domain** (`yourstore.myshopify.com`) first,
   then OAuth. Register a Shopify app; env: `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`.
-- **WordPress (Self-Hosted)** — no OAuth; the clinic pastes their **site URL + an
-  Application Password** (WP Admin → Users → Profile → Application Passwords).
+- **WordPress (Self-Hosted)** — ✅ DONE (no developer app, no env vars needed). In Pydent →
+  Settings → Connections → **WordPress (Self-Hosted) → Connect**, the clinic pastes:
+  1. **Site URL** (e.g. `https://yourclinic.com`),
+  2. **WordPress username**,
+  3. an **Application Password** created in WP Admin → **Users → Profile → Application
+     Passwords** (type a name like "Pydent" → Add New Application Password → copy it).
+  Pydent verifies it against the site's REST API and connects. (Requires WordPress 5.6+
+  served over HTTPS, with the REST API reachable.)
 - **TikTok Ads** — separate from TikTok posting (TikTok Marketing API); different app.
 - **Google Business Profile** — works via the Google flow, but its API needs special
   access approval from Google for write actions.
