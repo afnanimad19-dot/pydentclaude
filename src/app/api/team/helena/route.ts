@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { wpPublishPost, wpUploadMedia } from "@/lib/wp-publish";
 import { generateImage } from "@/lib/image-gen";
+import { runAnalyticsReport, runSearchConsoleReport } from "@/lib/google-api";
+import { postToFacebookPage, postToInstagram } from "@/lib/meta-api";
 
 // Helena — AI Dental Marketing Manager with real tools:
 //  • generate_featured_image → make an image + upload to WordPress
@@ -54,6 +56,38 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "get_analytics_report",
+      description: "Pull a Google Analytics (GA4) traffic summary for the clinic — sessions, users, pageviews and top pages.",
+      parameters: { type: "object", properties: { days: { type: "number", description: "Look-back window in days (default 28)." } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_search_console_report",
+      description: "Pull Google Search Console — the clinic's top search queries with clicks, impressions and average position.",
+      parameters: { type: "object", properties: { days: { type: "number", description: "Look-back window in days (default 28)." } } },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "post_to_facebook",
+      description: "Publish a text post to the clinic's connected Facebook Page.",
+      parameters: { type: "object", properties: { message: { type: "string" }, link: { type: "string", description: "Optional link to include." } }, required: ["message"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "post_to_instagram",
+      description: "Publish an image post to the clinic's connected Instagram. Generates the image from image_prompt and uses it as the post photo.",
+      parameters: { type: "object", properties: { caption: { type: "string" }, image_prompt: { type: "string", description: "Description of the photo to generate for the post." } }, required: ["caption", "image_prompt"] },
+    },
+  },
 ];
 
 export async function POST(req: NextRequest) {
@@ -67,7 +101,8 @@ export async function POST(req: NextRequest) {
     website ? `The clinic's website is ${website} — match its brand, services and tone.` : "",
     "When the user asks you to publish/create a blog: write the full article yourself, then call publish_blog_post with clean HTML. Default to status 'draft' unless they clearly say publish/go live.",
     "If they want a featured image (or it would help), call generate_featured_image FIRST, then pass its media id as featured_media_id to publish_blog_post.",
-    "Keep dental claims compliant: no guarantees, no medical advice, no diagnosis. After a tool runs, tell the user plainly what happened and share the WordPress link.",
+    "You can also: pull Google Analytics (get_analytics_report) and Search Console (get_search_console_report); post to Facebook (post_to_facebook) and Instagram (post_to_instagram, which generates the photo). Only post to a channel when the user clearly asks; for social posts, draft the caption and confirm before posting unless they say go ahead.",
+    "Keep dental claims compliant: no guarantees, no medical advice, no diagnosis. After a tool runs, tell the user plainly what happened and share the link/result.",
   ].filter(Boolean).join("\n\n");
 
   const msgs: any[] = [{ role: "system", content: system }, ...(messages ?? []).slice(-16)];
@@ -90,6 +125,17 @@ export async function POST(req: NextRequest) {
       });
       if (!r.ok) return `Could not publish: ${r.error}`;
       return `Saved as ${args.status === "publish" ? "published" : "draft"} on WordPress. Edit/preview: ${r.editLink}`;
+    }
+    if (name === "get_analytics_report") return runAnalyticsReport(workspaceId, Number(args.days) || 28);
+    if (name === "get_search_console_report") return runSearchConsoleReport(workspaceId, Number(args.days) || 28);
+    if (name === "post_to_facebook") return postToFacebookPage(workspaceId, String(args.message || ""), args.link ? String(args.link) : undefined);
+    if (name === "post_to_instagram") {
+      // Instagram needs a public image URL — generate the image and host it on WordPress media.
+      const img = await generateImage(String(args.image_prompt || ""));
+      if (!img.ok || !img.bytes) return `Couldn't make the image: ${img.error}`;
+      const up = await wpUploadMedia(workspaceId, img.bytes, "ig-post.png", img.mime ?? "image/png");
+      if (!up.ok || !up.url) return `Image upload failed (Instagram needs a public image): ${up.error}`;
+      return postToInstagram(workspaceId, String(args.caption || ""), up.url);
     }
     return "Unknown tool.";
   }
