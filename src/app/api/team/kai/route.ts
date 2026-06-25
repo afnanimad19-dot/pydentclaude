@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGoogleReviews, replyToGoogleReview } from "@/lib/google-api";
 import { getFacebookReviews } from "@/lib/meta-api";
+import { logActivity } from "@/lib/activity";
 
 // Kai — AI Reputation & Social Listening. Real tools: pull Google & Facebook
 // reviews, and post a reply to a Google review. Sentiment, flagging unhappy
@@ -68,7 +69,11 @@ export async function POST(req: NextRequest) {
   async function exec(name: string, args: any): Promise<string> {
     if (name === "get_google_reviews") return getGoogleReviews(workspaceId, Number(args.max) || 10);
     if (name === "get_facebook_reviews") return getFacebookReviews(workspaceId);
-    if (name === "reply_to_google_review") return replyToGoogleReview(workspaceId, String(args.review_id || ""), String(args.comment || ""));
+    if (name === "reply_to_google_review") {
+      const res = await replyToGoogleReview(workspaceId, String(args.review_id || ""), String(args.comment || ""));
+      if (res.startsWith("Reply posted")) await logActivity(workspaceId, "kai", "Replied to a Google review", String(args.comment || "").slice(0, 120));
+      return res;
+    }
     return "Unknown tool.";
   }
 

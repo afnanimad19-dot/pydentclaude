@@ -1390,6 +1390,45 @@ export async function setWaAssignee(conversationId: string, assignee: string | n
   }
 }
 
+// ----------------------------------------------------------- AI Team: reports + activity (0031)
+
+export interface AgentReport {
+  id: string;
+  agentKey: string;
+  title: string;
+  createdAt: string;
+}
+
+export async function fetchReports(agentKey?: string): Promise<AgentReport[]> {
+  try {
+    const ws = await getWorkspaceId();
+    let q = supabase.from("reports").select("id, agent_key, title, created_at").eq("workspace_id", ws);
+    if (agentKey) q = q.eq("agent_key", agentKey);
+    const { data } = await q.order("created_at", { ascending: false }).limit(50);
+    return (data ?? []).map((r) => ({ id: r.id, agentKey: r.agent_key ?? "", title: r.title ?? "Report", createdAt: r.created_at }));
+  } catch {
+    return [];
+  }
+}
+
+export interface AgentActivity {
+  id: string;
+  action: string;
+  detail: string;
+  link: string;
+  createdAt: string;
+}
+
+export async function fetchAgentActivity(agentKey: string): Promise<AgentActivity[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("agent_activity").select("*").eq("workspace_id", ws).eq("agent_key", agentKey).order("created_at", { ascending: false }).limit(40);
+    return (data ?? []).map((r) => ({ id: r.id, action: r.action, detail: r.detail ?? "", link: r.link ?? "", createdAt: r.created_at }));
+  } catch {
+    return [];
+  }
+}
+
 // ----------------------------------------------------------- AI Team: brand + chats (0030)
 
 export interface BrandKnowledge {

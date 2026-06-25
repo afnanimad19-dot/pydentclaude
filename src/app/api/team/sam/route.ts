@@ -3,6 +3,7 @@ import { runSearchConsoleReport, runSearchConsolePages, postToGoogleBusiness } f
 import { auditPageSeo } from "@/lib/seo-audit";
 import { keywordResearch, findCompetitors, rankedKeywords, backlinksSummary, serpCheck } from "@/lib/dataforseo";
 import { saveReport } from "@/lib/report-render";
+import { logActivity } from "@/lib/activity";
 
 // Sam — AI Dental SEO / Local Search Manager. Real tools: Search Console rankings
 // (queries + pages), a live on-page SEO audit, and Google Business Profile posts.
@@ -127,12 +128,17 @@ export async function POST(req: NextRequest) {
     if (name === "create_report") {
       const id = await saveReport(workspaceId, "sam", String(args.title || "SEO Report"), String(args.content_markdown || ""));
       if (!id) return "Could not save the report (server storage not configured).";
+      await logActivity(workspaceId, "sam", "Created report", String(args.title || "SEO Report"), `${origin}/api/team/report/${id}`);
       return `Report saved. Download: ${origin}/api/team/report/${id}?format=docx (Word) — or open/print to PDF: ${origin}/api/team/report/${id}`;
     }
     if (name === "get_top_queries") return runSearchConsoleReport(workspaceId, Number(args.days) || 28);
     if (name === "get_top_pages") return runSearchConsolePages(workspaceId, Number(args.days) || 28);
     if (name === "audit_page_seo") return auditPageSeo(String(args.url || website || ""));
-    if (name === "post_to_google_business") return postToGoogleBusiness(workspaceId, String(args.summary || ""), args.cta_url ? String(args.cta_url) : undefined);
+    if (name === "post_to_google_business") {
+      const res = await postToGoogleBusiness(workspaceId, String(args.summary || ""), args.cta_url ? String(args.cta_url) : undefined);
+      if (res.startsWith("Posted")) await logActivity(workspaceId, "sam", "Posted Google Business update", String(args.summary || "").slice(0, 120));
+      return res;
+    }
     if (name === "keyword_research") return keywordResearch(String(args.seed || ""), Number(args.location_code) || 2840, String(args.language || "en"));
     if (name === "find_competitors") return findCompetitors(String(args.domain || website || ""), Number(args.location_code) || 2840, String(args.language || "en"));
     if (name === "ranked_keywords") return rankedKeywords(String(args.domain || website || ""), Number(args.location_code) || 2840, String(args.language || "en"));

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRecallPatients, listTemplates, scheduleBroadcast } from "@/lib/angela-data";
+import { logActivity } from "@/lib/activity";
 
 // Angela — AI Patient Email & WhatsApp Marketing. Writes recalls, newsletters,
 // win-backs and email/WhatsApp copy (in chat), and has real tools to find recall
@@ -76,8 +77,11 @@ export async function POST(req: NextRequest) {
   async function exec(name: string, args: any): Promise<string> {
     if (name === "find_recall_patients") return getRecallPatients(workspaceId, Number(args.months) || 6);
     if (name === "list_whatsapp_templates") return listTemplates(workspaceId);
-    if (name === "schedule_whatsapp_broadcast")
-      return scheduleBroadcast(workspaceId, { name: String(args.name || "Campaign"), templateName: String(args.template_name || ""), folderName: args.folder_name ? String(args.folder_name) : undefined, scheduledFor: args.scheduled_for ? String(args.scheduled_for) : undefined });
+    if (name === "schedule_whatsapp_broadcast") {
+      const res = await scheduleBroadcast(workspaceId, { name: String(args.name || "Campaign"), templateName: String(args.template_name || ""), folderName: args.folder_name ? String(args.folder_name) : undefined, scheduledFor: args.scheduled_for ? String(args.scheduled_for) : undefined });
+      if (res.startsWith("Scheduled")) await logActivity(workspaceId, "angela", "Scheduled WhatsApp broadcast", String(args.name || "Campaign"));
+      return res;
+    }
     return "Unknown tool.";
   }
 

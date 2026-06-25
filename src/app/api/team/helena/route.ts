@@ -4,6 +4,7 @@ import { generateImage } from "@/lib/image-gen";
 import { runAnalyticsReport, runSearchConsoleReport } from "@/lib/google-api";
 import { postToFacebookPage, postToInstagram } from "@/lib/meta-api";
 import { saveReport } from "@/lib/report-render";
+import { logActivity } from "@/lib/activity";
 
 // Helena — AI Dental Marketing Manager with real tools:
 //  • generate_featured_image → make an image + upload to WordPress
@@ -122,6 +123,7 @@ export async function POST(req: NextRequest) {
     if (name === "create_report") {
       const id = await saveReport(workspaceId, "helena", String(args.title || "Report"), String(args.content_markdown || ""));
       if (!id) return "Could not save the report (server storage not configured).";
+      await logActivity(workspaceId, "helena", "Created report", String(args.title || "Report"), `${origin}/api/team/report/${id}`);
       return `Report saved. Download: ${origin}/api/team/report/${id}?format=docx (Word) — or open/print to PDF: ${origin}/api/team/report/${id}`;
     }
     if (name === "generate_featured_image") {
@@ -140,18 +142,25 @@ export async function POST(req: NextRequest) {
         excerpt: args.excerpt ? String(args.excerpt) : undefined,
       });
       if (!r.ok) return `Could not publish: ${r.error}`;
+      await logActivity(workspaceId, "helena", `Blog ${args.status === "publish" ? "published" : "drafted"} on WordPress`, String(args.title || ""), r.editLink ?? "");
       return `Saved as ${args.status === "publish" ? "published" : "draft"} on WordPress. Edit/preview: ${r.editLink}`;
     }
     if (name === "get_analytics_report") return runAnalyticsReport(workspaceId, Number(args.days) || 28);
     if (name === "get_search_console_report") return runSearchConsoleReport(workspaceId, Number(args.days) || 28);
-    if (name === "post_to_facebook") return postToFacebookPage(workspaceId, String(args.message || ""), args.link ? String(args.link) : undefined);
+    if (name === "post_to_facebook") {
+      const res = await postToFacebookPage(workspaceId, String(args.message || ""), args.link ? String(args.link) : undefined);
+      if (res.startsWith("Posted")) await logActivity(workspaceId, "helena", "Posted to Facebook", String(args.message || "").slice(0, 120));
+      return res;
+    }
     if (name === "post_to_instagram") {
       // Instagram needs a public image URL — generate the image and host it on WordPress media.
       const img = await generateImage(String(args.image_prompt || ""));
       if (!img.ok || !img.bytes) return `Couldn't make the image: ${img.error}`;
       const up = await wpUploadMedia(workspaceId, img.bytes, "ig-post.png", img.mime ?? "image/png");
       if (!up.ok || !up.url) return `Image upload failed (Instagram needs a public image): ${up.error}`;
-      return postToInstagram(workspaceId, String(args.caption || ""), up.url);
+      const res = await postToInstagram(workspaceId, String(args.caption || ""), up.url);
+      if (res.startsWith("Posted")) await logActivity(workspaceId, "helena", "Posted to Instagram", String(args.caption || "").slice(0, 120));
+      return res;
     }
     return "Unknown tool.";
   }

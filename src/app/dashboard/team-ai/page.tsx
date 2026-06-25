@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, BrainCircuit } from "lucide-react";
+import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, FileText, Activity } from "lucide-react";
 import Link from "next/link";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
@@ -17,8 +17,12 @@ import {
   fetchTeamChatMessages,
   appendTeamChatMessage,
   deleteTeamChat,
+  fetchReports,
+  fetchAgentActivity,
   type BrandKnowledge,
   type TeamChat,
+  type AgentReport,
+  type AgentActivity,
 } from "@/lib/db";
 
 // Four DENTAL-specific pre-built marketing specialists (enrichlabs-style, tuned for
@@ -131,23 +135,6 @@ const AGENTS: TeamAgent[] = [
       { key: "email", label: "Email", builtin: true },
     ],
   },
-  {
-    key: "remy",
-    name: "Remy",
-    role: "AI Knowledge & Memory Manager",
-    blurb: "Remembers your clinic's facts, promos, staff & decisions so the team stays accurate.",
-    gradient: "from-amber-100 to-orange-100",
-    icon: BrainCircuit,
-    brief:
-      "You are Remy, the clinic's AI Knowledge & Memory Manager. You keep a reliable long-term memory of the clinic's facts so the whole AI team stays accurate.",
-    features: [
-      "Remember facts you tell it — promos, staff, policies, services",
-      "Recall anything on request",
-      "Keep the AI team up to date with the latest clinic info",
-      "Never invents — only stores what you tell it",
-    ],
-    channels: [{ key: "memory", label: "Memory", builtin: true }],
-  },
 ];
 
 const UNLOCKED = new Set(AGENTS.map((a) => a.key)); // package gating comes with the admin panel
@@ -209,8 +196,13 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   const [chats, setChats] = useState<TeamChat[]>([]);
   const [chatId, setChatId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [reports, setReports] = useState<AgentReport[]>([]);
+  const [activity, setActivity] = useState<AgentActivity[]>([]);
+  const [docsOpen, setDocsOpen] = useState(false);
+  const [previewId, setPreviewId] = useState<string | null>(null);
 
   function refreshChats() { listTeamChats(agent.key).then(setChats); }
+  function refreshWork() { fetchReports(agent.key).then(setReports); fetchAgentActivity(agent.key).then(setActivity); }
 
   useEffect(() => {
     fetchConnections().then((c) => setConnected(new Set(c.map((x) => x.provider))));
@@ -218,6 +210,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     fetchBrandKnowledge().then(setBrand);
     getWorkspaceId().then(setWs);
     refreshChats();
+    refreshWork();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.key]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -250,7 +243,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     if (cid) appendTeamChatMessage(cid, "user", text);
 
     try {
-      const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam", kai: "/api/team/kai", angela: "/api/team/angela", remy: "/api/team/remy" };
+      const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam", kai: "/api/team/kai", angela: "/api/team/angela" };
       const toolRoute = TOOL_ROUTES[agent.key];
       const res = await fetch(toolRoute ?? "/api/chat", {
         method: "POST",
@@ -271,6 +264,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
       if (!res.ok) throw new Error(data.error ?? "AI request failed");
       setMessages((m) => [...m, { role: "assistant", content: data.reply }]);
       if (cid) appendTeamChatMessage(cid, "assistant", data.reply);
+      refreshWork(); // a tool may have created a report / activity
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -281,6 +275,40 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   return (
     <>
       {brandOpen && <BrandModal brand={brand} onClose={() => setBrandOpen(false)} onSaved={(b) => { setBrand(b); setBrandOpen(false); }} />}
+      {docsOpen && (
+        <div className="fixed inset-0 z-[60] flex">
+          <div className="flex-1 bg-black/40" onClick={() => setDocsOpen(false)} />
+          <div className="flex h-full w-full max-w-3xl flex-col bg-surface shadow-2xl">
+            <div className="flex items-center justify-between border-b border-ink-200 px-5 py-3">
+              <p className="flex items-center gap-2 font-semibold text-ink-900"><FileText className="h-4 w-4 text-brand-500" /> {agent.name}&apos;s documents</p>
+              <button onClick={() => setDocsOpen(false)} className="rounded-lg p-1.5 text-ink-400 hover:bg-ink-100">✕</button>
+            </div>
+            <div className="flex min-h-0 flex-1">
+              <div className="w-56 shrink-0 overflow-y-auto border-r border-ink-100 p-2">
+                {reports.map((r) => (
+                  <button key={r.id} onClick={() => setPreviewId(r.id)} className={`mb-1 block w-full rounded-lg px-2.5 py-2 text-left text-sm ${previewId === r.id ? "bg-brand-50 text-brand-700" : "hover:bg-ink-50 text-ink-700"}`}>
+                    <span className="block truncate">{r.title}</span>
+                    <span className="text-[11px] text-ink-400">{(r.createdAt ?? "").slice(0, 10)}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col">
+                {previewId ? (
+                  <>
+                    <div className="flex items-center gap-2 border-b border-ink-100 px-4 py-2">
+                      <a href={`/api/team/report/${previewId}?format=docx`} className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">Download Word</a>
+                      <a href={`/api/team/report/${previewId}`} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-50">Open / Save as PDF</a>
+                    </div>
+                    <iframe src={`/api/team/report/${previewId}`} className="min-h-0 flex-1 w-full" title="Report preview" />
+                  </>
+                ) : (
+                  <p className="m-auto text-sm text-ink-400">Select a document to preview.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <button onClick={onBack} className="mb-4 flex items-center gap-1.5 text-sm font-medium text-ink-500 hover:text-ink-800">
         <ArrowLeft className="h-4 w-4" /> Back to AI Team
       </button>
@@ -333,6 +361,42 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
               <p className="text-sm text-ink-400">Tell {agent.name} about your clinic — name, services, tone, key facts — so every reply sounds like you.</p>
             )}
             {website && <p className="mt-2 truncate text-xs text-ink-400">Website: {website}</p>}
+          </Card>
+
+          <Card className="p-5">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-400"><FileText className="h-3.5 w-3.5" /> Documents</p>
+              {reports.length > 0 && <button onClick={() => { setPreviewId(reports[0].id); setDocsOpen(true); }} className="text-xs font-medium text-brand-600 hover:text-brand-700">View all ({reports.length})</button>}
+            </div>
+            {reports.length === 0 ? (
+              <p className="text-sm text-ink-400">Reports {agent.name} creates show up here. Ask for a report to download as Word or PDF.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {reports.slice(0, 3).map((r) => (
+                  <button key={r.id} onClick={() => { setPreviewId(r.id); setDocsOpen(true); }} className="flex w-full items-center gap-2 rounded-lg border border-ink-100 px-2.5 py-2 text-left text-sm hover:bg-ink-50">
+                    <FileText className="h-4 w-4 shrink-0 text-brand-500" />
+                    <span className="min-w-0 flex-1"><span className="block truncate text-ink-800">{r.title}</span><span className="text-[11px] text-ink-400">{(r.createdAt ?? "").slice(0, 10)}</span></span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card className="p-5">
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-400"><Activity className="h-3.5 w-3.5" /> Activity</p>
+            {activity.length === 0 ? (
+              <p className="text-sm text-ink-400">What {agent.name} does — published posts, reports, etc. — appears here.</p>
+            ) : (
+              <ul className="space-y-2">
+                {activity.slice(0, 6).map((a) => (
+                  <li key={a.id} className="text-sm">
+                    <span className="font-medium text-ink-800">{a.action}</span>
+                    {a.detail && <span className="text-ink-500"> — {a.detail}</span>}
+                    <span className="block text-[11px] text-ink-400">{(a.createdAt ?? "").replace("T", " ").slice(0, 16)}{a.link && <> · <a href={a.link} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline">open</a></>}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Card>
         </div>
 
