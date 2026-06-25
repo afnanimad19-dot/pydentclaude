@@ -52,6 +52,7 @@ const nav: NavItem[] = [
       { href: "/dashboard/agents/voice", label: "Voice agents" },
       { href: "/dashboard/agents/hub", label: "Agent Hub" },
       { href: "/dashboard/agents/learning", label: "Learning Agent" },
+      { href: "/dashboard/marketing", label: "Marketing AI team" },
       { href: "/dashboard/voice", label: "Call log" },
     ],
   },
