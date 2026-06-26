@@ -5,6 +5,7 @@ import { runAnalyticsReport, runSearchConsoleReport, getGoogleAdsPerformance } f
 import { postToFacebookPage, postToInstagram, getMetaAdsPerformance } from "@/lib/meta-api";
 import { saveReport } from "@/lib/report-render";
 import { logActivity } from "@/lib/activity";
+import { firecrawlScrape } from "@/lib/firecrawl";
 
 // Helena — AI Dental Marketing Manager with real tools:
 //  • generate_featured_image → make an image + upload to WordPress
@@ -109,6 +110,14 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "research_url",
+      description: "Read a web page (the clinic's, a competitor's, or a reference) to research content ideas.",
+      parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_report",
       description: "Save a written report/document and return download links (Word .docx and a print-to-PDF page). Use for marketing reports, content plans, summaries.",
       parameters: { type: "object", properties: { title: { type: "string" }, content_markdown: { type: "string", description: "The full report in Markdown (#/## headings, - bullets, **bold**)." } }, required: ["title", "content_markdown"] },
@@ -165,6 +174,7 @@ export async function POST(req: NextRequest) {
     if (name === "get_search_console_report") { await logActivity(workspaceId, "helena", "Pulled Search Console report"); return runSearchConsoleReport(workspaceId, Number(args.days) || 28); }
     if (name === "get_meta_ads_performance") { await logActivity(workspaceId, "helena", "Pulled Meta Ads performance"); return getMetaAdsPerformance(workspaceId); }
     if (name === "get_google_ads_performance") { await logActivity(workspaceId, "helena", "Pulled Google Ads performance"); return getGoogleAdsPerformance(workspaceId); }
+    if (name === "research_url") return firecrawlScrape(String(args.url || ""));
     if (name === "post_to_facebook") {
       const res = await postToFacebookPage(workspaceId, String(args.message || ""), args.link ? String(args.link) : undefined);
       if (res.startsWith("Posted")) await logActivity(workspaceId, "helena", "Posted to Facebook", String(args.message || "").slice(0, 120));

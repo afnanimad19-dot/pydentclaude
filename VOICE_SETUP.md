@@ -73,10 +73,13 @@ simple). Click Connect for the steps:
 - **crawl4ai** — open-source crawler (self-host). Same idea, free, but you host it. More
   setup/ops; good if you want zero per-crawl cost at scale.
 
-**Recommendation:** for "best agents", add **Firecrawl** as an optional tool — it upgrades
-(a) the website-import (crawl the *whole* site into knowledge) and (b) Sam/Kai competitor
-research (read competitor pages). Start with Firecrawl's API; consider self-hosting crawl4ai
-later if crawl volume gets expensive. (Not wired yet — say the word and I'll add it.)
+**Firecrawl is now wired ✅.** Add `FIRECRAWL_API_KEY` (from firecrawl.dev) in Netlify and:
+- The agent **"Import from your website"** crawls the **whole site** (up to ~20 pages) into
+  knowledge instead of one page.
+- **Sam** has a `crawl_url` tool (read a competitor page, or `whole_site` to crawl it) for SEO/
+  competitor analysis; **Helena** has `research_url` for content research.
+Without the key, both fall back to a basic single-page fetch. (crawl4ai can be self-hosted
+later to avoid per-crawl cost.)
 
 ## 6. Open Dental
 

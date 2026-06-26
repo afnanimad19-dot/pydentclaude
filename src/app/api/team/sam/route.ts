@@ -4,6 +4,7 @@ import { auditPageSeo } from "@/lib/seo-audit";
 import { keywordResearch, findCompetitors, rankedKeywords, backlinksSummary, serpCheck } from "@/lib/dataforseo";
 import { saveReport } from "@/lib/report-render";
 import { logActivity } from "@/lib/activity";
+import { firecrawlScrape, firecrawlCrawl } from "@/lib/firecrawl";
 
 // Sam — AI Dental SEO / Local Search Manager. Real tools: Search Console rankings
 // (queries + pages), a live on-page SEO audit, and Google Business Profile posts.
@@ -100,6 +101,14 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "crawl_url",
+      description: "Read a web page (or a competitor's page) and return its content for SEO/competitor analysis. Set whole_site=true to crawl the whole site.",
+      parameters: { type: "object", properties: { url: { type: "string" }, whole_site: { type: "boolean" } }, required: ["url"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_report",
       description: "Save an SEO report/document and return download links (Word .docx and a print-to-PDF page).",
       parameters: { type: "object", properties: { title: { type: "string" }, content_markdown: { type: "string", description: "Full report in Markdown (#/## headings, - bullets, **bold**)." } }, required: ["title", "content_markdown"] },
@@ -144,6 +153,7 @@ export async function POST(req: NextRequest) {
     if (name === "ranked_keywords") return rankedKeywords(String(args.domain || website || ""), Number(args.location_code) || 2840, String(args.language || "en"));
     if (name === "backlinks_summary") return backlinksSummary(String(args.domain || website || ""));
     if (name === "serp_check") return serpCheck(String(args.keyword || ""), Number(args.location_code) || 2840, String(args.language || "en"));
+    if (name === "crawl_url") return args.whole_site ? firecrawlCrawl(String(args.url || "")) : firecrawlScrape(String(args.url || ""));
     return "Unknown tool.";
   }
 

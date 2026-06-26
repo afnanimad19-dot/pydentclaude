@@ -1390,6 +1390,55 @@ export async function setWaAssignee(conversationId: string, assignee: string | n
   }
 }
 
+// ----------------------------------------------------------- voice numbers / SIP (0034)
+
+export interface SipCategory {
+  ipOrDomain: string;
+  port: string;
+  protocol: "UDP" | "TCP" | "TLS";
+  direction: "inbound" | "outbound";
+  active: boolean;
+  ping: boolean;
+}
+
+export interface VoiceNumber {
+  id: string;
+  number: string;
+  nickname: string;
+  agentId: string | null;
+  direction: "inbound" | "outbound" | "both";
+  provider: "vapi" | "twilio" | "sip";
+  concurrency: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config: Record<string, any>;
+  createdAt: string;
+}
+
+export async function fetchVoiceNumbers(): Promise<VoiceNumber[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("voice_numbers").select("*").eq("workspace_id", ws).order("created_at", { ascending: false });
+    return (data ?? []).map((r) => ({ id: r.id, number: r.number, nickname: r.nickname ?? "", agentId: r.agent_id ?? null, direction: r.direction ?? "inbound", provider: r.provider ?? "sip", concurrency: r.concurrency ?? 1, config: r.config ?? {}, createdAt: r.created_at }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createVoiceNumber(input: Omit<VoiceNumber, "id" | "createdAt">): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { error } = await supabase.from("voice_numbers").insert({
+    workspace_id: ws, number: input.number, nickname: input.nickname, agent_id: input.agentId, direction: input.direction,
+    provider: input.provider, concurrency: input.concurrency, config: input.config,
+  });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Phone number added." };
+}
+
+export async function deleteVoiceNumber(id: string): Promise<void> {
+  try { await supabase.from("voice_numbers").delete().eq("id", id); } catch { /* ignore */ }
+}
+
 // ----------------------------------------------------------- AI Team: autopilot (0032)
 
 export interface ScheduledTask {

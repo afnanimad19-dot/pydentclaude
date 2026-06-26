@@ -39,6 +39,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "That doesn't look like a valid URL." }, { status: 400 });
   }
 
+  // When Firecrawl is configured, import the WHOLE site (much richer knowledge).
+  if (process.env.FIRECRAWL_API_KEY) {
+    const { firecrawlCrawl } = await import("@/lib/firecrawl");
+    const text = await firecrawlCrawl(target, 20);
+    if (text && !/^Couldn't|^Crawl of/.test(text)) {
+      return NextResponse.json({ ok: true, title: target, text: text.slice(0, 200_000) });
+    }
+    // else fall through to single-page fetch
+  }
+
   try {
     const res = await fetch(target, {
       headers: { "User-Agent": "PydentBot/1.0 (+knowledge-import)" },
