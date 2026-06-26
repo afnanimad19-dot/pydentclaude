@@ -17,6 +17,7 @@ interface Provider {
   badge: string; // short label shown in the logo chip
   color: string; // chip background
   oauth?: "google";
+  apiKey?: boolean; // connects with a pasted API key (Brevo, Mailchimp)
 }
 
 const PROVIDERS: Provider[] = [
@@ -45,6 +46,8 @@ const PROVIDERS: Provider[] = [
   { key: "tiktok_ads", name: "TikTok Ads", detail: "TikTok ad campaign data.", group: "data", badge: "♪", color: "bg-black text-white" },
   { key: "stripe", name: "Stripe", detail: "Payments & subscriptions.", group: "data", badge: "S", color: "bg-[#635bff] text-white" },
   { key: "notion", name: "Notion", detail: "Sync notes & docs.", group: "data", badge: "N", color: "bg-black text-white" },
+  { key: "brevo", name: "Brevo", detail: "Send patient emails & newsletters (recommended).", group: "data", badge: "B", color: "bg-[#0b996e] text-white", apiKey: true },
+  { key: "mailchimp", name: "Mailchimp", detail: "Email campaigns & audiences.", group: "data", badge: "M", color: "bg-[#ffe01b] text-ink-900", apiKey: true },
 ];
 
 // Catalog keys that are Google products (use the Google OAuth flow).
@@ -158,19 +161,27 @@ export function IntegrationsPanel() {
         </Modal>
       )}
       {setupFor && (
-        <Modal open onClose={() => setSetupFor(null)} title={`Connect ${setupFor.name}`} subtitle="One-time app setup needed">
-          <div className="space-y-3 text-sm text-ink-600">
-            <p>
-              <strong>{setupFor.name}</strong> connects the same way as Google — a one-click popup — once its developer app is
-              registered. To enable it:
-            </p>
-            <ol className="ml-4 list-decimal space-y-1.5 text-ink-600">
-              <li>Create an app in the {setupFor.name} developer portal and get its Client ID / Secret (or API key).</li>
-              <li>Add those as environment variables in Netlify.</li>
-              <li>Add the redirect URI <code className="rounded bg-ink-100 px-1">{typeof window !== "undefined" ? window.location.origin : ""}/api/{setupFor.key}/oauth/callback</code>.</li>
-            </ol>
-            <p className="text-xs text-ink-400">Google integrations are live now; tell me which of these to wire next and I&apos;ll add the OAuth flow.</p>
-          </div>
+        <Modal open onClose={() => setSetupFor(null)} title={`Connect ${setupFor.name}`} subtitle="One-time setup">
+          {setupFor.apiKey ? (
+            <div className="space-y-3 text-sm text-ink-600">
+              <p><strong>{setupFor.name}</strong> connects with an API key.</p>
+              <ol className="ml-4 list-decimal space-y-1.5">
+                <li>In {setupFor.name}, create an API key (Brevo: Settings → SMTP &amp; API → API Keys; Mailchimp: Account → Extras → API keys).</li>
+                <li>Add it in Netlify as <code className="rounded bg-ink-100 px-1">{setupFor.key.toUpperCase()}_API_KEY</code>{setupFor.key === "brevo" && <> plus <code className="rounded bg-ink-100 px-1">BREVO_FROM_EMAIL</code> (a verified sender)</>}.</li>
+                <li>Redeploy. Angela can then send email through it.</li>
+              </ol>
+              <p className="text-xs text-ink-400">Brevo email send is wired today; Mailchimp campaign send is next.</p>
+            </div>
+          ) : (
+            <div className="space-y-3 text-sm text-ink-600">
+              <p><strong>{setupFor.name}</strong> connects the same way as Google — a one-click popup — once its developer app is registered. To enable it:</p>
+              <ol className="ml-4 list-decimal space-y-1.5 text-ink-600">
+                <li>Create an app in the {setupFor.name} developer portal and get its Client ID / Secret.</li>
+                <li>Add those as environment variables in Netlify.</li>
+                <li>Add the redirect URI <code className="rounded bg-ink-100 px-1">{typeof window !== "undefined" ? window.location.origin : ""}/api/{setupFor.key}/oauth/callback</code>.</li>
+              </ol>
+            </div>
+          )}
           <button onClick={() => setSetupFor(null)} className="mt-5 w-full rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">Got it</button>
         </Modal>
       )}
