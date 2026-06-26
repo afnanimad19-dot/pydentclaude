@@ -61,6 +61,7 @@ const nav: NavItem[] = [
     children: [
       { href: "/dashboard/agents/voice", label: "All voice agents" },
       { href: "/dashboard/agents/phone-numbers", label: "Phone Numbers" },
+      { href: "/dashboard/agents/contacts", label: "Contacts" },
       { href: "/dashboard/voice", label: "Call Logs" },
     ],
   },

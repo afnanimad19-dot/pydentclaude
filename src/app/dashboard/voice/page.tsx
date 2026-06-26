@@ -33,6 +33,16 @@ export default function VoicePage() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  const [statusFilter, setStatusFilter] = useState("");
+  const shownCalls = calls.filter((c) => !statusFilter || (statusFilter === "live" ? c.status === "in-progress" : (c.outcome || c.status) === statusFilter));
+  function exportCalls() {
+    const esc = (v: string | number) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows: (string | number)[][] = [["When", "From", "Direction", "Duration (s)", "Status", "Agent", "Outcome"]];
+    shownCalls.forEach((c) => rows.push([c.startedAt ?? "", c.callerPhone, c.direction, c.durationSec, c.status, c.agentName, c.outcome]));
+    const url = URL.createObjectURL(new Blob([rows.map((r) => r.map(esc).join(",")).join("\r\n")], { type: "text/csv" }));
+    const a = document.createElement("a"); a.href = url; a.download = `call-logs-${today}.csv`; a.click(); URL.revokeObjectURL(url);
+  }
+
   const active = calls.find((c) => c.id === activeId);
   const today = new Date().toISOString().slice(0, 10);
   const callsToday = calls.filter((c) => (c.startedAt ?? "").slice(0, 10) === today).length;
@@ -80,15 +90,26 @@ export default function VoicePage() {
 
       <div className="mt-6 grid gap-4 xl:grid-cols-5">
         <Card className="overflow-hidden xl:col-span-3">
-          <div className="border-b border-ink-200 px-5 py-4">
-            <h2 className="font-semibold text-ink-900">Call log</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-200 px-5 py-3.5">
+            <h2 className="font-semibold text-ink-900">Call Logs</h2>
+            <div className="flex items-center gap-2">
+              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs text-ink-700 outline-none">
+                <option value="">All statuses</option>
+                <option value="live">In progress</option>
+                <option value="Success">Booked / resolved</option>
+                <option value="Ended">Ended</option>
+                <option value="No answer">No answer</option>
+                <option value="Failed">Failed</option>
+              </select>
+              {calls.length > 0 && <button onClick={exportCalls} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"><FileText className="h-3.5 w-3.5" /> Export CSV</button>}
+            </div>
           </div>
-          {calls.length === 0 ? (
+          {shownCalls.length === 0 ? (
             <p className="px-5 py-10 text-center text-sm text-ink-400">
               No calls yet. Connect a Vapi assistant + phone number and point its Server URL at <code>/api/vapi/events</code> — calls appear here automatically (see VOICE_AGENT_VAPI.md).
             </p>
           ) : (
-            calls.map((c) => (
+            shownCalls.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setActiveId(c.id)}
