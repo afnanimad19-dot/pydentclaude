@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Users, Plus, Search, Download, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Users, Plus, Search, Download, Upload, RefreshCw } from "lucide-react";
 import { Card, PageHeader, StatusBadge, Avatar } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -24,9 +24,58 @@ export default function ContactsPage() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [open, setOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   function refresh() { fetchPatients().then((r) => setContacts(r.patients)); }
   useEffect(() => { refresh(); }, []);
+
+  // Parse a CSV row respecting simple quotes.
+  function parseRow(line: string): string[] {
+    const out: string[] = []; let cur = ""; let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (q) { if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+      else if (c === '"') q = true;
+      else if (c === ",") { out.push(cur); cur = ""; }
+      else cur += c;
+    }
+    out.push(cur);
+    return out.map((s) => s.trim());
+  }
+
+  async function onImport(file: File | null) {
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter((l) => l.trim());
+      if (!lines.length) { toast("That file looks empty.", "info"); return; }
+      // Detect header → column indexes.
+      const header = parseRow(lines[0]).map((h) => h.toLowerCase());
+      const looksHeader = header.some((h) => /name|phone|email|mobile/.test(h));
+      const idx = (names: string[]) => header.findIndex((h) => names.some((n) => h.includes(n)));
+      const ni = idx(["name"]), fi = idx(["first"]), li = idx(["last"]), pi = idx(["phone", "mobile", "number"]), ei = idx(["email", "mail"]);
+      const rows = looksHeader ? lines.slice(1) : lines;
+      let added = 0;
+      for (const line of rows) {
+        const c = parseRow(line);
+        const name = (ni >= 0 ? c[ni] : `${fi >= 0 ? c[fi] : ""} ${li >= 0 ? c[li] : ""}`.trim()) || c[0] || "";
+        const phone = pi >= 0 ? c[pi] : "";
+        const email = ei >= 0 ? c[ei] : "";
+        if (!name && !phone && !email) continue;
+        const res = await createPatient({ name: name || phone || email, phone, email, birthdate: "", insurance: "", status: "New" });
+        if (res.ok) added++;
+      }
+      toast(`Imported ${added} contact${added === 1 ? "" : "s"}.`, "success");
+      refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Import failed.", "info");
+    } finally {
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -51,6 +100,8 @@ export default function ContactsPage() {
         subtitle="Everyone who contacted the clinic — callers, leads and patients in one place."
         actions={
           <div className="flex items-center gap-2">
+            <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => onImport(e.target.files?.[0] ?? null)} />
+            <button onClick={() => fileRef.current?.click()} disabled={importing} className="flex items-center gap-2 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50 disabled:opacity-50"><Upload className="h-4 w-4" /> {importing ? "Importing…" : "Import CSV"}</button>
             <button onClick={exportCsv} className="flex items-center gap-2 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50"><Download className="h-4 w-4" /> Export CSV</button>
             <button onClick={() => setOpen(true)} className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"><Plus className="h-4 w-4" /> Add contact</button>
           </div>
