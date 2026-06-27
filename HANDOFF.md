@@ -10,6 +10,143 @@ appointments**, a CRM (patients, pipeline, calendar, broadcasts, reports), and a
 **privacy-safe Open Dental** integration (clinical data stays on the clinic's local
 server). Built with Claude (Opus 4.8). Sold per clinic.
 
+> Brand is now **Pydent** (renamed from "Pydental" across the UI). See also
+> **STATUS.md**, **SOFTWARE_STACK_AND_COSTS.md**, **AI_TEAM.md**, **VOICE_SETUP.md**,
+> **CONNECTIONS_SETUP.md**, **OPEN_DENTAL.md**, **RUN_PENDING_MIGRATIONS.sql**.
+
+---
+
+## ⭐ CURRENT BUILD STATUS (read this first — updated end of this session)
+
+Legend: ✅ built & working · 🟡 built, needs an API key / approval to go live · ❌ not built.
+
+### Sidebar structure (recently reorganised)
+Overview · Omnichannel Inbox · **AI Team** (Helena/Sam/Kai/Angela) · **Chat Agents**
+(All chat agents / Agent Hub / AI Learning) · **Voice Agents** (All voice agents /
+Phone Numbers / Contacts / Call Logs) · WhatsApp · Instagram · Pipeline · Calendar ·
+Patients · Workflows · Reports · Settings.
+
+### Messaging
+- **WhatsApp** ✅ inbound+outbound, webhook (`/api/whatsapp/webhook`), templates,
+  broadcasts, 24h-window handling, AI auto-reply with booking tools, returning-contact
+  welcome, voice notes. 🟡 needs the clinic's Meta number + tokens + `META_APP_SECRET`.
+- **Instagram / Messenger** 🟡 same webhook handles them; needs the Meta app **Live**
+  + permissions approved (App Review). Inbound DMs flow into the inbox.
+- **SMS** ❌ tab exists but no provider wired. Needs **Twilio** (number + `TWILIO_*`).
+- **Voice-note delivery to WhatsApp** ❌ plays in-app today; true Meta media upload not wired.
+
+### Email
+- Inbox **email tab** ✅ (UI). Sending: **Angela can send via Brevo** 🟡 (`BREVO_API_KEY`
+  + `BREVO_FROM_EMAIL`). Connection **cards for Brevo + Mailchimp** ✅ in Integrations.
+  ❌ Mailchimp campaign send, ❌ Gmail/clinic-domain inbound sync.
+
+### AI Chat Agents ✅
+- Create/edit (instructions + behavior/"what NOT to do" + **unlimited KB uploads**, PDF/
+  Word text extracted, website import), book/reschedule/cancel tools, **Learning Agent**
+  (captures unanswered questions → teach). Agent Hub = chat channel routing (chat-only).
+- 🟡 replies need `OPENROUTER_API_KEY`; booking needs the agent's "Book appointments" ability ON.
+
+### Voice Agents 🟡 (IMPORTANT — see gap)
+- Voice agent editor (voice picker = **ElevenLabs library + cloning + preview**), test call
+  (Vapi), behavior applied on calls, **Phone Numbers** page (Add: existing / Twilio / full
+  **SIP-trunk** form), **Contacts**, **Call Logs** (list + recording/transcript/summary
+  detail + status filter + CSV export). 🟡 needs `VAPI_API_KEY` + `ELEVENLABS_API_KEY` + a number.
+- ❌ **GAP (asked, not built): the Vapi-/Callab-style ADVANCED voice settings** in the agent
+  editor — Voice Activity Detection (min speech/silence, activation threshold, prefix
+  padding, end-of-speech timeout), turn detection, noise reduction, answering-machine
+  detection, reminder/call-duration limits, privacy toggles, post-call data extraction.
+  The current voice editor is basic (voice, language, first message, instructions, behavior).
+- ❌ **Voice-call booking tool** (book into the calendar from a live phone call) — chat books;
+  the live-call booking tool isn't wired yet.
+- ❌ Call Logs as a full **dedicated detail page** + "To"/campaign columns (currently a side
+  panel; needs extra Vapi webhook fields). SIP form stores config; live SIP handshake is done in Vapi.
+
+### AI Team — Helena, Sam, Kai, Angela ✅ (some tools need keys)
+Each agent: brand knowledge (+ **unlimited uploaded brand docs**), **chat history/sessions**,
+channels panel (green when connected), **Documents** (downloadable reports DOCX/PDF),
+**Activity feed**, **Autopilot** scheduler. Model switchable to Claude via `TEAM_AI_MODEL`.
+- **Helena:** blogs→WordPress ✅, image gen 🟡(`OPENAI_API_KEY`), GA4 + Search Console ✅,
+  Facebook/Instagram post 🟡(Meta approval), Meta Ads data ✅, Google Ads 🟡(dev token),
+  reports ✅, `research_url` (Firecrawl) 🟡.
+- **Sam:** keyword research (free Google Autocomplete ✅ / full **DataForSEO** 🟡), competitors,
+  backlinks, SERP 🟡(`DATAFORSEO_API_KEY`), page audit ✅, Search Console ✅, GBP post 🟡,
+  `crawl_url` (Firecrawl) 🟡, reports ✅.
+- **Kai:** Google reviews 🟡(GBP API approval) + Facebook reviews ✅, sentiment + reply ✅.
+  ❌ broad mentions/competitor listening (needs paid social-listening data).
+- **Angela:** recall list ✅, copy ✅, WhatsApp broadcast ✅, **email send** 🟡(Brevo).
+- **Autopilot:** UI + `/api/cron/run` ✅ — 🟡 needs a cron pointed at it (`CRON_SECRET`).
+- ❌ packages/entitlements (lock agents per plan) — comes with the admin panel.
+- ❌ video generation (MuAPI/Higgsfield).
+
+### Connections / Integrations ✅ (Google live; others need their app keys)
+- Catalog (Google products, Meta/IG/FB, LinkedIn, Reddit, Pinterest, TikTok, WordPress,
+  Shopify, Stripe, Notion, Brevo, Mailchimp) with per-clinic OAuth, green Connected state,
+  **read/write toggle**, **disconnect confirm**, **Firecrawl** for crawling.
+- ✅ **Google** (Analytics, Search Console, Business, Ads, Drive, Calendar, YouTube) +
+  **WordPress self-hosted** (app password). 🟡 generic OAuth (Meta, LinkedIn, Reddit,
+  Pinterest, TikTok, WordPress.com) light up when their `*_CLIENT_ID/_SECRET` are added.
+- ❌ bespoke flows: X/Twitter (PKCE), Shopify (shop domain), TikTok Ads, Stripe Connect, Notion.
+
+### Calendar & Booking ✅
+- Week (now **24h, Sun→Sat**) / 15-day / 30-day views + month jump. Bookings from chat/inbox
+  land on the calendar (name/phone/email/service), no double-book (slot conflict check), and
+  forward to Open Dental when enabled. 🟡 Google Calendar push not wired.
+
+### Open Dental 🟡 (code ready; user will connect later — DON'T disturb the live clinic)
+- Settings card + gateway routes (slots/book/reschedule/cancel/doctors) + booking forward +
+  external-id mirror ✅ (code). ❌ the **local connector** (Node app installed at the clinic)
+  is NOT built. 🟡 user has the API key but is intentionally NOT connecting it yet.
+
+### Patients / Contacts / Pipeline ✅ (UI; some demo)
+- Patients list + profile (appointments). Reports = real patient/appointment data + CSV.
+- ❌ User wants: rename "Patients" tab to **Contacts**; contact click should open a contact
+  detail (NOT the patient page); trim the patient detail (remove payments/documents/insurance/
+  treatment-plans/collect-payment, keep appointments); Voice-Agent Contacts = voice-source only,
+  with **checkboxes/select-all + bulk export/import/delete** + a **country-flag phone dropdown**.
+
+### Workflows 🟡
+- Workflow list + **builder** page exist (UI). ❌ not executing real automations yet (no runner
+  wired to triggers/actions). Treat as scaffold.
+
+### Sample/demo data ✅ removed (real-clinic mode).
+
+---
+
+## 🔑 What's blocked ONLY by an API key / approval (add these → it works)
+| Add in Netlify | Unlocks |
+|---|---|
+| `OPENROUTER_API_KEY` | all AI text |
+| `SUPABASE_SERVICE_ROLE_KEY` | OAuth tokens, reports, autopilot, activity |
+| `VAPI_API_KEY` + `ELEVENLABS_API_KEY` + a number | voice calls |
+| `OPENAI_API_KEY` | image generation |
+| `GOOGLE_OAUTH_CLIENT_ID/_SECRET` (+ verify app, add test users) | Google connections |
+| `FACEBOOK_CLIENT_ID/_SECRET` + Meta app **Live** | FB/IG/Meta Ads |
+| `DATAFORSEO_API_KEY` | full SEO data (free fallback works) |
+| `GOOGLE_ADS_DEVELOPER_TOKEN` | Google Ads reporting |
+| `BREVO_API_KEY` + `BREVO_FROM_EMAIL` | Angela email send |
+| `FIRECRAWL_API_KEY` | whole-site crawling |
+| `TWILIO_*` | SMS + UAE/Twilio voice numbers |
+| `CRON_SECRET` + a scheduler → `/api/cron/run` | Autopilot actually firing |
+| `TEAM_AI_MODEL=anthropic/claude-sonnet-4` | AI Team uses Claude |
+
+## 🚧 The real remaining BUILD work (not just keys)
+1. **Voice agent advanced settings** (VAD / turn detection / noise / AMD / call limits /
+   privacy / post-call extraction) — the Vapi/Callab-style editor. **User asked for this.**
+2. **Voice-call booking tool** (book from a live call → calendar + Open Dental).
+3. **Open Dental local connector** + live test (when the user enables the key).
+4. **Patients → Contacts** rename + contact detail page + trim patient tabs + voice-only
+   contacts + country-flag phone picker + bulk select/import/export.
+5. **Call Logs full detail page** + To/campaign columns; **Phone Numbers** card layout +
+   provider methods (Ziwo/Maqsam/Vocalcom/GoAutoDial) like Callab.
+6. **Workflows runner** (execute triggers→actions).
+7. **SMS (Twilio)**, **Google Calendar push**, **WhatsApp audio delivery**,
+   **Mailchimp send**, **X/Shopify/TikTok-Ads/Stripe/Notion** connectors.
+8. **Billing/credits + Admin panel + packages/entitlements** — *deliberately last* (user said
+   do it when the software is nearly finished).
+9. **Video generation** (MuAPI/Higgsfield), **client-facing setup guide** MD.
+
+## Migrations: run **RUN_PENDING_MIGRATIONS.sql** (bundles 0024→0034) in Supabase.
+
 ## 2. Repo, branch, hosting
 - **GitHub:** `afnanimad19-dot/pydentclaude`. **Work only on branch
   `claude/vigilant-heisenberg-o5g281`.** Commit + push there (Netlify auto-deploys
