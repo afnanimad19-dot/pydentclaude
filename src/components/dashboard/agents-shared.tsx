@@ -4,7 +4,7 @@
 // modal, in-browser test chat (OpenRouter) and test call (Vapi Web SDK),
 // and the Agent Hub (channel defaults + phone lines).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Bot,
   PhoneCall,
@@ -27,6 +27,13 @@ import {
   Mic,
   PhoneOff,
   Play,
+  SlidersHorizontal,
+  ChevronDown,
+  ShieldCheck,
+  Voicemail,
+  Clock,
+  Waves,
+  ClipboardList,
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
@@ -40,9 +47,12 @@ import {
   fetchChannelDefaults,
   setChannelDefault,
   fetchClinicSettings,
+  defaultVoiceSettings,
   type AiAgent,
   type DataSource,
   type ChannelDefault,
+  type VoiceSettings,
+  type ExtractionField,
 } from "@/lib/db";
 
 const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4.1-mini"];
@@ -114,6 +124,7 @@ function emptyForm(): Omit<AiAgent, "id" | "vapiAssistantId"> {
     purpose: "both",
     firstMessageMode: "assistant_first",
     kbFiles: [],
+    voiceSettings: defaultVoiceSettings(),
   };
 }
 
@@ -379,6 +390,436 @@ export function AgentHubView() {
   );
 }
 
+// ----------------------------------------------- advanced voice settings
+// Vapi/Callab-style call-tuning: turn detection / VAD, interruptions, noise,
+// answering-machine detection, call limits, idle reminders, privacy, and
+// post-call data extraction. Stored on the agent as `voiceSettings` and mapped
+// onto the Vapi assistant (startSpeakingPlan / stopSpeakingPlan / analysisPlan /
+// artifactPlan / voicemailDetection / messagePlan).
+
+function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!on)}
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${on ? "bg-brand-600" : "bg-ink-200"}`}
+    >
+      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${on ? "left-[22px]" : "left-0.5"}`} />
+    </button>
+  );
+}
+
+function ToggleRow({
+  label,
+  hint,
+  on,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  on: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 py-1">
+      <div>
+        <p className="text-sm font-medium text-ink-800">{label}</p>
+        {hint && <p className="text-xs text-ink-400">{hint}</p>}
+      </div>
+      <Toggle on={on} onChange={onChange} />
+    </div>
+  );
+}
+
+function NumberRow({
+  label,
+  hint,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  suffix,
+}: {
+  label: string;
+  hint?: string;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  step?: number;
+  suffix?: string;
+}) {
+  return (
+    <div className="py-1">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-ink-800">{label}</p>
+          {hint && <p className="text-xs text-ink-400">{hint}</p>}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <input
+            type="number"
+            value={value}
+            min={min}
+            max={max}
+            step={step}
+            onChange={(e) => onChange(Number(e.target.value))}
+            className="w-20 rounded-lg border border-ink-200 bg-surface px-2 py-1.5 text-right text-sm text-ink-800 outline-none focus:border-brand-400"
+          />
+          {suffix && <span className="text-xs text-ink-400">{suffix}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsGroup({
+  icon: Icon,
+  title,
+  desc,
+  children,
+}: {
+  icon: typeof Mic;
+  title: string;
+  desc: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-ink-100 bg-surface p-4">
+      <div className="mb-2.5 flex items-center gap-2">
+        <Icon className="h-4 w-4 text-brand-500" />
+        <p className="text-sm font-semibold text-ink-900">{title}</p>
+      </div>
+      <p className="mb-3 text-xs text-ink-400">{desc}</p>
+      <div className="divide-y divide-ink-100">{children}</div>
+    </div>
+  );
+}
+
+function VoiceAdvancedSettings({
+  value,
+  onChange,
+}: {
+  value: VoiceSettings;
+  onChange: (v: VoiceSettings) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  function set<K extends keyof VoiceSettings>(k: K, v: VoiceSettings[K]) {
+    onChange({ ...value, [k]: v });
+  }
+
+  function addField() {
+    set("extractionFields", [
+      ...value.extractionFields,
+      { name: "", description: "", type: "string" as const },
+    ]);
+  }
+  function updateField(i: number, patch: Partial<ExtractionField>) {
+    set(
+      "extractionFields",
+      value.extractionFields.map((f, idx) => (idx === i ? { ...f, ...patch } : f))
+    );
+  }
+  function removeField(i: number) {
+    set("extractionFields", value.extractionFields.filter((_, idx) => idx !== i));
+  }
+
+  return (
+    <div className="mt-5 rounded-xl border border-ink-200">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left"
+      >
+        <span className="flex items-center gap-2">
+          <SlidersHorizontal className="h-4 w-4 text-brand-500" />
+          <span className="text-sm font-semibold text-ink-900">Advanced voice settings</span>
+          <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[11px] font-medium text-ink-500">
+            optional
+          </span>
+        </span>
+        <ChevronDown className={`h-4 w-4 text-ink-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="space-y-3 border-t border-ink-100 p-4">
+          <p className="text-xs text-ink-400">
+            Fine-tune how the agent listens and talks on live calls. The defaults work well — only
+            change these if calls feel too eager to interrupt, too slow to respond, or you need
+            recording/extraction rules.
+          </p>
+
+          <SettingsGroup
+            icon={Mic}
+            title="Turn detection (when the caller is done speaking)"
+            desc="Controls how the agent decides the caller has finished before it replies. Higher waits feel calmer but slower."
+          >
+            <ToggleRow
+              label="Smart endpointing"
+              hint="Use AI to detect a natural end of turn instead of a fixed pause."
+              on={value.smartEndpointing}
+              onChange={(v) => set("smartEndpointing", v)}
+            />
+            <NumberRow
+              label="Start-speaking wait"
+              hint="Pause before the agent begins its reply."
+              value={value.startWaitSeconds}
+              onChange={(v) => set("startWaitSeconds", v)}
+              min={0}
+              max={3}
+              step={0.1}
+              suffix="sec"
+            />
+            <NumberRow
+              label="Wait after a finished sentence"
+              hint="When the caller ends on punctuation."
+              value={value.endpointingOnPunctuationSeconds}
+              onChange={(v) => set("endpointingOnPunctuationSeconds", v)}
+              min={0}
+              max={3}
+              step={0.1}
+              suffix="sec"
+            />
+            <NumberRow
+              label="Wait when speech trails off"
+              hint="When the caller pauses mid-sentence."
+              value={value.endpointingOnNoPunctuationSeconds}
+              onChange={(v) => set("endpointingOnNoPunctuationSeconds", v)}
+              min={0}
+              max={4}
+              step={0.1}
+              suffix="sec"
+            />
+          </SettingsGroup>
+
+          <SettingsGroup
+            icon={Waves}
+            title="Interruptions & noise"
+            desc="Whether callers can talk over the agent, and how aggressively background noise is filtered."
+          >
+            <ToggleRow
+              label="Allow interruptions"
+              hint="Let the caller cut in while the agent is talking."
+              on={value.interruptionsEnabled}
+              onChange={(v) => set("interruptionsEnabled", v)}
+            />
+            <NumberRow
+              label="Words needed to interrupt"
+              hint="0 = interrupt on any sound. Raise it to ignore short 'mm-hmm' noises."
+              value={value.stopSpeakingNumWords}
+              onChange={(v) => set("stopSpeakingNumWords", v)}
+              min={0}
+              max={10}
+            />
+            <NumberRow
+              label="Pause after being interrupted"
+              hint="How long the agent stays quiet once the caller cuts in."
+              value={value.backoffSeconds}
+              onChange={(v) => set("backoffSeconds", v)}
+              min={0}
+              max={5}
+              step={0.5}
+              suffix="sec"
+            />
+            <ToggleRow
+              label="Background noise reduction"
+              hint="Filter out clinic/ambient noise on the caller's side."
+              on={value.backgroundDenoising}
+              onChange={(v) => set("backgroundDenoising", v)}
+            />
+            <div className="flex items-center justify-between gap-3 py-1">
+              <p className="text-sm font-medium text-ink-800">Ambient background sound</p>
+              <select
+                value={value.backgroundSound}
+                onChange={(e) => set("backgroundSound", e.target.value as VoiceSettings["backgroundSound"])}
+                className="rounded-lg border border-ink-200 bg-surface px-2 py-1.5 text-sm text-ink-800 outline-none"
+              >
+                <option value="off">None (silent)</option>
+                <option value="office">Subtle office ambience</option>
+              </select>
+            </div>
+          </SettingsGroup>
+
+          <SettingsGroup
+            icon={Voicemail}
+            title="Answering-machine detection"
+            desc="For outbound calls — detect voicemail and optionally leave a message instead of talking to a beep."
+          >
+            <ToggleRow
+              label="Detect voicemail / answering machines"
+              on={value.voicemailDetection}
+              onChange={(v) => set("voicemailDetection", v)}
+            />
+            {value.voicemailDetection && (
+              <div className="py-2">
+                <p className="mb-1.5 text-xs font-medium text-ink-600">Message to leave on voicemail</p>
+                <textarea
+                  rows={2}
+                  className={inputCls}
+                  placeholder="Hi, this is Nora from Bright Smile Dental calling about your appointment. Please call us back at your convenience."
+                  value={value.voicemailMessage}
+                  onChange={(e) => set("voicemailMessage", e.target.value)}
+                />
+              </div>
+            )}
+          </SettingsGroup>
+
+          <SettingsGroup
+            icon={Clock}
+            title="Call limits & idle reminders"
+            desc="Cap call length, hang up on dead air, and nudge a caller who goes quiet."
+          >
+            <NumberRow
+              label="Maximum call duration"
+              value={value.maxDurationMinutes}
+              onChange={(v) => set("maxDurationMinutes", v)}
+              min={1}
+              max={60}
+              suffix="min"
+            />
+            <NumberRow
+              label="Hang up after silence"
+              hint="End the call after this much dead air."
+              value={value.silenceTimeoutSeconds}
+              onChange={(v) => set("silenceTimeoutSeconds", v)}
+              min={5}
+              max={120}
+              suffix="sec"
+            />
+            <ToggleRow
+              label="Nudge quiet callers"
+              hint="Speak a reminder if the caller goes silent."
+              on={value.idleMessagesEnabled}
+              onChange={(v) => set("idleMessagesEnabled", v)}
+            />
+            {value.idleMessagesEnabled && (
+              <>
+                <NumberRow
+                  label="Nudge after"
+                  value={value.idleTimeoutSeconds}
+                  onChange={(v) => set("idleTimeoutSeconds", v)}
+                  min={3}
+                  max={30}
+                  suffix="sec"
+                />
+                <NumberRow
+                  label="Max nudges per call"
+                  value={value.idleMaxCount}
+                  onChange={(v) => set("idleMaxCount", v)}
+                  min={1}
+                  max={5}
+                />
+                <div className="py-2">
+                  <p className="mb-1.5 text-xs font-medium text-ink-600">Nudge messages (one per line)</p>
+                  <textarea
+                    rows={2}
+                    className={inputCls}
+                    placeholder={"Are you still there?\nTake your time — I'm here when you're ready."}
+                    value={value.idleMessages}
+                    onChange={(e) => set("idleMessages", e.target.value)}
+                  />
+                </div>
+              </>
+            )}
+          </SettingsGroup>
+
+          <SettingsGroup
+            icon={ShieldCheck}
+            title="Privacy & compliance"
+            desc="Control what gets recorded and stored. Turn recording off for stricter privacy."
+          >
+            <ToggleRow
+              label="Record calls"
+              hint="Store an audio recording of each call."
+              on={value.recordingEnabled}
+              onChange={(v) => set("recordingEnabled", v)}
+            />
+            <ToggleRow
+              label="Store transcripts"
+              on={value.transcriptEnabled}
+              onChange={(v) => set("transcriptEnabled", v)}
+            />
+            <ToggleRow
+              label="HIPAA mode"
+              hint="Disable recording and logging entirely on the provider's side."
+              on={value.hipaaEnabled}
+              onChange={(v) => set("hipaaEnabled", v)}
+            />
+          </SettingsGroup>
+
+          <SettingsGroup
+            icon={ClipboardList}
+            title="After the call"
+            desc="Automatically summarise each call and pull out the details you care about."
+          >
+            <ToggleRow
+              label="Generate a call summary"
+              on={value.summaryEnabled}
+              onChange={(v) => set("summaryEnabled", v)}
+            />
+            <ToggleRow
+              label="Rate whether the call succeeded"
+              hint="Vapi scores if the agent met its goal (e.g. booked the appointment)."
+              on={value.successEvaluationEnabled}
+              onChange={(v) => set("successEvaluationEnabled", v)}
+            />
+            <ToggleRow
+              label="Extract structured details"
+              hint="Pull specific fields out of every call into a tidy record."
+              on={value.structuredExtractionEnabled}
+              onChange={(v) => set("structuredExtractionEnabled", v)}
+            />
+            {value.structuredExtractionEnabled && (
+              <div className="space-y-2 py-2">
+                {value.extractionFields.map((f, i) => (
+                  <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-ink-100 bg-ink-50/60 p-2">
+                    <input
+                      className="w-32 rounded-md border border-ink-200 bg-surface px-2 py-1.5 text-sm text-ink-800 outline-none"
+                      placeholder="field name"
+                      value={f.name}
+                      onChange={(e) => updateField(i, { name: e.target.value })}
+                    />
+                    <input
+                      className="min-w-40 flex-1 rounded-md border border-ink-200 bg-surface px-2 py-1.5 text-sm text-ink-800 outline-none"
+                      placeholder="what to extract (e.g. the date the caller wants)"
+                      value={f.description}
+                      onChange={(e) => updateField(i, { description: e.target.value })}
+                    />
+                    <select
+                      className="rounded-md border border-ink-200 bg-surface px-2 py-1.5 text-sm text-ink-800 outline-none"
+                      value={f.type}
+                      onChange={(e) => updateField(i, { type: e.target.value as ExtractionField["type"] })}
+                    >
+                      <option value="string">text</option>
+                      <option value="number">number</option>
+                      <option value="boolean">yes/no</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => removeField(i)}
+                      className="rounded p-1 text-ink-400 hover:text-rose-500"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={addField}
+                  className="flex items-center gap-1.5 rounded-lg border border-dashed border-ink-300 px-3 py-1.5 text-xs font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add a field to extract
+                </button>
+              </div>
+            )}
+          </SettingsGroup>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ------------------------------------------------------ create/edit modal
 
 export function AgentModal({
@@ -514,6 +955,8 @@ export function AgentModal({
             behavior: form.behavior,
             knowledgeBase: payload.knowledgeBase,
             language: form.language,
+            firstMessageMode: form.firstMessageMode,
+            voiceSettings: form.voiceSettings,
           }),
         });
         const vapiData = await vapiRes.json();
@@ -698,6 +1141,13 @@ export function AgentModal({
               Behavior is separate from Instructions: instructions say <em>what</em> the agent does; behavior says <em>how</em> it acts — the rules that stop repeated questions and keep replies natural.
             </p>
           </div>
+
+          {form.kind === "voice" && (
+            <VoiceAdvancedSettings
+              value={form.voiceSettings}
+              onChange={(v) => set("voiceSettings", v)}
+            />
+          )}
 
           <div className="mt-4">
             <p className="mb-1.5 text-sm font-medium text-ink-700">
@@ -975,6 +1425,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
         await vapi.start(agent.vapiAssistantId);
       } else {
         // Agent not synced to Vapi yet — start with an inline assistant config
+        const vs = agent.voiceSettings;
         await vapi.start({
           name: agent.name,
           firstMessage: agent.firstMessage || `Hi, this is ${agent.name} from the dental office. How can I help?`,
@@ -997,6 +1448,22 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
           voice: agent.voiceId
             ? { provider: "11labs", voiceId: agent.voiceId }
             : { provider: "vapi", voiceId: VOICE_IDS[agent.voice] ?? "Leah" },
+          // Reflect the advanced tuning in the live browser test too.
+          backgroundDenoisingEnabled: vs.backgroundDenoising,
+          backgroundSound: vs.backgroundSound === "office" ? "office" : "off",
+          maxDurationSeconds: Math.min(43200, Math.max(10, vs.maxDurationMinutes * 60)),
+          silenceTimeoutSeconds: Math.min(3600, Math.max(5, vs.silenceTimeoutSeconds)),
+          startSpeakingPlan: {
+            waitSeconds: vs.startWaitSeconds,
+            ...(vs.smartEndpointing ? { smartEndpointingPlan: { provider: "livekit" } } : {}),
+            transcriptionEndpointingPlan: {
+              onPunctuationSeconds: vs.endpointingOnPunctuationSeconds,
+              onNoPunctuationSeconds: vs.endpointingOnNoPunctuationSeconds,
+            },
+          },
+          stopSpeakingPlan: vs.interruptionsEnabled
+            ? { numWords: vs.stopSpeakingNumWords, voiceSeconds: 0.2, backoffSeconds: vs.backoffSeconds }
+            : { numWords: 50, voiceSeconds: 0.5, backoffSeconds: 0 },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
       }

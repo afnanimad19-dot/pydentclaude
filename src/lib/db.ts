@@ -322,6 +322,79 @@ export async function createBooking(input: {
 
 // ----------------------------------------------------------------- agents
 
+// One extracted field the agent should pull out of every finished call.
+export interface ExtractionField {
+  name: string;
+  description: string;
+  type: "string" | "number" | "boolean";
+}
+
+// Advanced Vapi/Callab-style voice-call tuning. Stored as one JSONB blob on the
+// agent (column `voice_settings`) so new knobs don't need schema changes.
+export interface VoiceSettings {
+  // Turn-taking / Voice Activity Detection — when does the agent decide the caller finished?
+  smartEndpointing: boolean;          // let AI detect end-of-turn instead of a fixed pause
+  startWaitSeconds: number;           // pause before the agent starts replying
+  endpointingOnPunctuationSeconds: number;   // wait after a sentence ends
+  endpointingOnNoPunctuationSeconds: number; // wait when speech trails off mid-sentence
+  // Interruptions — can the caller talk over the agent?
+  interruptionsEnabled: boolean;
+  stopSpeakingNumWords: number;       // words the caller must say to interrupt
+  backoffSeconds: number;             // how long the agent stays quiet after being interrupted
+  // Background noise
+  backgroundDenoising: boolean;
+  backgroundSound: "off" | "office";
+  // Answering-machine / voicemail detection (outbound)
+  voicemailDetection: boolean;
+  voicemailMessage: string;           // message to leave if voicemail is reached
+  // Call limits
+  maxDurationMinutes: number;
+  silenceTimeoutSeconds: number;      // hang up after this much dead air
+  // Idle reminders — nudge a quiet caller
+  idleMessagesEnabled: boolean;
+  idleTimeoutSeconds: number;
+  idleMessages: string;               // one nudge per line
+  idleMaxCount: number;
+  // Privacy / compliance
+  recordingEnabled: boolean;
+  transcriptEnabled: boolean;
+  hipaaEnabled: boolean;              // disables recording/logging on Vapi's side
+  // Post-call data extraction
+  summaryEnabled: boolean;
+  structuredExtractionEnabled: boolean;
+  extractionFields: ExtractionField[];
+  successEvaluationEnabled: boolean;
+}
+
+export function defaultVoiceSettings(): VoiceSettings {
+  return {
+    smartEndpointing: true,
+    startWaitSeconds: 0.4,
+    endpointingOnPunctuationSeconds: 0.1,
+    endpointingOnNoPunctuationSeconds: 1.5,
+    interruptionsEnabled: true,
+    stopSpeakingNumWords: 0,
+    backoffSeconds: 1,
+    backgroundDenoising: true,
+    backgroundSound: "off",
+    voicemailDetection: false,
+    voicemailMessage: "",
+    maxDurationMinutes: 15,
+    silenceTimeoutSeconds: 30,
+    idleMessagesEnabled: false,
+    idleTimeoutSeconds: 10,
+    idleMessages: "Are you still there?",
+    idleMaxCount: 2,
+    recordingEnabled: true,
+    transcriptEnabled: true,
+    hipaaEnabled: false,
+    summaryEnabled: true,
+    structuredExtractionEnabled: false,
+    extractionFields: [],
+    successEvaluationEnabled: false,
+  };
+}
+
 export interface AiAgent {
   id: string;
   name: string;
@@ -344,6 +417,7 @@ export interface AiAgent {
   purpose: "inbound" | "outbound" | "both";
   firstMessageMode: "assistant_first" | "user_first" | "assistant_first_generated";
   kbFiles: string[];
+  voiceSettings: VoiceSettings;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -370,6 +444,7 @@ function rowToAgent(r: any): AiAgent {
     purpose: r.purpose ?? "both",
     firstMessageMode: r.first_message_mode ?? "assistant_first",
     kbFiles: r.kb_files ?? [],
+    voiceSettings: { ...defaultVoiceSettings(), ...(r.voice_settings ?? {}) },
   };
 }
 
@@ -395,6 +470,7 @@ function agentToRow(input: Omit<AiAgent, "id" | "vapiAssistantId">): Record<stri
     purpose: input.purpose,
     first_message_mode: input.firstMessageMode,
     kb_files: input.kbFiles,
+    voice_settings: input.kind === "voice" ? input.voiceSettings : {},
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -413,14 +489,15 @@ export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSo
 export async function createAgent(input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string; id?: string }> {
   const row = agentToRow(input);
   let { data, error } = await supabase.from("agents").insert(row).select("id").single();
-  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id/.test(error.message)) {
+  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id|voice_settings/.test(error.message)) {
     // Newer columns not migrated yet — retry without them.
     delete row.purpose;
     delete row.first_message_mode;
     delete row.kb_files;
     delete row.behavior;
     delete row.voice_id;
-    ({ data, error } = await supabase.from("agents").insert(row).select("id").single());
+    delete row.voice_settings;
+    ({data, error } = await supabase.from("agents").insert(row).select("id").single());
   }
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Agent saved to the database.", id: data?.id };
@@ -433,13 +510,14 @@ export async function setAgentVapiId(id: string, vapiId: string): Promise<void> 
 export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
   const row = agentToRow(input);
   let { error } = await supabase.from("agents").update(row).eq("id", id);
-  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id/.test(error.message)) {
+  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id|voice_settings/.test(error.message)) {
     delete row.purpose;
     delete row.first_message_mode;
     delete row.kb_files;
     delete row.behavior;
     delete row.voice_id;
-    ({ error } = await supabase.from("agents").update(row).eq("id", id));
+    delete row.voice_settings;
+    ({error } = await supabase.from("agents").update(row).eq("id", id));
   }
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Agent updated." };

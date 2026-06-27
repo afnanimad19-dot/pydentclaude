@@ -51,11 +51,17 @@ Patients · Workflows · Reports · Settings.
   (Vapi), behavior applied on calls, **Phone Numbers** page (Add: existing / Twilio / full
   **SIP-trunk** form), **Contacts**, **Call Logs** (list + recording/transcript/summary
   detail + status filter + CSV export). 🟡 needs `VAPI_API_KEY` + `ELEVENLABS_API_KEY` + a number.
-- ❌ **GAP (asked, not built): the Vapi-/Callab-style ADVANCED voice settings** in the agent
-  editor — Voice Activity Detection (min speech/silence, activation threshold, prefix
-  padding, end-of-speech timeout), turn detection, noise reduction, answering-machine
-  detection, reminder/call-duration limits, privacy toggles, post-call data extraction.
-  The current voice editor is basic (voice, language, first message, instructions, behavior).
+- ✅ **Vapi-/Callab-style ADVANCED voice settings** in the agent editor (collapsible
+  "Advanced voice settings" panel, voice agents only): turn detection / VAD (smart
+  endpointing, start-speaking wait, end-of-speech timeouts), interruptions (words-to-
+  interrupt, backoff), noise reduction + ambient background sound, answering-machine /
+  voicemail detection (+ voicemail message), call limits (max duration, silence hang-up),
+  idle reminders (nudge messages/timeout/max count), privacy (recording/transcript/HIPAA),
+  and post-call data extraction (summary, success evaluation, structured fields). Stored on
+  the agent as `voice_settings` JSONB (migration 0035) and mapped onto the Vapi assistant
+  (`startSpeakingPlan`/`stopSpeakingPlan`/`analysisPlan`/`artifactPlan`/`voicemailDetection`/
+  `messagePlan`/`maxDurationSeconds`/`silenceTimeoutSeconds`) in `/api/vapi/assistants`. The
+  in-browser test call applies the same tuning. 🟡 needs `VAPI_API_KEY`.
 - ❌ **Voice-call booking tool** (book into the calendar from a live phone call) — chat books;
   the live-call booking tool isn't wired yet.
 - ❌ Call Logs as a full **dedicated detail page** + "To"/campaign columns (currently a side
@@ -130,8 +136,10 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
 | `TEAM_AI_MODEL=anthropic/claude-sonnet-4` | AI Team uses Claude |
 
 ## 🚧 The real remaining BUILD work (not just keys)
-1. **Voice agent advanced settings** (VAD / turn detection / noise / AMD / call limits /
-   privacy / post-call extraction) — the Vapi/Callab-style editor. **User asked for this.**
+1. ~~**Voice agent advanced settings** (VAD / turn detection / noise / AMD / call limits /
+   privacy / post-call extraction) — the Vapi/Callab-style editor.~~ ✅ **DONE** — collapsible
+   "Advanced voice settings" panel in the agent editor; persisted as `voice_settings` JSONB
+   (migration 0035) and mapped onto the Vapi assistant in `/api/vapi/assistants`.
 2. **Voice-call booking tool** (book from a live call → calendar + Open Dental).
 3. **Open Dental local connector** + live test (when the user enables the key).
 4. **Patients → Contacts** rename + contact detail page + trim patient tabs + voice-only
@@ -145,7 +153,9 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
    do it when the software is nearly finished).
 9. **Video generation** (MuAPI/Higgsfield), **client-facing setup guide** MD.
 
-## Migrations: run **RUN_PENDING_MIGRATIONS.sql** (bundles 0024→0034) in Supabase.
+## Migrations: run **RUN_PENDING_MIGRATIONS.sql** (bundles 0024→0034) in Supabase, then
+**`0035_voice_settings.sql`** (adds `agents.voice_settings` JSONB for advanced voice
+settings). Idempotent, no ON CONFLICT.
 
 ## 2. Repo, branch, hosting
 - **GitHub:** `afnanimad19-dot/pydentclaude`. **Work only on branch
