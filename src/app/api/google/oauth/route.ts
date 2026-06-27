@@ -21,6 +21,7 @@ const SCOPES: Record<string, string> = {
   google_ads: "https://www.googleapis.com/auth/adwords",
   google_drive: "https://www.googleapis.com/auth/drive.readonly",
   youtube: "https://www.googleapis.com/auth/youtube.readonly",
+  google_gmail: "https://www.googleapis.com/auth/gmail.send",
 };
 
 export async function GET(req: NextRequest) {

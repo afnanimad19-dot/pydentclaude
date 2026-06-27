@@ -74,7 +74,6 @@ const nav: NavItem[] = [
       { href: "/dashboard/whatsapp?tab=chats", label: "Chats" },
       { href: "/dashboard/whatsapp/templates", label: "Templates" },
       { href: "/dashboard/whatsapp?tab=broadcasts", label: "Broadcasts" },
-      { href: "/dashboard/whatsapp?tab=bots", label: "Chatbot builder" },
       { href: "/dashboard/settings/whatsapp", label: "Connection setup" },
     ],
   },

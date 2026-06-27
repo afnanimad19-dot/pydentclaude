@@ -42,6 +42,7 @@ const PROVIDERS: Provider[] = [
   { key: "google_ads", name: "Google Ads", detail: "Campaign spend & performance.", group: "data", badge: "Ad", color: "bg-[#fbbc04] text-ink-900", oauth: "google" },
   { key: "google_drive", name: "Google Drive", detail: "Pull documents into agent knowledge.", group: "data", badge: "Dr", color: "bg-[#1fa463] text-white", oauth: "google" },
   { key: "google_calendar", name: "Google Calendar", detail: "Mirror booked appointments.", group: "data", badge: "Ca", color: "bg-[#4285f4] text-white", oauth: "google" },
+  { key: "google_gmail", name: "Gmail", detail: "Send patient emails from the clinic's Gmail.", group: "data", badge: "Gm", color: "bg-[#ea4335] text-white", oauth: "google" },
   { key: "meta_ads", name: "Meta Ads", detail: "Facebook & Instagram ad performance.", group: "data", badge: "M", color: "bg-[#0866ff] text-white" },
   { key: "tiktok_ads", name: "TikTok Ads", detail: "TikTok ad campaign data.", group: "data", badge: "♪", color: "bg-black text-white" },
   { key: "stripe", name: "Stripe", detail: "Payments & subscriptions.", group: "data", badge: "S", color: "bg-[#635bff] text-white" },
@@ -51,7 +52,7 @@ const PROVIDERS: Provider[] = [
 ];
 
 // Catalog keys that are Google products (use the Google OAuth flow).
-const GOOGLE_KEYS = new Set(["google_analytics", "google_search_console", "google_business", "google_ads", "google_drive", "google_calendar", "youtube"]);
+const GOOGLE_KEYS = new Set(["google_analytics", "google_search_console", "google_business", "google_ads", "google_drive", "google_calendar", "google_gmail", "youtube"]);
 
 export function IntegrationsPanel() {
   const [connections, setConnections] = useState<Connection[]>([]);

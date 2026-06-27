@@ -2,34 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  MessageCircle,
-  Megaphone,
-  Workflow,
-  Plus,
-  Zap,
-  MessageSquare,
-  GitBranch,
-  PlugZap,
-  UserRound,
-  ChevronDown,
-} from "lucide-react";
+import { MessageCircle, Megaphone, Plus, Zap } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge, Avatar, StatCard } from "@/components/ui";
 import { Modal } from "@/components/modal";
 import { NewCampaignModal } from "@/components/dashboard/create-modals";
 import { BroadcastWizard } from "@/components/dashboard/broadcast-wizard";
 import { fetchWaBroadcasts, fetchWaBroadcastRecipients, type WaBroadcast, type WaBroadcastRecipient } from "@/lib/db";
-import { broadcasts, botFlows, conversations, type BotNode, type Broadcast } from "@/lib/mock-data";
+import { broadcasts, conversations, type Broadcast } from "@/lib/mock-data";
 
-type Tab = "chats" | "broadcasts" | "bots";
-
-const nodeStyle: Record<BotNode["type"], { icon: typeof Zap; chip: string; label: string }> = {
-  trigger: { icon: Zap, chip: "bg-amber-500/15 text-amber-600", label: "Trigger" },
-  message: { icon: MessageSquare, chip: "bg-emerald-500/15 text-emerald-600", label: "Message" },
-  condition: { icon: GitBranch, chip: "bg-blue-500/15 text-blue-600", label: "Condition" },
-  action: { icon: PlugZap, chip: "bg-violet-500/15 text-violet-600", label: "Action" },
-  handoff: { icon: UserRound, chip: "bg-rose-500/15 text-rose-600", label: "Handoff" },
-};
+type Tab = "chats" | "broadcasts";
 
 const statusTone = { Sent: "green", Sending: "blue", Scheduled: "blue", Draft: "gray", Live: "green", Paused: "amber", Failed: "red" } as const;
 
@@ -38,7 +19,7 @@ export default function WhatsAppPage() {
   const searchParams = useSearchParams();
   const urlTab = searchParams.get("tab");
   // URL is the source of truth so sidebar sub-links and tab buttons stay in sync
-  const tab: Tab = urlTab === "broadcasts" || urlTab === "bots" ? urlTab : "chats";
+  const tab: Tab = urlTab === "broadcasts" ? "broadcasts" : "chats";
   const setTab = (t: Tab) => router.replace(`/dashboard/whatsapp?tab=${t}`, { scroll: false });
   const [modalOpen, setModalOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -66,11 +47,11 @@ export default function WhatsAppPage() {
         subtitle="Two-way chats, broadcast campaigns and automation flows on WhatsApp Business."
         actions={
           <button
-            onClick={() => (tab === "bots" ? router.push("/dashboard/workflows") : tab === "broadcasts" ? setWizardOpen(true) : setModalOpen(true))}
+            onClick={() => (tab === "broadcasts" ? setWizardOpen(true) : setModalOpen(true))}
             className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
           >
             <Plus className="h-4 w-4" />
-            {tab === "broadcasts" ? "New broadcast" : tab === "bots" ? "New flow" : "New campaign"}
+            {tab === "broadcasts" ? "New broadcast" : "New campaign"}
           </button>
         }
       />
@@ -80,7 +61,6 @@ export default function WhatsAppPage() {
           [
             { key: "chats", label: "Chats", icon: MessageCircle },
             { key: "broadcasts", label: "Broadcasts", icon: Megaphone },
-            { key: "bots", label: "Chatbot builder", icon: Workflow },
           ] as const
         ).map((t) => (
           <button
@@ -192,52 +172,6 @@ export default function WhatsAppPage() {
         </Card>
       )}
 
-      {tab === "bots" && (
-        <div className="grid gap-4 lg:grid-cols-3">
-          {botFlows.map((flow) => (
-            <Card key={flow.id} className="flex flex-col p-5">
-              <div className="mb-1 flex items-start justify-between gap-2">
-                <h3 className="font-semibold text-ink-900">{flow.name}</h3>
-                <StatusBadge status={flow.status} tone={statusTone[flow.status]} />
-              </div>
-              <p className="mb-4 text-xs text-ink-400">
-                {flow.channel.toUpperCase()} · triggered {flow.triggeredToday}× today ·{" "}
-                {Math.round(flow.completionRate * 100)}% completion
-              </p>
-              <div className="flex-1 space-y-0">
-                {flow.nodes.map((node, i) => {
-                  const s = nodeStyle[node.type];
-                  return (
-                    <div key={node.id}>
-                      <div className="rounded-xl border border-ink-200 bg-surface p-3">
-                        <div className="flex items-center gap-2">
-                          <span className={`rounded-lg p-1.5 ${s.chip}`}>
-                            <s.icon className="h-3.5 w-3.5" />
-                          </span>
-                          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">{s.label}</span>
-                        </div>
-                        <p className="mt-1.5 text-sm font-medium text-ink-900">{node.title}</p>
-                        <p className="mt-0.5 text-xs leading-relaxed text-ink-500">{node.detail}</p>
-                      </div>
-                      {i < flow.nodes.length - 1 && (
-                        <div className="flex justify-center py-1 text-ink-300">
-                          <ChevronDown className="h-4 w-4" />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <button
-                onClick={() => router.push("/dashboard/workflows")}
-                className="mt-4 rounded-xl border border-ink-200 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50"
-              >
-                Open in Workflows
-              </button>
-            </Card>
-          ))}
-        </div>
-      )}
     </>
   );
 }

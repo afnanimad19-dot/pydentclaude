@@ -38,13 +38,24 @@ Calendar · Contacts · Workflows · Reports · Settings.
   welcome, voice notes. 🟡 needs the clinic's Meta number + tokens + `META_APP_SECRET`.
 - **Instagram / Messenger** 🟡 same webhook handles them; needs the Meta app **Live**
   + permissions approved (App Review). Inbound DMs flow into the inbox.
-- **SMS** ❌ tab exists but no provider wired. Needs **Twilio** (number + `TWILIO_*`).
+- **SMS** ✅ real Twilio path: composer "Send now" (`/api/sms/send` → `lib/sms-send.ts`),
+  inbound webhook `/api/sms/webhook` (lands texts in the inbox as `sms`, captures the contact).
+  🟡 needs `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM_NUMBER` + point the Twilio number's
+  inbound webhook at `/api/sms/webhook`. The SMS tab is now a real composer (no sample data).
 - **Voice-note delivery to WhatsApp** ❌ plays in-app today; true Meta media upload not wired.
 
-### Email
-- Inbox **email tab** ✅ (UI). Sending: **Angela can send via Brevo** 🟡 (`BREVO_API_KEY`
-  + `BREVO_FROM_EMAIL`). Connection **cards for Brevo + Mailchimp** ✅ in Integrations.
-  ❌ Mailchimp campaign send, ❌ Gmail/clinic-domain inbound sync.
+### Email ✅ (real send)
+- **Email tab is a real composer** — "Send now" → `/api/email/send` → `lib/email-send.ts`,
+  which sends via the clinic's **connected Gmail** (new `google_gmail` OAuth provider, scope
+  `gmail.send`; connect it in Settings → Connections) OR **Brevo** if `BREVO_API_KEY` is set.
+  **Angela** sends through the same path (passes the workspace). No keys needed if Gmail is
+  connected. ❌ still: Mailchimp campaign send, Gmail inbound sync, image gen note below.
+- **Image generation** now falls back to **OpenRouter** when `OPENAI_API_KEY` is absent
+  (`OPENROUTER_IMAGE_MODEL`, default Gemini image model) — works with the existing OpenRouter key.
+- **Chatbot builder removed** (redundant with the Workflows runner). **AI Team** agents now stay
+  in their lane (decline out-of-area asks, name the right teammate). **Privacy:** removed money
+  the clinic shouldn't see (Pipeline value + deal $ amounts; Contacts roster Balance/Insurance);
+  Pipeline/Email/SMS/Instagram now show real **Live** banners instead of "Demo mode".
 
 ### AI Chat Agents ✅
 - Create/edit (instructions + behavior/"what NOT to do" + **unlimited KB uploads**, PDF/

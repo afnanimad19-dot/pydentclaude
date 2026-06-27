@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Plus, ChevronLeft, ChevronRight, Image as ImageIcon, Clock } from "lucide-react";
-import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
+import { Card, PageHeader, LiveBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { fetchIgPosts, createIgPost, type IgPost } from "@/lib/db";
 
@@ -61,7 +61,7 @@ export default function InstagramPage() {
           onCreated={refresh}
         />
       )}
-      <DemoBanner context="Connect your Instagram account in Settings to publish for real — scheduling works now." />
+      <LiveBanner context="Your scheduled posts are saved to your database. Incoming Instagram DMs land in the Omnichannel Inbox once your Meta app is approved (Live) — publishing posts also goes live then." />
       <PageHeader
         title="Instagram"
         subtitle="Content calendar — plan, create and schedule posts for the whole month."
