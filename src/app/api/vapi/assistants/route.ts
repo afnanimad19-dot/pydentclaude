@@ -50,76 +50,72 @@ const FIRST_MESSAGE_MODE: Record<string, string> = {
 const clamp = (n: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : lo));
 
-// Translate Pydent's advanced voice settings onto the matching Vapi assistant
-// fields (startSpeakingPlan / stopSpeakingPlan / analysisPlan / artifactPlan /
-// voicemailDetection / messagePlan). Returns a partial assistant to spread in.
+// Translate Pydent's advanced voice settings (Callab-style fields) onto the
+// matching Vapi assistant fields (startSpeakingPlan / stopSpeakingPlan /
+// analysisPlan / artifactPlan / voicemailDetection / messagePlan). Returns a
+// partial assistant to spread in. Some fine-grained Callab VAD knobs (activation
+// threshold, prefix padding) have no direct Vapi equivalent — the meaningful
+// ones (timeouts, turn detection, limits, privacy, extraction) are mapped here.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function advancedFromSettings(vs: any): Record<string, any> {
   if (!vs || typeof vs !== "object") return {};
   const out: Record<string, any> = {};
 
   // Call limits
-  out.maxDurationSeconds = clamp((vs.maxDurationMinutes ?? 15) * 60, 10, 43200);
-  out.silenceTimeoutSeconds = clamp(vs.silenceTimeoutSeconds ?? 30, 5, 3600);
+  out.maxDurationSeconds = clamp((vs.maxCallDuration ?? 60) * 60, 10, 43200);
+  out.silenceTimeoutSeconds = clamp(vs.maxSilenceDuration ?? 120, 5, 3600);
 
-  // Noise
-  out.backgroundDenoisingEnabled = vs.backgroundDenoising !== false;
-  out.backgroundSound = vs.backgroundSound === "office" ? "office" : "off";
+  // Noise reduction
+  out.backgroundDenoisingEnabled = !!vs.noiseReductionEnabled;
 
   // Turn detection / VAD
+  const turnOn = vs.turnDetectionEnabled !== false;
   out.startSpeakingPlan = {
-    waitSeconds: clamp(vs.startWaitSeconds ?? 0.4, 0, 5),
-    ...(vs.smartEndpointing !== false ? { smartEndpointingPlan: { provider: "livekit" } } : {}),
+    waitSeconds: clamp(vs.detectionTimeout ?? 2.0, 0, 5),
+    ...(turnOn && vs.detectionMode !== "fixed"
+      ? { smartEndpointingPlan: { provider: "livekit" } }
+      : {}),
     transcriptionEndpointingPlan: {
-      onPunctuationSeconds: clamp(vs.endpointingOnPunctuationSeconds ?? 0.1, 0, 3),
-      onNoPunctuationSeconds: clamp(vs.endpointingOnNoPunctuationSeconds ?? 1.5, 0, 4),
+      onPunctuationSeconds: clamp(vs.minSilenceDuration ?? 0.3, 0, 3),
+      onNoPunctuationSeconds: clamp(vs.endOfSpeechTimeout ?? 0.2, 0, 4),
       onNumberSeconds: 0.5,
     },
   };
-
-  // Interruptions
-  if (vs.interruptionsEnabled === false) {
-    // Make it very hard to interrupt the agent.
-    out.stopSpeakingPlan = { numWords: 50, voiceSeconds: 0.5, backoffSeconds: 0 };
-  } else {
-    out.stopSpeakingPlan = {
-      numWords: clamp(vs.stopSpeakingNumWords ?? 0, 0, 10),
-      voiceSeconds: 0.2,
-      backoffSeconds: clamp(vs.backoffSeconds ?? 1, 0, 5),
-    };
-  }
-
-  // Answering-machine detection
-  if (vs.voicemailDetection) {
-    out.voicemailDetection = { provider: "vapi" };
-    if (vs.voicemailMessage?.trim()) out.voicemailMessage = vs.voicemailMessage.trim();
-  }
-
-  // Idle reminders
-  if (vs.idleMessagesEnabled) {
-    const msgs = String(vs.idleMessages ?? "")
-      .split("\n")
-      .map((s: string) => s.trim())
-      .filter(Boolean);
-    out.messagePlan = {
-      idleMessages: msgs.length ? msgs : ["Are you still there?"],
-      idleTimeoutSeconds: clamp(vs.idleTimeoutSeconds ?? 10, 3, 30),
-      idleMessageMaxSpokenCount: clamp(vs.idleMaxCount ?? 2, 1, 5),
-    };
-  }
-
-  // Privacy / compliance
-  out.hipaaEnabled = !!vs.hipaaEnabled;
-  out.artifactPlan = {
-    recordingEnabled: vs.hipaaEnabled ? false : vs.recordingEnabled !== false,
-    transcriptPlan: { enabled: vs.hipaaEnabled ? false : vs.transcriptEnabled !== false },
+  // Min speech duration maps roughly to how much voice is needed to count as a turn.
+  out.stopSpeakingPlan = {
+    numWords: 0,
+    voiceSeconds: clamp(vs.minSpeechDuration ?? 0.2, 0, 0.5),
+    backoffSeconds: 1,
   };
 
-  // Post-call analysis
-  const analysisPlan: Record<string, any> = {};
-  analysisPlan.summaryPlan = { enabled: vs.summaryEnabled !== false };
-  analysisPlan.successEvaluationPlan = { enabled: !!vs.successEvaluationEnabled };
-  if (vs.structuredExtractionEnabled && Array.isArray(vs.extractionFields)) {
+  // Answering-machine detection
+  if (vs.amdEnabled) {
+    out.voicemailDetection = { provider: "vapi" };
+  }
+
+  // Reminder & call-duration → idle check-ins
+  out.messagePlan = {
+    idleMessages: ["Are you still there?"],
+    idleTimeoutSeconds: clamp(vs.silenceBeforeCheck ?? 60, 5, 60),
+    idleMessageMaxSpokenCount: clamp(vs.maxCheckAttempts ?? 3, 1, 10),
+  };
+
+  // Privacy / compliance — driven by the data-storage preference
+  const storage = vs.dataStorage ?? "store_analyze";
+  const noStore = storage === "no_store";
+  const analyze = storage === "store_analyze";
+  out.hipaaEnabled = noStore;
+  out.artifactPlan = {
+    recordingEnabled: !noStore,
+    transcriptPlan: { enabled: !noStore },
+  };
+
+  // Post-call analysis (only when analytics are allowed)
+  const analysisPlan: Record<string, any> = {
+    summaryPlan: { enabled: analyze },
+    successEvaluationPlan: { enabled: analyze },
+  };
+  if (analyze && Array.isArray(vs.extractionFields)) {
     const fields = vs.extractionFields.filter((f: any) => f?.name?.trim());
     if (fields.length) {
       const properties: Record<string, any> = {};

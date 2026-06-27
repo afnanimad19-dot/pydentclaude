@@ -409,90 +409,107 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
   );
 }
 
-function ToggleRow({
+// A slider with the live value shown inline in the label and a hint below —
+// matches Callab's VAD / timeout sliders.
+function SliderRow({
   label,
-  hint,
-  on,
+  value,
+  suffix = "",
+  min,
+  max,
+  step,
   onChange,
+  hint,
 }: {
   label: string;
-  hint?: string;
-  on: boolean;
-  onChange: (v: boolean) => void;
+  value: number;
+  suffix?: string;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+  hint: string;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-1">
-      <div>
-        <p className="text-sm font-medium text-ink-800">{label}</p>
-        {hint && <p className="text-xs text-ink-400">{hint}</p>}
-      </div>
-      <Toggle on={on} onChange={onChange} />
+    <div className="py-1">
+      <p className="mb-1 text-sm font-medium text-ink-800">
+        {label}: <span className="text-brand-600">{value}{suffix}</span>
+      </p>
+      <input
+        type="range"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-[#7c3aed]"
+      />
+      <p className="mt-1 text-xs leading-relaxed text-ink-400">{hint}</p>
     </div>
   );
 }
 
-function NumberRow({
+// A labelled number input with a hint below — matches Callab's Reminder/Duration
+// and AMD-timeout fields.
+function NumberField({
   label,
-  hint,
   value,
   onChange,
   min,
   max,
-  step = 1,
-  suffix,
+  hint,
 }: {
   label: string;
-  hint?: string;
   value: number;
   onChange: (v: number) => void;
   min: number;
   max: number;
-  step?: number;
-  suffix?: string;
+  hint: string;
 }) {
   return (
-    <div className="py-1">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-ink-800">{label}</p>
-          {hint && <p className="text-xs text-ink-400">{hint}</p>}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <input
-            type="number"
-            value={value}
-            min={min}
-            max={max}
-            step={step}
-            onChange={(e) => onChange(Number(e.target.value))}
-            className="w-20 rounded-lg border border-ink-200 bg-surface px-2 py-1.5 text-right text-sm text-ink-800 outline-none focus:border-brand-400"
-          />
-          {suffix && <span className="text-xs text-ink-400">{suffix}</span>}
-        </div>
-      </div>
+    <div>
+      <p className="mb-1 text-sm font-medium text-ink-800">{label}</p>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full rounded-lg border border-ink-200 bg-surface px-3 py-2 text-sm text-ink-800 outline-none focus:border-brand-400"
+      />
+      <p className="mt-1 text-xs leading-relaxed text-ink-400">{hint}</p>
     </div>
   );
 }
 
+// A titled card with an icon, description, and (optionally) a header toggle —
+// the building block for each Callab "Advanced Settings" sub-section.
 function SettingsGroup({
   icon: Icon,
   title,
   desc,
+  toggle,
   children,
 }: {
   icon: typeof Mic;
   title: string;
   desc: string;
-  children: ReactNode;
+  toggle?: { on: boolean; onChange: (v: boolean) => void };
+  children?: ReactNode;
 }) {
   return (
     <div className="rounded-xl border border-ink-100 bg-surface p-4">
-      <div className="mb-2.5 flex items-center gap-2">
-        <Icon className="h-4 w-4 text-brand-500" />
-        <p className="text-sm font-semibold text-ink-900">{title}</p>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <Icon className="h-4 w-4 text-brand-500" />
+            <p className="text-sm font-semibold text-ink-900">{title}</p>
+          </div>
+          <p className="mt-1 text-xs text-ink-400">{desc}</p>
+        </div>
+        {toggle && <Toggle on={toggle.on} onChange={toggle.onChange} />}
       </div>
-      <p className="mb-3 text-xs text-ink-400">{desc}</p>
-      <div className="divide-y divide-ink-100">{children}</div>
+      {children && <div className="space-y-3">{children}</div>}
     </div>
   );
 }
@@ -545,233 +562,262 @@ function VoiceAdvancedSettings({
       {open && (
         <div className="space-y-3 border-t border-ink-100 p-4">
           <p className="text-xs text-ink-400">
-            Fine-tune how the agent listens and talks on live calls. The defaults work well — only
-            change these if calls feel too eager to interrupt, too slow to respond, or you need
-            recording/extraction rules.
+            Configure advanced agent behavior and conversation settings. The defaults work well —
+            adjust only if calls feel too eager to interrupt, too slow to respond, or you need
+            specific recording/extraction rules.
           </p>
 
+          {/* Agent Speaking — Voice Activity Detection */}
           <SettingsGroup
             icon={Mic}
-            title="Turn detection (when the caller is done speaking)"
-            desc="Controls how the agent decides the caller has finished before it replies. Higher waits feel calmer but slower."
+            title="Agent Speaking"
+            desc="Configure voice activity detection and turn management settings."
           >
-            <ToggleRow
-              label="Smart endpointing"
-              hint="Use AI to detect a natural end of turn instead of a fixed pause."
-              on={value.smartEndpointing}
-              onChange={(v) => set("smartEndpointing", v)}
-            />
-            <NumberRow
-              label="Start-speaking wait"
-              hint="Pause before the agent begins its reply."
-              value={value.startWaitSeconds}
-              onChange={(v) => set("startWaitSeconds", v)}
-              min={0}
-              max={3}
-              step={0.1}
-              suffix="sec"
-            />
-            <NumberRow
-              label="Wait after a finished sentence"
-              hint="When the caller ends on punctuation."
-              value={value.endpointingOnPunctuationSeconds}
-              onChange={(v) => set("endpointingOnPunctuationSeconds", v)}
-              min={0}
-              max={3}
-              step={0.1}
-              suffix="sec"
-            />
-            <NumberRow
-              label="Wait when speech trails off"
-              hint="When the caller pauses mid-sentence."
-              value={value.endpointingOnNoPunctuationSeconds}
-              onChange={(v) => set("endpointingOnNoPunctuationSeconds", v)}
-              min={0}
-              max={4}
-              step={0.1}
-              suffix="sec"
-            />
-          </SettingsGroup>
-
-          <SettingsGroup
-            icon={Waves}
-            title="Interruptions & noise"
-            desc="Whether callers can talk over the agent, and how aggressively background noise is filtered."
-          >
-            <ToggleRow
-              label="Allow interruptions"
-              hint="Let the caller cut in while the agent is talking."
-              on={value.interruptionsEnabled}
-              onChange={(v) => set("interruptionsEnabled", v)}
-            />
-            <NumberRow
-              label="Words needed to interrupt"
-              hint="0 = interrupt on any sound. Raise it to ignore short 'mm-hmm' noises."
-              value={value.stopSpeakingNumWords}
-              onChange={(v) => set("stopSpeakingNumWords", v)}
-              min={0}
-              max={10}
-            />
-            <NumberRow
-              label="Pause after being interrupted"
-              hint="How long the agent stays quiet once the caller cuts in."
-              value={value.backoffSeconds}
-              onChange={(v) => set("backoffSeconds", v)}
-              min={0}
-              max={5}
-              step={0.5}
-              suffix="sec"
-            />
-            <ToggleRow
-              label="Background noise reduction"
-              hint="Filter out clinic/ambient noise on the caller's side."
-              on={value.backgroundDenoising}
-              onChange={(v) => set("backgroundDenoising", v)}
-            />
-            <div className="flex items-center justify-between gap-3 py-1">
-              <p className="text-sm font-medium text-ink-800">Ambient background sound</p>
-              <select
-                value={value.backgroundSound}
-                onChange={(e) => set("backgroundSound", e.target.value as VoiceSettings["backgroundSound"])}
-                className="rounded-lg border border-ink-200 bg-surface px-2 py-1.5 text-sm text-ink-800 outline-none"
-              >
-                <option value="off">None (silent)</option>
-                <option value="office">Subtle office ambience</option>
-              </select>
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink-500">
+              Voice Activity Detection (VAD)
+            </p>
+            <div className="grid gap-x-6 gap-y-2 md:grid-cols-2">
+              <SliderRow
+                label="Min Speech Duration"
+                value={value.minSpeechDuration}
+                suffix="s"
+                min={0.1}
+                max={3}
+                step={0.1}
+                onChange={(v) => set("minSpeechDuration", v)}
+                hint="Minimum duration (0.1–3s) for speech to be detected. Shorter values catch quick speech but may trigger on noise. Recommended: 0.1s"
+              />
+              <SliderRow
+                label="Min Silence Duration"
+                value={value.minSilenceDuration}
+                suffix="s"
+                min={0.1}
+                max={3}
+                step={0.1}
+                onChange={(v) => set("minSilenceDuration", v)}
+                hint="Minimum duration (0.1–3s) for silence to be detected. Shorter values allow quicker responses but may interrupt the caller. Recommended: 0.3s"
+              />
+              <SliderRow
+                label="Activation Threshold"
+                value={value.activationThreshold}
+                min={0.1}
+                max={0.9}
+                step={0.1}
+                onChange={(v) => set("activationThreshold", v)}
+                hint="Sensitivity threshold (0.1–0.9) for voice detection. Lower values = more sensitive (may catch background noise), higher values = less sensitive. Recommended: 0.5"
+              />
+              <SliderRow
+                label="Prefix Padding Duration"
+                value={value.prefixPaddingDuration}
+                suffix="s"
+                min={0.1}
+                max={3}
+                step={0.1}
+                onChange={(v) => set("prefixPaddingDuration", v)}
+                hint="Audio padding (0.1–3s) before detected speech. Captures audio just before speech starts to avoid cutting off beginnings of words. Recommended: 0.2s"
+              />
+              <SliderRow
+                label="End of Speech Timeout"
+                value={value.endOfSpeechTimeout}
+                suffix="s"
+                min={0}
+                max={3}
+                step={0.1}
+                onChange={(v) => set("endOfSpeechTimeout", v)}
+                hint="Timeout (0–3s) to detect end of speech. How long to wait after speech stops before considering it finished. Shorter = faster responses. Recommended: 0.2s"
+              />
             </div>
           </SettingsGroup>
 
+          {/* Turn Detection */}
           <SettingsGroup
-            icon={Voicemail}
-            title="Answering-machine detection"
-            desc="For outbound calls — detect voicemail and optionally leave a message instead of talking to a beep."
+            icon={RefreshCcw}
+            title="Turn Detection"
+            desc="Automatically detect when it's the agent's turn to speak."
+            toggle={{ on: value.turnDetectionEnabled, onChange: (v) => set("turnDetectionEnabled", v) }}
           >
-            <ToggleRow
-              label="Detect voicemail / answering machines"
-              on={value.voicemailDetection}
-              onChange={(v) => set("voicemailDetection", v)}
-            />
-            {value.voicemailDetection && (
-              <div className="py-2">
-                <p className="mb-1.5 text-xs font-medium text-ink-600">Message to leave on voicemail</p>
-                <textarea
-                  rows={2}
-                  className={inputCls}
-                  placeholder="Hi, this is Nora from Bright Smile Dental calling about your appointment. Please call us back at your convenience."
-                  value={value.voicemailMessage}
-                  onChange={(e) => set("voicemailMessage", e.target.value)}
+            {value.turnDetectionEnabled && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <p className="mb-1 text-sm font-medium text-ink-800">Detection Mode</p>
+                  <select
+                    value={value.detectionMode}
+                    onChange={(e) => set("detectionMode", e.target.value as VoiceSettings["detectionMode"])}
+                    className="w-full rounded-lg border border-ink-200 bg-surface px-3 py-2 text-sm text-ink-800 outline-none"
+                  >
+                    <option value="smart">Smart — AI-driven turn detection</option>
+                    <option value="fixed">Fixed — timeout only</option>
+                  </select>
+                  <p className="mt-1 text-xs text-ink-400">How the agent determines when to speak.</p>
+                </div>
+                <SliderRow
+                  label="Detection Timeout"
+                  value={value.detectionTimeout}
+                  suffix="s"
+                  min={0}
+                  max={5}
+                  step={0.1}
+                  onChange={(v) => set("detectionTimeout", v)}
+                  hint="Timeout (0–5s) before agent takes turn. Maximum time to wait for user response before agent speaks. Shorter = more responsive but may interrupt. Recommended: 2.0s"
                 />
               </div>
             )}
           </SettingsGroup>
 
+          {/* Noise Reduction */}
           <SettingsGroup
-            icon={Clock}
-            title="Call limits & idle reminders"
-            desc="Cap call length, hang up on dead air, and nudge a caller who goes quiet."
+            icon={Waves}
+            title="Noise Reduction"
+            desc="Configure noise reduction and audio enhancement settings."
+            toggle={{ on: value.noiseReductionEnabled, onChange: (v) => set("noiseReductionEnabled", v) }}
           >
-            <NumberRow
-              label="Maximum call duration"
-              value={value.maxDurationMinutes}
-              onChange={(v) => set("maxDurationMinutes", v)}
-              min={1}
-              max={60}
-              suffix="min"
-            />
-            <NumberRow
-              label="Hang up after silence"
-              hint="End the call after this much dead air."
-              value={value.silenceTimeoutSeconds}
-              onChange={(v) => set("silenceTimeoutSeconds", v)}
-              min={5}
-              max={120}
-              suffix="sec"
-            />
-            <ToggleRow
-              label="Nudge quiet callers"
-              hint="Speak a reminder if the caller goes silent."
-              on={value.idleMessagesEnabled}
-              onChange={(v) => set("idleMessagesEnabled", v)}
-            />
-            {value.idleMessagesEnabled && (
+            {value.noiseReductionEnabled && (
+              <div>
+                <p className="mb-1 text-sm font-medium text-ink-800">Reduction Level</p>
+                <select
+                  value={value.reductionLevel}
+                  onChange={(e) => set("reductionLevel", e.target.value as VoiceSettings["reductionLevel"])}
+                  className="w-full rounded-lg border border-ink-200 bg-surface px-3 py-2 text-sm text-ink-800 outline-none"
+                >
+                  <option value="low">Low — light noise reduction</option>
+                  <option value="medium">Medium — balanced noise reduction</option>
+                  <option value="high">High — aggressive noise reduction</option>
+                </select>
+              </div>
+            )}
+          </SettingsGroup>
+
+          {/* Answering Machine Detection */}
+          <SettingsGroup
+            icon={Voicemail}
+            title="Answering Machine Detection"
+            desc="Configure settings for detecting answering machines and voicemail."
+            toggle={{ on: value.amdEnabled, onChange: (v) => set("amdEnabled", v) }}
+          >
+            {value.amdEnabled && (
               <>
-                <NumberRow
-                  label="Nudge after"
-                  value={value.idleTimeoutSeconds}
-                  onChange={(v) => set("idleTimeoutSeconds", v)}
-                  min={3}
-                  max={30}
-                  suffix="sec"
-                />
-                <NumberRow
-                  label="Max nudges per call"
-                  value={value.idleMaxCount}
-                  onChange={(v) => set("idleMaxCount", v)}
-                  min={1}
-                  max={5}
-                />
-                <div className="py-2">
-                  <p className="mb-1.5 text-xs font-medium text-ink-600">Nudge messages (one per line)</p>
-                  <textarea
-                    rows={2}
-                    className={inputCls}
-                    placeholder={"Are you still there?\nTake your time — I'm here when you're ready."}
-                    value={value.idleMessages}
-                    onChange={(e) => set("idleMessages", e.target.value)}
+                <label className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-ink-800">Multilingual AMD</p>
+                    <p className="text-xs text-ink-400">Detect answering machines in multiple languages.</p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={value.multilingualAmd}
+                    onChange={(e) => set("multilingualAmd", e.target.checked)}
+                    className="mt-1 h-4 w-4 accent-[#7c3aed]"
                   />
-                </div>
+                </label>
+                <NumberField
+                  label="AMD Timeout"
+                  value={value.amdTimeout}
+                  onChange={(v) => set("amdTimeout", v)}
+                  min={5}
+                  max={30}
+                  hint="Maximum time (5–30s) to wait for AMD detection."
+                />
               </>
             )}
           </SettingsGroup>
 
+          {/* Reminder & Call Duration Settings */}
           <SettingsGroup
-            icon={ShieldCheck}
-            title="Privacy & compliance"
-            desc="Control what gets recorded and stored. Turn recording off for stricter privacy."
+            icon={Clock}
+            title="Reminder & Call Duration Settings"
+            desc="Configure how the agent checks on users and call duration limits."
           >
-            <ToggleRow
-              label="Record calls"
-              hint="Store an audio recording of each call."
-              on={value.recordingEnabled}
-              onChange={(v) => set("recordingEnabled", v)}
-            />
-            <ToggleRow
-              label="Store transcripts"
-              on={value.transcriptEnabled}
-              onChange={(v) => set("transcriptEnabled", v)}
-            />
-            <ToggleRow
-              label="HIPAA mode"
-              hint="Disable recording and logging entirely on the provider's side."
-              on={value.hipaaEnabled}
-              onChange={(v) => set("hipaaEnabled", v)}
-            />
+            <div className="grid gap-4 md:grid-cols-2">
+              <NumberField
+                label="Silence Before Check (seconds)"
+                value={value.silenceBeforeCheck}
+                onChange={(v) => set("silenceBeforeCheck", v)}
+                min={5}
+                max={300}
+                hint="How long the user can be silent before the agent checks on them."
+              />
+              <NumberField
+                label="Max Check Attempts"
+                value={value.maxCheckAttempts}
+                onChange={(v) => set("maxCheckAttempts", v)}
+                min={1}
+                max={10}
+                hint="Maximum number of times to check on the user before ending the call."
+              />
+              <NumberField
+                label="Max Silence Duration (seconds)"
+                value={value.maxSilenceDuration}
+                onChange={(v) => set("maxSilenceDuration", v)}
+                min={10}
+                max={600}
+                hint="Maximum allowed silence duration before ending the call."
+              />
+              <NumberField
+                label="Maximum Call Duration (minutes)"
+                value={value.maxCallDuration}
+                onChange={(v) => set("maxCallDuration", v)}
+                min={1}
+                max={60}
+                hint="Maximum duration for the call (1–60 minutes)."
+              />
+            </div>
           </SettingsGroup>
 
+          {/* Privacy */}
+          <SettingsGroup
+            icon={ShieldCheck}
+            title="Privacy"
+            desc="Choose whether to store and analyze call data."
+          >
+            <div>
+              <p className="mb-1 text-sm font-medium text-ink-800">Data Storage Preference</p>
+              <select
+                value={value.dataStorage}
+                onChange={(e) => set("dataStorage", e.target.value as VoiceSettings["dataStorage"])}
+                className="w-full rounded-lg border border-ink-200 bg-surface px-3 py-2 text-sm text-ink-800 outline-none"
+              >
+                <option value="store_analyze">Store and Analyze Calls</option>
+                <option value="store_only">Store Calls Only (no analytics)</option>
+                <option value="no_store">Don&apos;t Store Calls (HIPAA)</option>
+              </select>
+            </div>
+            {value.dataStorage === "store_analyze" && (
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
+                <p className="text-sm font-semibold text-emerald-700">Store and Analyze Calls: Enabled</p>
+                <p className="mt-0.5 text-xs text-emerald-600">
+                  Calls will be stored and analyzed. Available features:
+                </p>
+                <ul className="mt-1.5 space-y-0.5 text-xs text-emerald-600">
+                  <li>• Call Audio Recording</li>
+                  <li>• Call Transcripts</li>
+                  <li>• Post-Call Outcomes</li>
+                  <li>• Call Summary</li>
+                  <li>• Call Sentiment Analysis</li>
+                  <li>• Call Rating and Analysis</li>
+                </ul>
+              </div>
+            )}
+            {value.dataStorage === "store_only" && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700">
+                Calls are recorded and transcribed, but no AI analysis (summary, outcomes, sentiment) runs.
+              </div>
+            )}
+            {value.dataStorage === "no_store" && (
+              <div className="rounded-lg border border-ink-200 bg-ink-50 p-3 text-xs text-ink-500">
+                HIPAA mode — no recording, transcript, or analytics are stored on the provider&apos;s side.
+              </div>
+            )}
+          </SettingsGroup>
+
+          {/* Post-Call Data Extraction */}
           <SettingsGroup
             icon={ClipboardList}
-            title="After the call"
-            desc="Automatically summarise each call and pull out the details you care about."
+            title="Post-Call Data Extraction"
+            desc="Define the information you want to extract from conversations."
           >
-            <ToggleRow
-              label="Generate a call summary"
-              on={value.summaryEnabled}
-              onChange={(v) => set("summaryEnabled", v)}
-            />
-            <ToggleRow
-              label="Rate whether the call succeeded"
-              hint="Vapi scores if the agent met its goal (e.g. booked the appointment)."
-              on={value.successEvaluationEnabled}
-              onChange={(v) => set("successEvaluationEnabled", v)}
-            />
-            <ToggleRow
-              label="Extract structured details"
-              hint="Pull specific fields out of every call into a tidy record."
-              on={value.structuredExtractionEnabled}
-              onChange={(v) => set("structuredExtractionEnabled", v)}
-            />
-            {value.structuredExtractionEnabled && (
-              <div className="space-y-2 py-2">
+            {value.extractionFields.length === 0 ? (
+              <p className="text-xs text-ink-400">No outcomes defined yet.</p>
+            ) : (
+              <div className="space-y-2">
                 {value.extractionFields.map((f, i) => (
                   <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg border border-ink-100 bg-ink-50/60 p-2">
                     <input
@@ -804,15 +850,15 @@ function VoiceAdvancedSettings({
                     </button>
                   </div>
                 ))}
-                <button
-                  type="button"
-                  onClick={addField}
-                  className="flex items-center gap-1.5 rounded-lg border border-dashed border-ink-300 px-3 py-1.5 text-xs font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600"
-                >
-                  <Plus className="h-3.5 w-3.5" /> Add a field to extract
-                </button>
               </div>
             )}
+            <button
+              type="button"
+              onClick={addField}
+              className="flex items-center gap-1.5 rounded-lg border border-dashed border-ink-300 px-3 py-1.5 text-xs font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600"
+            >
+              <Plus className="h-3.5 w-3.5" /> Add Manually
+            </button>
           </SettingsGroup>
         </div>
       )}
@@ -1449,21 +1495,19 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
             ? { provider: "11labs", voiceId: agent.voiceId }
             : { provider: "vapi", voiceId: VOICE_IDS[agent.voice] ?? "Leah" },
           // Reflect the advanced tuning in the live browser test too.
-          backgroundDenoisingEnabled: vs.backgroundDenoising,
-          backgroundSound: vs.backgroundSound === "office" ? "office" : "off",
-          maxDurationSeconds: Math.min(43200, Math.max(10, vs.maxDurationMinutes * 60)),
-          silenceTimeoutSeconds: Math.min(3600, Math.max(5, vs.silenceTimeoutSeconds)),
+          backgroundDenoisingEnabled: vs.noiseReductionEnabled,
+          maxDurationSeconds: Math.min(43200, Math.max(10, vs.maxCallDuration * 60)),
+          silenceTimeoutSeconds: Math.min(3600, Math.max(5, vs.maxSilenceDuration)),
           startSpeakingPlan: {
-            waitSeconds: vs.startWaitSeconds,
-            ...(vs.smartEndpointing ? { smartEndpointingPlan: { provider: "livekit" } } : {}),
+            waitSeconds: Math.min(5, Math.max(0, vs.detectionTimeout)),
+            ...(vs.turnDetectionEnabled && vs.detectionMode !== "fixed"
+              ? { smartEndpointingPlan: { provider: "livekit" } }
+              : {}),
             transcriptionEndpointingPlan: {
-              onPunctuationSeconds: vs.endpointingOnPunctuationSeconds,
-              onNoPunctuationSeconds: vs.endpointingOnNoPunctuationSeconds,
+              onPunctuationSeconds: vs.minSilenceDuration,
+              onNoPunctuationSeconds: vs.endOfSpeechTimeout,
             },
           },
-          stopSpeakingPlan: vs.interruptionsEnabled
-            ? { numWords: vs.stopSpeakingNumWords, voiceSeconds: 0.2, backoffSeconds: vs.backoffSeconds }
-            : { numWords: 50, voiceSeconds: 0.5, backoffSeconds: 0 },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
       }

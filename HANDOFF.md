@@ -52,13 +52,14 @@ Patients · Workflows · Reports · Settings.
   **SIP-trunk** form), **Contacts**, **Call Logs** (list + recording/transcript/summary
   detail + status filter + CSV export). 🟡 needs `VAPI_API_KEY` + `ELEVENLABS_API_KEY` + a number.
 - ✅ **Vapi-/Callab-style ADVANCED voice settings** in the agent editor (collapsible
-  "Advanced voice settings" panel, voice agents only): turn detection / VAD (smart
-  endpointing, start-speaking wait, end-of-speech timeouts), interruptions (words-to-
-  interrupt, backoff), noise reduction + ambient background sound, answering-machine /
-  voicemail detection (+ voicemail message), call limits (max duration, silence hang-up),
-  idle reminders (nudge messages/timeout/max count), privacy (recording/transcript/HIPAA),
-  and post-call data extraction (summary, success evaluation, structured fields). Stored on
-  the agent as `voice_settings` JSONB (migration 0035) and mapped onto the Vapi assistant
+  "Advanced settings" panel, voice agents only) — laid out to match Callab exactly:
+  **Agent Speaking → Voice Activity Detection** (Min Speech / Min Silence / Activation
+  Threshold / Prefix Padding / End-of-Speech-Timeout sliders), **Turn Detection** (mode +
+  detection timeout), **Noise Reduction** (level), **Answering Machine Detection**
+  (multilingual + timeout), **Reminder & Call Duration** (silence-before-check / max-check-
+  attempts / max-silence / max-duration), **Privacy** (Store-and-Analyze / Store-Only /
+  Don't-Store with the feature box), and **Post-Call Data Extraction** (add fields). Stored
+  on the agent as `voice_settings` JSONB (migration 0035) and mapped onto the Vapi assistant
   (`startSpeakingPlan`/`stopSpeakingPlan`/`analysisPlan`/`artifactPlan`/`voicemailDetection`/
   `messagePlan`/`maxDurationSeconds`/`silenceTimeoutSeconds`) in `/api/vapi/assistants`. The
   in-browser test call applies the same tuning. 🟡 needs `VAPI_API_KEY`.

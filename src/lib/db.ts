@@ -330,68 +330,58 @@ export interface ExtractionField {
 }
 
 // Advanced Vapi/Callab-style voice-call tuning. Stored as one JSONB blob on the
-// agent (column `voice_settings`) so new knobs don't need schema changes.
+// agent (column `voice_settings`) so new knobs don't need schema changes. The
+// field set + ranges + defaults mirror Callab's "Advanced Settings" panel.
 export interface VoiceSettings {
-  // Turn-taking / Voice Activity Detection — when does the agent decide the caller finished?
-  smartEndpointing: boolean;          // let AI detect end-of-turn instead of a fixed pause
-  startWaitSeconds: number;           // pause before the agent starts replying
-  endpointingOnPunctuationSeconds: number;   // wait after a sentence ends
-  endpointingOnNoPunctuationSeconds: number; // wait when speech trails off mid-sentence
-  // Interruptions — can the caller talk over the agent?
-  interruptionsEnabled: boolean;
-  stopSpeakingNumWords: number;       // words the caller must say to interrupt
-  backoffSeconds: number;             // how long the agent stays quiet after being interrupted
-  // Background noise
-  backgroundDenoising: boolean;
-  backgroundSound: "off" | "office";
-  // Answering-machine / voicemail detection (outbound)
-  voicemailDetection: boolean;
-  voicemailMessage: string;           // message to leave if voicemail is reached
-  // Call limits
-  maxDurationMinutes: number;
-  silenceTimeoutSeconds: number;      // hang up after this much dead air
-  // Idle reminders — nudge a quiet caller
-  idleMessagesEnabled: boolean;
-  idleTimeoutSeconds: number;
-  idleMessages: string;               // one nudge per line
-  idleMaxCount: number;
-  // Privacy / compliance
-  recordingEnabled: boolean;
-  transcriptEnabled: boolean;
-  hipaaEnabled: boolean;              // disables recording/logging on Vapi's side
-  // Post-call data extraction
-  summaryEnabled: boolean;
-  structuredExtractionEnabled: boolean;
+  // Agent Speaking — Voice Activity Detection (VAD)
+  minSpeechDuration: number;       // 0.1–3s · min speech to be detected (default 0.1)
+  minSilenceDuration: number;      // 0.1–3s · min silence to be detected (default 0.3)
+  activationThreshold: number;     // 0.1–0.9 · voice-detection sensitivity (default 0.5)
+  prefixPaddingDuration: number;   // 0.1–3s · audio captured before detected speech (default 0.2)
+  endOfSpeechTimeout: number;      // 0–3s · wait after speech stops before it's "finished" (default 0.2)
+  // Turn Detection
+  turnDetectionEnabled: boolean;   // default true
+  detectionMode: "smart" | "fixed";// "smart" = AI-driven (default), "fixed" = timeout only
+  detectionTimeout: number;        // 0–5s · max wait for user before agent takes turn (default 2.0)
+  // Noise Reduction
+  noiseReductionEnabled: boolean;  // default false
+  reductionLevel: "low" | "medium" | "high"; // default medium
+  // Answering Machine Detection
+  amdEnabled: boolean;             // default false
+  multilingualAmd: boolean;        // default false
+  amdTimeout: number;              // 5–30s · max wait for AMD detection (default 10)
+  // Reminder & Call Duration Settings
+  silenceBeforeCheck: number;      // seconds · silence before the agent checks on the caller (default 60)
+  maxCheckAttempts: number;        // times the agent checks before ending the call (default 3)
+  maxSilenceDuration: number;      // seconds · max silence before ending the call (default 120)
+  maxCallDuration: number;         // minutes · 1–60 · max call length (default 60)
+  // Privacy
+  dataStorage: "store_analyze" | "store_only" | "no_store"; // default store_analyze
+  // Post-Call Data Extraction
   extractionFields: ExtractionField[];
-  successEvaluationEnabled: boolean;
 }
 
 export function defaultVoiceSettings(): VoiceSettings {
   return {
-    smartEndpointing: true,
-    startWaitSeconds: 0.4,
-    endpointingOnPunctuationSeconds: 0.1,
-    endpointingOnNoPunctuationSeconds: 1.5,
-    interruptionsEnabled: true,
-    stopSpeakingNumWords: 0,
-    backoffSeconds: 1,
-    backgroundDenoising: true,
-    backgroundSound: "off",
-    voicemailDetection: false,
-    voicemailMessage: "",
-    maxDurationMinutes: 15,
-    silenceTimeoutSeconds: 30,
-    idleMessagesEnabled: false,
-    idleTimeoutSeconds: 10,
-    idleMessages: "Are you still there?",
-    idleMaxCount: 2,
-    recordingEnabled: true,
-    transcriptEnabled: true,
-    hipaaEnabled: false,
-    summaryEnabled: true,
-    structuredExtractionEnabled: false,
+    minSpeechDuration: 0.1,
+    minSilenceDuration: 0.3,
+    activationThreshold: 0.5,
+    prefixPaddingDuration: 0.2,
+    endOfSpeechTimeout: 0.2,
+    turnDetectionEnabled: true,
+    detectionMode: "smart",
+    detectionTimeout: 2.0,
+    noiseReductionEnabled: false,
+    reductionLevel: "medium",
+    amdEnabled: false,
+    multilingualAmd: false,
+    amdTimeout: 10,
+    silenceBeforeCheck: 60,
+    maxCheckAttempts: 3,
+    maxSilenceDuration: 120,
+    maxCallDuration: 60,
+    dataStorage: "store_analyze",
     extractionFields: [],
-    successEvaluationEnabled: false,
   };
 }
 
