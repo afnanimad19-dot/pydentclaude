@@ -275,10 +275,8 @@ export default function PatientsPage() {
                 </th>
                 <th className="px-5 py-3">Contact</th>
                 <th className="px-4 py-3">Phone / Email</th>
-                <th className="px-4 py-3">Insurance</th>
                 <th className="px-4 py-3">Last visit</th>
                 <th className="px-4 py-3">Next appt</th>
-                <th className="px-4 py-3 text-right">Balance</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Folder</th>
               </tr>
@@ -310,7 +308,6 @@ export default function PatientsPage() {
                     <p className="text-ink-700">{p.phone}</p>
                     <p className="text-xs text-ink-400">{p.email}</p>
                   </td>
-                  <td className="px-4 py-3.5 text-ink-700">{p.insurance}</td>
                   <td className="px-4 py-3.5 text-ink-700">{p.lastVisit}</td>
                   <td className="px-4 py-3.5">
                     {p.nextAppointment ? (
@@ -320,9 +317,6 @@ export default function PatientsPage() {
                     ) : (
                       <span className="text-ink-400">—</span>
                     )}
-                  </td>
-                  <td className={`px-4 py-3.5 text-right font-medium ${p.balance > 0 ? "text-rose-500" : "text-ink-700"}`}>
-                    ${p.balance.toFixed(2)}
                   </td>
                   <td className="px-4 py-3.5">
                     <StatusBadge status={p.status} tone={p.status === "Active" ? "green" : p.status === "New" ? "blue" : "gray"} />

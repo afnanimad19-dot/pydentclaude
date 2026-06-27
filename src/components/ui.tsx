@@ -117,6 +117,16 @@ export function DemoBanner({ context }: { context: string }) {
   );
 }
 
+// Green "this is live, reading/writing your real database" banner.
+export function LiveBanner({ context }: { context: string }) {
+  return (
+    <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-600">
+      <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" />
+      <span><strong className="font-semibold">Live</strong> — {context}</span>
+    </div>
+  );
+}
+
 export function Avatar({ name, size = "md" }: { name: string; size?: "sm" | "md" | "lg" }) {
   const initials = name
     .split(" ")

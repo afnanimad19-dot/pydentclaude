@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Plus, TrendingUp, CircleDollarSign, Hourglass, Bot, Pencil, Check, X, Trash2 } from "lucide-react";
-import { PageHeader, DemoBanner, ChannelBadge, StatCard } from "@/components/ui";
+import { Plus, TrendingUp, Layers, Hourglass, Bot, Pencil, Check, X, Trash2 } from "lucide-react";
+import { PageHeader, LiveBanner, ChannelBadge, StatCard } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import {
   fetchAgents,
@@ -17,7 +17,7 @@ import {
   type AiAgent,
   type WaConversation,
 } from "@/lib/db";
-import { pipeline as initialPipeline, formatMoney, type PipelineStage, type Deal } from "@/lib/mock-data";
+import { pipeline as initialPipeline, type PipelineStage, type Deal } from "@/lib/mock-data";
 
 export default function PipelinePage() {
   // Start from the lifecycle stage definitions with no demo deals — live WhatsApp
@@ -84,7 +84,6 @@ export default function PipelinePage() {
   }
 
   const allDeals = stages.flatMap((s) => dealsForStage(s));
-  const totalValue = allDeals.reduce((sum, d) => sum + d.value, 0);
   const customerCount = stages.filter((s) => s.name === "Customer").reduce((n, s) => n + dealsForStage(s).length, 0);
   const newLeadCount = stages.filter((s) => s.name === "New Lead").reduce((n, s) => n + dealsForStage(s).length, 0);
 
@@ -170,7 +169,7 @@ export default function PipelinePage() {
       {dealModal && (
         <AddDealModal stages={stages} onClose={() => setDealModal(false)} onAdd={addDeal} />
       )}
-      <DemoBanner context="Live WhatsApp leads appear here automatically by lifecycle stage. Move a lead and it updates everywhere (inbox + pipeline); each stage can own an AI agent that takes over when a lead moves in." />
+      <LiveBanner context="WhatsApp leads appear here automatically by lifecycle stage. Move a lead and it updates everywhere (inbox + pipeline); each stage can own an AI agent that takes over when a lead moves in." />
       <PageHeader
         title="Pipeline"
         subtitle="Every lead's lifecycle, from first message to paying patient. Live WhatsApp leads flow in automatically. Drag cards between stages or use the menu on each card."
@@ -193,7 +192,7 @@ export default function PipelinePage() {
       />
 
       <div className="mb-6 grid gap-4 md:grid-cols-3">
-        <StatCard icon={CircleDollarSign} label="Pipeline value" value={formatMoney(totalValue)} hint={`${allDeals.length} open opportunities`} accent="brand" />
+        <StatCard icon={Layers} label="Open opportunities" value={String(allDeals.length)} hint="leads in the pipeline" accent="brand" />
         <StatCard icon={TrendingUp} label="Customers" value={String(customerCount)} hint="converted leads" accent="green" />
         <StatCard icon={Hourglass} label="New leads" value={String(newLeadCount)} hint="awaiting first response" accent="amber" />
       </div>
@@ -201,7 +200,6 @@ export default function PipelinePage() {
       <div className="flex gap-5 overflow-x-auto pb-4">
         {stages.map((stage) => {
           const deals = dealsForStage(stage);
-          const stageValue = deals.reduce((sum, d) => sum + d.value, 0);
           return (
             <div key={stage.id} className="w-80 shrink-0">
               <div className="mb-3 flex items-center justify-between gap-2 px-1">
@@ -244,7 +242,6 @@ export default function PipelinePage() {
                         </button>
                       )}
                     </h2>
-                    <span className="text-xs font-medium text-ink-400">{formatMoney(stageValue)}</span>
                   </>
                 )}
               </div>
@@ -291,7 +288,6 @@ export default function PipelinePage() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-sm font-semibold text-ink-900">{deal.patientName}</p>
-                      <span className="text-sm font-semibold text-brand-600 dark:text-brand-300">{formatMoney(deal.value)}</span>
                     </div>
                     <p className="mt-1 text-xs text-ink-500">{deal.treatment}</p>
                     <div className="mt-3 flex items-center justify-between">
@@ -351,7 +347,6 @@ function AddDealModal({
 }) {
   const [name, setName] = useState("");
   const [treatment, setTreatment] = useState("");
-  const [value, setValue] = useState("");
   const [source, setSource] = useState<Deal["source"]>("whatsapp");
   const [stageId, setStageId] = useState(stages[0]?.id ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -365,7 +360,7 @@ function AddDealModal({
       {
         patientName: name.trim(),
         treatment: treatment.trim() || "New inquiry",
-        value: Number(value) || 0,
+        value: 0,
         source,
         owner: "Front Desk",
       },
@@ -384,21 +379,16 @@ function AddDealModal({
         <Field label="Treatment / inquiry">
           <input className={inputCls} placeholder="Invisalign consult" value={treatment} onChange={(e) => setTreatment(e.target.value)} />
         </Field>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Value ($)">
-            <input className={inputCls} type="number" placeholder="4800" value={value} onChange={(e) => setValue(e.target.value)} />
-          </Field>
-          <Field label="Source">
-            <select className={inputCls} value={source} onChange={(e) => setSource(e.target.value as Deal["source"])}>
-              <option value="whatsapp">WhatsApp</option>
-              <option value="sms">SMS</option>
-              <option value="email">Email</option>
-              <option value="voice">Voice call</option>
-              <option value="walk-in">Walk-in</option>
-              <option value="referral">Referral</option>
-            </select>
-          </Field>
-        </div>
+        <Field label="Source">
+          <select className={inputCls} value={source} onChange={(e) => setSource(e.target.value as Deal["source"])}>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="sms">SMS</option>
+            <option value="email">Email</option>
+            <option value="voice">Voice call</option>
+            <option value="walk-in">Walk-in</option>
+            <option value="referral">Referral</option>
+          </select>
+        </Field>
         <Field label="Stage">
           <select className={inputCls} value={stageId} onChange={(e) => setStageId(e.target.value)}>
             {stages.map((s) => (
