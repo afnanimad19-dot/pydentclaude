@@ -139,9 +139,16 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
   picker** in Add contact. New/imported voice contacts are tagged `source_channel='voice'`.
 - Contacts carry `source_channel`/`source_agent` (read in `db.ts`); `deletePatients()` added.
 
-### Workflows 🟡
-- Workflow list + **builder** page exist (UI). ❌ not executing real automations yet (no runner
-  wired to triggers/actions). Treat as scaffold.
+### Workflows ✅ (runner live)
+- Workflow list + **builder** (canvas) + a real **runner** (`src/lib/workflow-runner.ts`).
+  Builder nodes now carry structured `config` (trigger event, wait amount/unit, condition
+  keyword, action type). Execution: **message** (send via channel with `{{merge}}` fields),
+  **wait** (persisted, resumed by cron), **condition** (keyword on last message), **handoff**
+  (assign conversation to a human), **action** (add-to-pipeline / set status). Runs persist in
+  `workflow_runs` (migration 0040). **Triggers:** "conversation opened" fires from the WhatsApp
+  webhook on a new conversation; "appointment booked" fires from `booking-server`; **Test run**
+  button on the list (`/api/workflows/run`); waits resume via `/api/cron/run` (`resumeDueRuns`).
+  🟡 needs a cron pointed at `/api/cron/run` for waits; sending needs the channel connected.
 
 ### Sample/demo data ✅ removed (real-clinic mode).
 
@@ -183,7 +190,9 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
    AND Phone Numbers rebuilt as a card grid with search + provider/status filters and a 6-provider
    Add picker (Custom SIP Trunk / Ziwo / Go Auto Dial / Maqsam / BYOT Twilio / Vocalcom Hermes),
    each with its own credential form. Campaign column still pending (needs a campaigns model).
-6. **Workflows runner** (execute triggers→actions).
+6. ~~**Workflows runner** (execute triggers→actions).~~ ✅ **DONE** — `workflow-runner.ts`
+   (message/wait/condition/handoff/action), `workflow_runs` (migration 0040), triggers from the
+   WhatsApp webhook + booking + a Test-run API, cron resumes waits. Builder nodes got config.
 7. **SMS (Twilio)**, **Google Calendar push**, **WhatsApp audio delivery**,
    **Mailchimp send**, **X/Shopify/TikTok-Ads/Stripe/Notion** connectors.
 8. **Billing/credits + Admin panel + packages/entitlements** — *deliberately last* (user said
@@ -199,7 +208,8 @@ Prompt Configuration — Agent Identity / Tasks / Style Guardrails), then
 **`0038_voice_call_detail.sql`** (adds `voice_calls.to_phone` / `ended_reason` / `messages` /
 `structured_data` for the Call Logs detail page), then **`0039_campaigns.sql`** (creates
 `campaigns` + adds `voice_calls.campaign_id` for the Voice Agents → Campaigns tab and the
-Call Logs Campaign column/filter). Idempotent, no ON CONFLICT.
+Call Logs Campaign column/filter), then **`0040_workflow_runs.sql`** (creates `workflow_runs`
+for the Workflows runner). Idempotent, no ON CONFLICT.
 
 > **Prompt Configuration (Callab-style):** the agent editor's two boxes (Instructions +
 > Behavior) are now three under a "Prompt Configuration" header — **Agent Identity**

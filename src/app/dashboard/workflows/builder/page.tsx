@@ -33,13 +33,13 @@ const NODE_META: Record<WorkflowNode["type"], { icon: typeof Zap; label: string;
 
 const ADDABLE: WorkflowNode["type"][] = ["message", "condition", "agent", "wait", "action", "handoff"];
 
-const DEFAULTS: Record<WorkflowNode["type"], { title: string; detail: string }> = {
-  trigger: { title: "Trigger: conversation opened", detail: "A contact starts a conversation" },
+const DEFAULTS: Record<WorkflowNode["type"], { title: string; detail: string; config?: Record<string, unknown> }> = {
+  trigger: { title: "Trigger: conversation opened", detail: "A contact starts a conversation", config: { event: "conversation_opened" } },
   message: { title: "Send message", detail: "Hi {{first_name}}! …" },
-  condition: { title: "Condition", detail: "If the patient replied within 24h…" },
+  condition: { title: "Condition", detail: "Only continue if the message mentions a keyword", config: { contains: "" } },
   agent: { title: "AI agent takes over", detail: "Assigned chat agent answers from its knowledge base" },
-  wait: { title: "Wait", detail: "Wait 1 day before the next step" },
-  action: { title: "Action", detail: "Book appointment / add to pipeline / save contact info" },
+  wait: { title: "Wait", detail: "Wait before the next step", config: { amount: 1, unit: "days" } },
+  action: { title: "Action", detail: "Add to pipeline / tag the contact", config: { action: "add_to_pipeline", value: "" } },
   handoff: { title: "Human handoff", detail: "Assign to the Front Desk inbox with full context" },
 };
 
@@ -86,6 +86,10 @@ export default function WorkflowBuilderPage() {
 
   function updateSelected(patch: Partial<WorkflowNode>) {
     setNodes((prev) => prev.map((node) => (node.id === selectedId ? { ...node, ...patch } : node)));
+  }
+
+  function setCfg(patch: Record<string, unknown>) {
+    setNodes((prev) => prev.map((node) => (node.id === selectedId ? { ...node, config: { ...node.config, ...patch } } : node)));
   }
 
   function insertNode(index: number, type: WorkflowNode["type"]) {
@@ -323,8 +327,94 @@ export default function WorkflowBuilderPage() {
               )}
               {selected.type === "message" && (
                 <p className="rounded-xl bg-ink-50 px-3 py-2.5 text-xs leading-relaxed text-ink-500">
-                  Merge fields: {"{{first_name}}"}, {"{{slot_options}}"}, {"{{booking_link}}"}, {"{{balance}}"}, {"{{assignee_name}}"}
+                  Merge fields: {"{{first_name}}"}, {"{{name}}"}, {"{{phone}}"} — these are filled from the contact when the workflow runs.
                 </p>
+              )}
+
+              {selected.type === "trigger" && (
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-ink-700">Starts when…</span>
+                  <select
+                    value={selected.config?.event ?? "conversation_opened"}
+                    onChange={(e) => setCfg({ event: e.target.value })}
+                    className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                  >
+                    <option value="conversation_opened">A contact opens a conversation</option>
+                    <option value="new_lead">A new lead is captured</option>
+                    <option value="appointment_booked">An appointment is booked</option>
+                    <option value="manual">Manually / test run only</option>
+                  </select>
+                </label>
+              )}
+
+              {selected.type === "wait" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-ink-700">Wait</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={selected.config?.amount ?? 1}
+                      onChange={(e) => setCfg({ amount: Math.max(1, Number(e.target.value) || 1) })}
+                      className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-ink-700">Unit</span>
+                    <select
+                      value={selected.config?.unit ?? "days"}
+                      onChange={(e) => setCfg({ unit: e.target.value })}
+                      className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                    >
+                      <option value="minutes">minutes</option>
+                      <option value="hours">hours</option>
+                      <option value="days">days</option>
+                    </select>
+                  </label>
+                </div>
+              )}
+
+              {selected.type === "condition" && (
+                <label className="block">
+                  <span className="mb-1.5 block text-sm font-medium text-ink-700">Continue only if the message contains</span>
+                  <input
+                    value={selected.config?.contains ?? ""}
+                    onChange={(e) => setCfg({ contains: e.target.value })}
+                    placeholder="e.g. book, price, appointment"
+                    className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none focus:border-brand-400"
+                  />
+                </label>
+              )}
+
+              {selected.type === "action" && (
+                <div className="space-y-3">
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-ink-700">Action</span>
+                    <select
+                      value={selected.config?.action ?? "add_to_pipeline"}
+                      onChange={(e) => setCfg({ action: e.target.value })}
+                      className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                    >
+                      <option value="add_to_pipeline">Add the contact to the pipeline</option>
+                      <option value="tag">Set the contact&apos;s status</option>
+                      <option value="none">Do nothing (placeholder)</option>
+                    </select>
+                  </label>
+                  {selected.config?.action === "tag" && (
+                    <label className="block">
+                      <span className="mb-1.5 block text-sm font-medium text-ink-700">Set status to</span>
+                      <select
+                        value={selected.config?.value ?? "Active"}
+                        onChange={(e) => setCfg({ value: e.target.value })}
+                        className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                      >
+                        <option>New</option>
+                        <option>Active</option>
+                        <option>Inactive</option>
+                      </select>
+                    </label>
+                  )}
+                </div>
               )}
             </div>
           </>

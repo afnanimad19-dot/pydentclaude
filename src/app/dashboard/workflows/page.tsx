@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, Workflow as WorkflowIcon, Zap, Trash2, Pencil, Search } from "lucide-react";
+import { Plus, Workflow as WorkflowIcon, Zap, Trash2, Pencil, Search, Play } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { toast } from "@/components/toast";
-import { fetchWorkflows, deleteWorkflow, type Workflow, type DataSource } from "@/lib/db";
+import { fetchWorkflows, deleteWorkflow, getWorkspaceId, type Workflow, type DataSource } from "@/lib/db";
 import { WORKFLOW_TEMPLATES } from "@/lib/workflow-templates";
 
 const CATEGORIES = ["All Templates", "Auto-responder", "Routing & Assignment", "Recall & Recovery", "Reviews & Feedback", "Ads & Leads"] as const;
@@ -38,6 +38,19 @@ export default function WorkflowsPage() {
     await deleteWorkflow(id);
     setWorkflows((prev) => prev.filter((w) => w.id !== id));
     toast(`Workflow “${name}” deleted.`);
+  }
+
+  async function runNow(w: Workflow) {
+    const phone = window.prompt(`Test "${w.name}" — send to which phone number? (leave blank to dry-run without sending)`, "");
+    if (phone === null) return;
+    const ws = await getWorkspaceId();
+    const res = await fetch("/api/workflows/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: ws, workflowId: w.id, phone: phone.trim(), name: "Test contact" }),
+    });
+    const data = await res.json();
+    toast(data.ok ? "Workflow run started." : `Could not run: ${data.error}`, data.ok ? "success" : "info");
   }
 
   return (
@@ -97,6 +110,13 @@ export default function WorkflowsPage() {
                   className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand-600 py-2 text-sm font-semibold text-white hover:bg-brand-700"
                 >
                   <Pencil className="h-3.5 w-3.5" /> Open in canvas
+                </button>
+                <button
+                  onClick={() => runNow(w)}
+                  title="Test run this workflow"
+                  className="flex items-center justify-center rounded-xl border border-ink-200 px-3 py-2 text-ink-500 hover:bg-ink-50 hover:text-brand-600"
+                >
+                  <Play className="h-4 w-4" />
                 </button>
                 <button
                   onClick={() => remove(w.id, w.name)}

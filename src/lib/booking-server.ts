@@ -6,6 +6,7 @@
 
 import { supabase } from "@/lib/supabase";
 import { getOdConfig, odForward } from "@/lib/opendental-gateway";
+import { triggerWorkflows } from "@/lib/workflow-runner";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -173,6 +174,13 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
   } catch {
     /* keep the Calendar booking even if Open Dental is unreachable */
   }
+
+  // Fire any "appointment booked" workflows for this clinic (best-effort).
+  try {
+    await triggerWorkflows(supabase, ws, "appointment_booked", ctx.source, {
+      patientId, conversationId: null, channel: ctx.source, contactPhone: args.phone || ctx.phone || "", name: fullName || ctx.name, lastMessage: "",
+    });
+  } catch { /* never block the booking */ }
 
   const feeNote = fee != null ? ` · fee ${fee}` : "";
   await ctx.log?.(`📅 Booked ${treatment} on ${date} ${time} for ${fullName || ctx.name}${feeNote} via ${ctx.source}${odNote}.`);

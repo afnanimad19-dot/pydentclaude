@@ -4,6 +4,7 @@ import { supabase } from "@/lib/supabase";
 import { generateAgentReply, generateAgentReplyWithTools } from "@/lib/agent-reply";
 import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPageId } from "@/lib/wa-send";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
+import { triggerWorkflows } from "@/lib/workflow-runner";
 
 // Meta calls this endpoint:
 //  1. GET  — verification handshake when you save the webhook (echo hub.challenge).
@@ -292,6 +293,11 @@ async function storeInbound(
       .select("id")
       .single();
     conversationId = created!.id;
+    // New conversation → fire any Live workflows whose trigger is "conversation opened".
+    try {
+      const started = await triggerWorkflows(supabase, ws, "conversation_opened", channel, { patientId: convoPatientId, conversationId, channel, contactPhone: contactId, name, lastMessage: body });
+      if (started > 0) await logEvent(`▶ Started ${started} workflow run${started > 1 ? "s" : ""} for new ${channel} conversation with ${name}.`);
+    } catch { /* never block the inbound */ }
   }
 
   // Insert the inbound message. If Meta retried (duplicate message id), the unique

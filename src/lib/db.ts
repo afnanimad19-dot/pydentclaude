@@ -812,6 +812,9 @@ export interface WorkflowNode {
   type: "trigger" | "message" | "condition" | "agent" | "wait" | "action" | "handoff";
   title: string;
   detail: string;
+  // Structured config the runner executes (trigger event, wait duration, etc.).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config?: Record<string, any>;
 }
 
 export interface Workflow {
