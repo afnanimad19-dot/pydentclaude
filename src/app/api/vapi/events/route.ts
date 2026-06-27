@@ -10,8 +10,18 @@ import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 async function upsertCall(vapiCallId: string, row: Record<string, any>) {
   const { data: existing } = await supabase.from("voice_calls").select("id").eq("vapi_call_id", vapiCallId).limit(1).maybeSingle();
-  if (existing) await supabase.from("voice_calls").update(row).eq("id", existing.id);
-  else await supabase.from("voice_calls").insert({ vapi_call_id: vapiCallId, ...row });
+  const write = (r: Record<string, any>) =>
+    existing
+      ? supabase.from("voice_calls").update(r).eq("id", existing.id)
+      : supabase.from("voice_calls").insert({ vapi_call_id: vapiCallId, ...r });
+  let { error } = await write(row);
+  // Newer columns (to_phone/ended_reason/messages/structured_data) may not be
+  // migrated yet — strip them and retry so the core record still saves.
+  if (error && /to_phone|ended_reason|messages|structured_data/.test(error.message)) {
+    const slim = { ...row };
+    delete slim.to_phone; delete slim.ended_reason; delete slim.messages; delete slim.structured_data;
+    ({ error } = await write(slim));
+  }
 }
 
 // Find the clinic + agent that owns this Vapi assistant, and the caller's phone.
@@ -153,7 +163,13 @@ export async function POST(req: NextRequest) {
       const startedAt = msg?.startedAt ?? msg?.call?.startedAt;
       const endedAt = msg?.endedAt ?? msg?.call?.endedAt ?? new Date().toISOString();
       const duration = Math.round(Number(msg?.durationSeconds ?? msg?.call?.durationSeconds ?? 0));
-      await upsertCall(callId, {
+      // The clinic/assistant number that was called ("To"), and the structured
+      // conversation timeline (turns + tool calls) for the detail page.
+      const toPhone = msg?.phoneNumber?.number ?? msg?.call?.phoneNumber?.number ?? msg?.call?.phoneNumberId ?? "";
+      const endedReason = msg?.endedReason ?? msg?.call?.endedReason ?? "";
+      const messages = msg?.artifact?.messages ?? msg?.messages ?? [];
+      const structuredData = msg?.analysis?.structuredData ?? {};
+      const row: Record<string, unknown> = {
         workspace_id: ctx.ws,
         agent_id: ctx.agentId,
         agent_name: ctx.agentName,
@@ -167,7 +183,12 @@ export async function POST(req: NextRequest) {
         summary,
         recording_url: recording,
         outcome: msg?.analysis?.successEvaluation ? "Success" : "",
-      });
+        to_phone: toPhone,
+        ended_reason: endedReason,
+        messages,
+        structured_data: structuredData,
+      };
+      await upsertCall(callId, row);
     }
   } catch (e) {
     console.error("vapi webhook error", e);

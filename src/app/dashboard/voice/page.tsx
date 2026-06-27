@@ -1,174 +1,183 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { PhoneCall, PhoneIncoming, PhoneOutgoing, CalendarCheck2, Timer, Plus, FileText } from "lucide-react";
-import { Card, PageHeader, StatCard, StatusBadge, Avatar } from "@/components/ui";
-import { NewAgentModal } from "@/components/dashboard/create-modals";
-import { fetchAgents, fetchVoiceCalls, type AiAgent, type VoiceCallRecord } from "@/lib/db";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { PhoneCall, PhoneIncoming, PhoneOutgoing, CalendarCheck2, Timer, FileText, Search, RefreshCw, Play, ChevronLeft, ChevronRight } from "lucide-react";
+import { Card, PageHeader, StatCard, StatusBadge } from "@/components/ui";
+import { fetchVoiceCalls, type VoiceCallRecord } from "@/lib/db";
 
+// Duration as M:SS (e.g. 3:12), matching the Callab call log.
 function fmtDur(s: number) {
   const m = Math.floor(s / 60);
-  return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
 }
-function fmtTime(iso: string | null) {
-  return iso && iso.length >= 16 ? `${iso.slice(5, 10)} ${iso.slice(11, 16)}` : iso || "";
+function fmtDateTime(iso: string | null) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
-export default function VoicePage() {
-  const [modalOpen, setModalOpen] = useState(false);
-  const [agents, setAgents] = useState<AiAgent[]>([]);
+const PER_PAGE = 15;
+
+function statusTone(c: VoiceCallRecord): "green" | "amber" | "red" | "gray" {
+  if (c.status === "in-progress") return "amber";
+  if (c.status === "failed") return "red";
+  if (c.outcome === "Success") return "green";
+  return "gray";
+}
+function statusText(c: VoiceCallRecord): string {
+  if (c.status === "in-progress") return "live";
+  if (c.status === "failed") return "failed";
+  return c.status === "ended" ? "ended" : c.status;
+}
+
+export default function CallLogsPage() {
+  const router = useRouter();
   const [calls, setCalls] = useState<VoiceCallRecord[]>([]);
-  const [activeId, setActiveId] = useState<string>("");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [directionFilter, setDirectionFilter] = useState("");
+  const [page, setPage] = useState(1);
 
-  const refresh = useCallback(() => {
-    fetchVoiceCalls().then((cs) => {
-      setCalls(cs);
-      setActiveId((cur) => cur || cs[0]?.id || "");
-    });
-  }, []);
+  const refresh = useCallback(() => { fetchVoiceCalls().then(setCalls); }, []);
   useEffect(() => {
-    fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "voice")));
     refresh();
     const t = setInterval(refresh, 8000); // pick up live calls
     return () => clearInterval(t);
   }, [refresh]);
 
-  const [statusFilter, setStatusFilter] = useState("");
-  const shownCalls = calls.filter((c) => !statusFilter || (statusFilter === "live" ? c.status === "in-progress" : (c.outcome || c.status) === statusFilter));
-  function exportCalls() {
-    const esc = (v: string | number) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const rows: (string | number)[][] = [["When", "From", "Direction", "Duration (s)", "Status", "Agent", "Outcome"]];
-    shownCalls.forEach((c) => rows.push([c.startedAt ?? "", c.callerPhone, c.direction, c.durationSec, c.status, c.agentName, c.outcome]));
-    const url = URL.createObjectURL(new Blob([rows.map((r) => r.map(esc).join(",")).join("\r\n")], { type: "text/csv" }));
-    const a = document.createElement("a"); a.href = url; a.download = `call-logs-${today}.csv`; a.click(); URL.revokeObjectURL(url);
-  }
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return calls.filter((c) => {
+      if (statusFilter && statusText(c) !== statusFilter) return false;
+      if (directionFilter && c.direction !== directionFilter) return false;
+      if (!q) return true;
+      return [c.callerPhone, c.toPhone, c.agentName, c.summary].some((v) => String(v).toLowerCase().includes(q));
+    });
+  }, [calls, query, statusFilter, directionFilter]);
 
-  const active = calls.find((c) => c.id === activeId);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+  const current = Math.min(page, pageCount);
+  const pageRows = filtered.slice((current - 1) * PER_PAGE, current * PER_PAGE);
+
   const today = new Date().toISOString().slice(0, 10);
   const callsToday = calls.filter((c) => (c.startedAt ?? "").slice(0, 10) === today).length;
   const booked = calls.filter((c) => c.outcome === "Success").length;
   const avg = calls.length ? Math.round(calls.reduce((s, c) => s + c.durationSec, 0) / calls.length) : 0;
 
+  function exportCalls() {
+    const esc = (v: string | number) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows: (string | number)[][] = [["Date", "From", "To", "Direction", "Duration", "Status", "Agent", "Summary"]];
+    filtered.forEach((c) => rows.push([fmtDateTime(c.startedAt), c.callerPhone, c.toPhone, c.direction, fmtDur(c.durationSec), statusText(c), c.agentName, c.summary]));
+    const url = URL.createObjectURL(new Blob([rows.map((r) => r.map(esc).join(",")).join("\r\n")], { type: "text/csv" }));
+    const a = document.createElement("a"); a.href = url; a.download = `call-logs-${today}.csv`; a.click(); URL.revokeObjectURL(url);
+  }
+
   return (
     <>
-      <NewAgentModal open={modalOpen} onClose={() => setModalOpen(false)} />
       <PageHeader
-        title="Voice Agents"
-        subtitle="AI receptionists that answer, book and follow up — every call transcribed, recorded and summarised."
+        title="Call Logs"
+        subtitle="View and manage your AI agent calls — every call transcribed, recorded and summarised."
         actions={
-          <button onClick={() => setModalOpen(true)} className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
-            <Plus className="h-4 w-4" /> New voice agent
+          <button onClick={exportCalls} className="flex items-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50">
+            <FileText className="h-4 w-4" /> Export CSV
           </button>
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="mb-6 grid gap-4 md:grid-cols-3">
         <StatCard icon={PhoneCall} label="Calls today" value={String(callsToday)} hint={`${calls.length} total`} accent="brand" />
         <StatCard icon={CalendarCheck2} label="Successful outcomes" value={String(booked)} hint="booked / resolved" accent="green" />
         <StatCard icon={Timer} label="Avg call duration" value={fmtDur(avg)} hint="across all calls" accent="violet" />
       </div>
 
-      {agents.length > 0 && (
-        <div className="mt-6 grid gap-4 lg:grid-cols-3">
-          {agents.map((a) => (
-            <Card key={a.id} className="p-5">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <Avatar name={a.name} />
-                  <div>
-                    <p className="font-semibold text-ink-900">{a.name}</p>
-                    <p className="text-xs text-ink-400">{a.voice} · {a.purpose}</p>
-                  </div>
-                </div>
-                <StatusBadge status={a.status} tone={a.status === "Live" ? "green" : a.status === "Paused" ? "amber" : "gray"} />
-              </div>
-              <p className="mt-3 line-clamp-2 text-sm leading-relaxed text-ink-600">{a.instructions || "No script yet."}</p>
-            </Card>
-          ))}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-56 flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <input value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="Search number, agent or summary…" className="w-full rounded-xl border border-ink-200 bg-surface py-2.5 pl-9 pr-3 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400" />
         </div>
-      )}
-
-      <div className="mt-6 grid gap-4 xl:grid-cols-5">
-        <Card className="overflow-hidden xl:col-span-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-200 px-5 py-3.5">
-            <h2 className="font-semibold text-ink-900">Call Logs</h2>
-            <div className="flex items-center gap-2">
-              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs text-ink-700 outline-none">
-                <option value="">All statuses</option>
-                <option value="live">In progress</option>
-                <option value="Success">Booked / resolved</option>
-                <option value="Ended">Ended</option>
-                <option value="No answer">No answer</option>
-                <option value="Failed">Failed</option>
-              </select>
-              {calls.length > 0 && <button onClick={exportCalls} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"><FileText className="h-3.5 w-3.5" /> Export CSV</button>}
-            </div>
-          </div>
-          {shownCalls.length === 0 ? (
-            <p className="px-5 py-10 text-center text-sm text-ink-400">
-              No calls yet. Connect a Vapi assistant + phone number and point its Server URL at <code>/api/vapi/events</code> — calls appear here automatically (see VOICE_AGENT_VAPI.md).
-            </p>
-          ) : (
-            shownCalls.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => setActiveId(c.id)}
-                className={`flex w-full items-center gap-3 border-b border-ink-100 px-5 py-4 text-left last:border-0 ${c.id === activeId ? "bg-brand-50/60" : "hover:bg-ink-50"}`}
-              >
-                <div className={`rounded-lg p-2 ${c.direction === "inbound" ? "bg-orange-50 text-orange-600" : "bg-blue-50 text-blue-600"}`}>
-                  {c.direction === "inbound" ? <PhoneIncoming className="h-4 w-4" /> : <PhoneOutgoing className="h-4 w-4" />}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-ink-900">{c.callerPhone || "Unknown caller"}</p>
-                  <p className="text-xs text-ink-400">{c.agentName || "Agent"} · {fmtTime(c.startedAt)} · {fmtDur(c.durationSec)}</p>
-                </div>
-                {c.status === "in-progress" ? (
-                  <span className="flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-rose-600">
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-500" /> Live
-                  </span>
-                ) : (
-                  <StatusBadge status={c.outcome || "Ended"} tone={c.outcome === "Success" ? "green" : "gray"} />
-                )}
-              </button>
-            ))
-          )}
-        </Card>
-
-        <Card className="p-5 xl:col-span-2">
-          {!active ? (
-            <p className="py-10 text-center text-sm text-ink-400">Select a call to see its transcript.</p>
-          ) : (
-            <>
-              <div className="mb-3">
-                <h2 className="font-semibold text-ink-900">Call details</h2>
-                <p className="text-xs text-ink-400">{active.callerPhone} · {fmtTime(active.startedAt)} · {fmtDur(active.durationSec)}</p>
-              </div>
-              {active.recordingUrl ? (
-                <audio controls src={active.recordingUrl} className="mb-4 w-full" />
-              ) : (
-                <p className="mb-4 text-xs text-ink-400">{active.status === "in-progress" ? "Call in progress…" : "No recording available."}</p>
-              )}
-              {active.summary && (
-                <div className="mb-4 rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-sm text-ink-700">
-                  <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-400"><FileText className="h-3.5 w-3.5" /> Summary</p>
-                  {active.summary}
-                </div>
-              )}
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">Transcript</p>
-              {active.transcript ? (
-                <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-xl bg-ink-50 p-3 text-sm leading-relaxed text-ink-800">{active.transcript}</pre>
-              ) : (
-                <p className="text-sm text-ink-400">{active.status === "in-progress" ? "Transcript appears when the call ends." : "No transcript."}</p>
-              )}
-              {active.patientId && (
-                <a href={`/dashboard/patients/${active.patientId}`} className="mt-4 inline-block rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-50">
-                  Open caller&apos;s chart →
-                </a>
-              )}
-            </>
-          )}
-        </Card>
+        <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }} className="rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-700 outline-none">
+          <option value="">All Statuses</option>
+          <option value="live">In progress</option>
+          <option value="ended">Ended</option>
+          <option value="failed">Failed</option>
+        </select>
+        <select value={directionFilter} onChange={(e) => { setDirectionFilter(e.target.value); setPage(1); }} className="rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-700 outline-none">
+          <option value="">All Directions</option>
+          <option value="inbound">Incoming</option>
+          <option value="outbound">Outgoing</option>
+        </select>
+        <button onClick={refresh} title="Refresh" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><RefreshCw className="h-4 w-4" /></button>
       </div>
+
+      <Card className="overflow-hidden">
+        {filtered.length === 0 ? (
+          <p className="px-5 py-12 text-center text-sm text-ink-400">
+            No calls yet. Connect a Vapi assistant + phone number — calls appear here automatically (the assistant Server URL is set to <code>/api/vapi/events</code> on save).
+          </p>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] text-left text-sm">
+                <thead className="border-b border-ink-200 bg-ink-50/60 text-xs font-semibold uppercase tracking-wide text-ink-500">
+                  <tr>
+                    <th className="px-5 py-3">Date</th>
+                    <th className="px-4 py-3">From</th>
+                    <th className="px-4 py-3">To</th>
+                    <th className="px-4 py-3">Direction</th>
+                    <th className="px-4 py-3">Duration</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Agent</th>
+                    <th className="px-4 py-3">Recording</th>
+                    <th className="px-4 py-3">Summary</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageRows.map((c) => (
+                    <tr
+                      key={c.id}
+                      onClick={() => router.push(`/dashboard/voice/${c.id}`)}
+                      className="cursor-pointer border-b border-ink-100 last:border-0 hover:bg-ink-50/60"
+                    >
+                      <td className="px-5 py-3.5 text-ink-700">{fmtDateTime(c.startedAt)}</td>
+                      <td className="px-4 py-3.5 text-ink-700">{c.callerPhone || "—"}</td>
+                      <td className="px-4 py-3.5 text-ink-700">{c.toPhone || "—"}</td>
+                      <td className="px-4 py-3.5">
+                        <span className="flex items-center gap-1.5 text-ink-600">
+                          {c.direction === "inbound" ? <PhoneIncoming className="h-3.5 w-3.5 text-orange-500" /> : <PhoneOutgoing className="h-3.5 w-3.5 text-blue-500" />}
+                          {c.direction === "inbound" ? "incoming" : "outgoing"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-ink-700">{fmtDur(c.durationSec)}</td>
+                      <td className="px-4 py-3.5">
+                        {c.status === "in-progress" ? (
+                          <span className="flex w-fit items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-rose-600"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-rose-500" /> live</span>
+                        ) : (
+                          <StatusBadge status={statusText(c)} tone={statusTone(c)} />
+                        )}
+                      </td>
+                      <td className="px-4 py-3.5 text-ink-700">{c.agentName || "—"}</td>
+                      <td className="px-4 py-3.5">
+                        {c.recordingUrl ? <Play className="h-4 w-4 text-brand-500" /> : <span className="text-ink-300">—</span>}
+                      </td>
+                      <td className="max-w-xs truncate px-4 py-3.5 text-ink-500">{c.summary ? `${c.summary.slice(0, 60)}…` : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-ink-200 px-5 py-3 text-sm text-ink-500">
+              <span>Showing {(current - 1) * PER_PAGE + 1} to {Math.min(current * PER_PAGE, filtered.length)} of {filtered.length} calls</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={current === 1} className="flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50 disabled:opacity-40"><ChevronLeft className="h-3.5 w-3.5" /> Previous</button>
+                <span className="px-2 text-xs">Page {current} of {pageCount}</span>
+                <button onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={current === pageCount} className="flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50 disabled:opacity-40">Next <ChevronRight className="h-3.5 w-3.5" /></button>
+              </div>
+            </div>
+          </>
+        )}
+      </Card>
     </>
   );
 }

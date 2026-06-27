@@ -1400,41 +1400,102 @@ export async function odTestConnection(): Promise<{ ok: boolean; doctors?: numbe
 
 // ----------------------------------------------------------- voice calls (Vapi)
 
+// One turn in the structured conversation timeline (from Vapi's artifact).
+export interface CallMessage {
+  role: string; // bot / assistant / user / tool_calls / tool_call_result / system
+  text: string;
+  secondsFromStart: number | null;
+  toolCalls?: { name: string; args: unknown }[];
+  toolName?: string;
+  toolResult?: string;
+}
+
 export interface VoiceCallRecord {
   id: string;
   agentName: string;
   callerPhone: string;
+  toPhone: string;
   patientId: string | null;
   direction: string;
   status: string;
   startedAt: string | null;
+  endedAt: string | null;
   durationSec: number;
+  endedReason: string;
   transcript: string;
   summary: string;
   recordingUrl: string;
   outcome: string;
+  messages: CallMessage[];
+  structuredData: Record<string, unknown>;
 }
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function normalizeCallMessages(raw: any): CallMessage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((m: any): CallMessage | null => {
+      const role = m?.role ?? "";
+      if (role === "system") return null;
+      const text = typeof m?.message === "string" ? m.message : typeof m?.content === "string" ? m.content : "";
+      const secs = m?.secondsFromStart != null ? Number(m.secondsFromStart) : m?.time != null ? Number(m.time) / 1000 : null;
+      const out: CallMessage = { role, text, secondsFromStart: Number.isFinite(secs as number) ? (secs as number) : null };
+      if (Array.isArray(m?.toolCalls) && m.toolCalls.length) {
+        out.toolCalls = m.toolCalls.map((tc: any) => {
+          let args = tc?.function?.arguments ?? tc?.arguments ?? {};
+          if (typeof args === "string") { try { args = JSON.parse(args); } catch { /* keep string */ } }
+          return { name: tc?.function?.name ?? tc?.name ?? "tool", args };
+        });
+      }
+      if (role === "tool_call_result" || m?.result != null) {
+        out.toolName = m?.name ?? "";
+        out.toolResult = typeof m?.result === "string" ? m.result : m?.result != null ? JSON.stringify(m.result, null, 2) : "";
+      }
+      return out;
+    })
+    .filter((m): m is CallMessage => m != null);
+}
+
+function rowToVoiceCall(r: any): VoiceCallRecord {
+  return {
+    id: r.id,
+    agentName: r.agent_name ?? "",
+    callerPhone: r.caller_phone ?? "",
+    toPhone: r.to_phone ?? "",
+    patientId: r.patient_id ?? null,
+    direction: r.direction ?? "inbound",
+    status: r.status ?? "ended",
+    startedAt: r.started_at,
+    endedAt: r.ended_at ?? null,
+    durationSec: r.duration_sec ?? 0,
+    endedReason: r.ended_reason ?? "",
+    transcript: r.transcript ?? "",
+    summary: r.summary ?? "",
+    recordingUrl: r.recording_url ?? "",
+    outcome: r.outcome ?? "",
+    messages: normalizeCallMessages(r.messages),
+    structuredData: (r.structured_data && typeof r.structured_data === "object") ? r.structured_data : {},
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export async function fetchVoiceCalls(): Promise<VoiceCallRecord[]> {
   try {
     const ws = await getWorkspaceId();
-    const { data } = await supabase.from("voice_calls").select("*").eq("workspace_id", ws).order("created_at", { ascending: false }).limit(100);
-    return (data ?? []).map((r) => ({
-      id: r.id,
-      agentName: r.agent_name ?? "",
-      callerPhone: r.caller_phone ?? "",
-      patientId: r.patient_id ?? null,
-      direction: r.direction ?? "inbound",
-      status: r.status ?? "ended",
-      startedAt: r.started_at,
-      durationSec: r.duration_sec ?? 0,
-      transcript: r.transcript ?? "",
-      summary: r.summary ?? "",
-      recordingUrl: r.recording_url ?? "",
-      outcome: r.outcome ?? "",
-    }));
+    const { data } = await supabase.from("voice_calls").select("*").eq("workspace_id", ws).order("created_at", { ascending: false }).limit(500);
+    return (data ?? []).map(rowToVoiceCall);
   } catch {
     return [];
+  }
+}
+
+export async function fetchVoiceCall(id: string): Promise<VoiceCallRecord | null> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("voice_calls").select("*").eq("workspace_id", ws).eq("id", id).maybeSingle();
+    return data ? rowToVoiceCall(data) : null;
+  } catch {
+    return null;
   }
 }
 

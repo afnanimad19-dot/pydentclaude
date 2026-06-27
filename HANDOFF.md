@@ -73,8 +73,15 @@ Patients · Workflows · Reports · Settings.
   treatment/fee and is stamped with `source='voice'` + `booked_by=<agent>`; the Calendar
   detail shows Treatment, Fee, and "Booked via" (Calling agent / Chat agent · WhatsApp / Front
   desk). Chat bookings now capture fee + source too. Needs migration 0036. 🟡 needs `VAPI_API_KEY`.
-- ❌ Call Logs as a full **dedicated detail page** + "To"/campaign columns (currently a side
-  panel; needs extra Vapi webhook fields). SIP form stores config; live SIP handshake is done in Vapi.
+- ✅ **Call Logs** rebuilt Callab-style: `/dashboard/voice` is now a paginated table (Date /
+  From / To / Direction / Duration / Status / Agent / Recording / Summary, search + status/
+  direction filters + CSV export), and each row opens a **dedicated detail page**
+  `/dashboard/voice/[id]` — Call Details (From/To/Started/Ended/Status/Direction/Connection
+  Duration/Reason/Agent), Call Outcome (post-call structured data), Call Summary, and a Call
+  Transcript with the recording player + a **Conversation Timeline** (AI/caller bubbles + tool-
+  call request/response cards like `get_available_slots`). The Vapi webhook now stores
+  `to_phone` / `ended_reason` / `messages` (structured timeline) / `structured_data` (migration
+  0038, graceful fallback). ❌ remaining: campaign column (needs a campaigns model).
 
 ### AI Team — Helena, Sam, Kai, Angela ✅ (some tools need keys)
 Each agent: brand knowledge (+ **unlimited uploaded brand docs**), **chat history/sessions**,
@@ -163,7 +170,9 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
    contacts + country-flag phone picker + bulk select/import/export.~~ ✅ **DONE** — see the
    Contacts section above. (`contact-detail.tsx`, trimmed `patients/[id]`, rebuilt voice
    `agents/contacts`, `deletePatients()`, `source_channel`/`source_agent` on contacts.)
-5. **Call Logs full detail page** + To/campaign columns; **Phone Numbers** card layout +
+5. ~~**Call Logs full detail page** + To/campaign columns~~ ✅ **DONE** (Callab-style list +
+   `/dashboard/voice/[id]` detail with timeline + tool-call cards; migration 0038). Campaign
+   column still pending (needs a campaigns model). ▶ NEXT: **Phone Numbers** card layout +
    provider methods (Ziwo/Maqsam/Vocalcom/GoAutoDial) like Callab.
 6. **Workflows runner** (execute triggers→actions).
 7. **SMS (Twilio)**, **Google Calendar push**, **WhatsApp audio delivery**,
@@ -177,7 +186,9 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
 settings), then **`0036_appointment_booking_meta.sql`** (adds `appointments.fee`,
 `appointments.source`, `appointments.booked_by` for voice/chat booking metadata),
 then **`0037_agent_identity.sql`** (adds `agents.agent_identity` for the Callab-style
-Prompt Configuration — Agent Identity / Tasks / Style Guardrails). Idempotent, no ON CONFLICT.
+Prompt Configuration — Agent Identity / Tasks / Style Guardrails), then
+**`0038_voice_call_detail.sql`** (adds `voice_calls.to_phone` / `ended_reason` / `messages` /
+`structured_data` for the Call Logs detail page). Idempotent, no ON CONFLICT.
 
 > **Prompt Configuration (Callab-style):** the agent editor's two boxes (Instructions +
 > Behavior) are now three under a "Prompt Configuration" header — **Agent Identity**
