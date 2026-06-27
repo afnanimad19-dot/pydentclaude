@@ -111,14 +111,16 @@ function toolsFor(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?
       type: "function",
       function: {
         name: "book_appointment",
-        description: "Book a dental appointment once the patient has agreed on a specific date and time. Provide the patient's name and email so the booking is complete.",
+        description: "Book a dental appointment once the patient has agreed on a specific date and time. Collect the patient's name, phone, email, the treatment they want, and the fee/price quoted so the booking is complete.",
         parameters: {
           type: "object",
           properties: {
             firstName: { type: "string", description: "Patient first name" },
             lastName: { type: "string", description: "Patient last name" },
             email: { type: "string", description: "Patient email if given" },
-            service: { type: "string" },
+            phone: { type: "string", description: "Patient phone number if given" },
+            service: { type: "string", description: "The treatment/service booked, e.g. cleaning, whitening, implant consult" },
+            fee: { type: "number", description: "The fee/price the patient is booking for, if mentioned (number only)" },
             doctor: { type: "string" },
             datetime: { type: "string", description: "ISO 8601 date-time, e.g. 2026-06-22T14:00" },
           },

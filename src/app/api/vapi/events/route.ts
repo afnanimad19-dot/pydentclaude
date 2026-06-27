@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
 
 // Vapi server webhook. Set this URL as the assistant's Server URL in Vapi.
 // Handles status updates (live state) and the end-of-call report (transcript,
@@ -39,6 +40,72 @@ async function captureCaller(ws: string | null, phone: string, name: string): Pr
   }
 }
 
+// Normalise Vapi's tool-call payloads (which vary by version) into a flat list
+// of { id, name, args }.
+function extractToolCalls(msg: any): { id: string; name: string; args: any }[] {
+  const list = msg?.toolCallList ?? msg?.toolCalls ?? msg?.toolWithToolCallList ?? [];
+  const out: { id: string; name: string; args: any }[] = [];
+  for (const tc of Array.isArray(list) ? list : []) {
+    const fn = tc?.function ?? tc;
+    let args = fn?.arguments ?? fn?.parameters ?? tc?.arguments ?? {};
+    if (typeof args === "string") {
+      try { args = JSON.parse(args); } catch { args = {}; }
+    }
+    out.push({ id: tc?.id ?? tc?.toolCallId ?? "", name: fn?.name ?? tc?.name ?? "", args: args ?? {} });
+  }
+  // Legacy single function-call shape.
+  if (out.length === 0 && msg?.functionCall) {
+    let args = msg.functionCall.parameters ?? msg.functionCall.arguments ?? {};
+    if (typeof args === "string") { try { args = JSON.parse(args); } catch { args = {}; } }
+    out.push({ id: msg.functionCall.id ?? "", name: msg.functionCall.name ?? "", args });
+  }
+  return out;
+}
+
+async function runVoiceTool(ctx: BookingCtx, name: string, args: any): Promise<string> {
+  switch (name) {
+    case "get_available_slots":
+      return getSlots(ctx.ws, args);
+    case "book_appointment":
+      return bookAppointment(ctx, args);
+    case "reschedule_appointment":
+      return rescheduleAppt(ctx, args);
+    case "cancel_appointment":
+      return cancelAppt(ctx, args);
+    default:
+      return "Unsupported tool.";
+  }
+}
+
+async function handleToolCalls(msg: any): Promise<NextResponse> {
+  const ctx = await resolveContext(msg);
+  const phone = msg?.call?.customer?.number ?? msg?.customer?.number ?? "";
+  const patientId = await captureCaller(ctx.ws, phone, "");
+  const bookingCtx: BookingCtx = {
+    ws: ctx.ws,
+    patientId,
+    name: "",
+    phone,
+    source: "voice",
+    bookedBy: ctx.agentName,
+  };
+
+  const calls = extractToolCalls(msg);
+  const results = [];
+  for (const c of calls) {
+    let result: string;
+    try {
+      result = await runVoiceTool(bookingCtx, c.name, c.args);
+    } catch (e) {
+      result = `Error: ${e instanceof Error ? e.message : "tool failed"}`;
+    }
+    results.push({ toolCallId: c.id, name: c.name, result });
+  }
+
+  // Vapi expects { results: [{ toolCallId, result }] }.
+  return NextResponse.json({ results });
+}
+
 export async function POST(req: NextRequest) {
   const secret = process.env.VAPI_WEBHOOK_SECRET;
   if (secret) {
@@ -55,6 +122,13 @@ export async function POST(req: NextRequest) {
   const msg = body?.message ?? body;
   const type: string = msg?.type ?? "";
   const callId: string = msg?.call?.id ?? msg?.callId ?? "";
+
+  // Live-call booking: the agent invoked one of our tools mid-call. Run it
+  // (Calendar + Open Dental) and return the result so the agent can confirm.
+  if (type === "tool-calls" || type === "function-call") {
+    return handleToolCalls(msg);
+  }
+
   if (!callId) return NextResponse.json({ ok: true });
 
   try {

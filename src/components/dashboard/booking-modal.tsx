@@ -42,6 +42,7 @@ export function BookingModal({
   const [phone, setPhone] = useState(initialPhone);
   const [email, setEmail] = useState(initialEmail);
   const [service, setService] = useState(SERVICES[0]);
+  const [fee, setFee] = useState("");
   const [date, setDate] = useState(today);
   const [time, setTime] = useState("10:00");
   const [saving, setSaving] = useState(false);
@@ -49,7 +50,8 @@ export function BookingModal({
   async function submit() {
     if (!name.trim()) { toast("Enter the patient's name.", "info"); return; }
     setSaving(true);
-    const res = await createBooking({ name: name.trim(), email, phone, service, date, time });
+    const feeNum = fee.trim() ? Number(fee.replace(/[^0-9.]/g, "")) : null;
+    const res = await createBooking({ name: name.trim(), email, phone, service, date, time, fee: Number.isFinite(feeNum as number) ? feeNum : null });
     setSaving(false);
     if (!res.ok) { toast(res.message, "info"); return; }
     toast(res.openDental ? `${res.message} ${res.openDental}` : res.message, "success");
@@ -65,11 +67,14 @@ export function BookingModal({
           <Field label="Phone"><input className={inputCls} placeholder="+1 (305) 555-0100" value={phone} onChange={(e) => setPhone(e.target.value)} /></Field>
           <Field label="Email"><input className={inputCls} placeholder="patient@email.com" value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
         </div>
-        <Field label="Service">
-          <select className={inputCls} value={service} onChange={(e) => setService(e.target.value)}>
-            {SERVICES.map((s) => <option key={s}>{s}</option>)}
-          </select>
-        </Field>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Treatment">
+            <select className={inputCls} value={service} onChange={(e) => setService(e.target.value)}>
+              {SERVICES.map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Fee (optional)"><input className={inputCls} placeholder="e.g. 150" value={fee} onChange={(e) => setFee(e.target.value)} /></Field>
+        </div>
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Date"><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
           <Field label="Time"><input type="time" className={inputCls} value={time} onChange={(e) => setTime(e.target.value)} /></Field>

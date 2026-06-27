@@ -35,6 +35,21 @@ function monthOptions(): { value: string; label: string }[] {
   return out;
 }
 
+// Friendly label for where a booking came from.
+function sourceLabel(a: Appointment): string {
+  const src = a.source ?? a.confirmedVia;
+  const who = a.bookedBy ? ` — ${a.bookedBy}` : "";
+  if (src === "voice") return `Calling agent${who}`;
+  if (src === "manual") return `Front desk${a.bookedBy ? ` — ${a.bookedBy}` : ""}`;
+  if (src === "whatsapp") return `Chat agent · WhatsApp${who}`;
+  if (src === "instagram") return `Chat agent · Instagram${who}`;
+  if (src === "messenger") return `Chat agent · Messenger${who}`;
+  if (src === "sms") return `Chat agent · SMS${who}`;
+  if (src === "email") return `Chat agent · Email${who}`;
+  if (a.bookedBy) return a.bookedBy;
+  return "—";
+}
+
 const STATUS_STYLES: Record<Appointment["status"], string> = {
   Confirmed: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
   Scheduled: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
@@ -110,12 +125,14 @@ export default function CalendarPage() {
               <span className="font-medium text-ink-900">{selected.date} · {selected.time}</span>
             </div>
             {[
-              ["Reason", selected.procedure],
+              ["Treatment", selected.procedure],
+              ["Fee", selected.fee != null ? String(selected.fee) : "—"],
               ["Provider", selected.provider || "—"],
               ["Operatory", selected.operatory || "—"],
               ["Status", selected.status],
               ["Phone", selectedPatient?.phone || "—"],
               ["Email", selectedPatient?.email || "—"],
+              ["Booked via", sourceLabel(selected)],
             ].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between border-b border-ink-100 pb-2 last:border-0">
                 <span className="text-ink-500">{k}</span>

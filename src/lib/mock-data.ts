@@ -32,6 +32,9 @@ export interface Appointment {
   durationMin: number;
   status: "Scheduled" | "Confirmed" | "Completed" | "Broken" | "Unconfirmed";
   confirmedVia: Channel | null;
+  fee?: number | null;
+  source?: Channel | "manual" | null; // where the booking came from
+  bookedBy?: string | null; // which agent / staff booked it
 }
 
 export interface Message {

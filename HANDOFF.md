@@ -63,8 +63,16 @@ Patients · Workflows · Reports · Settings.
   (`startSpeakingPlan`/`stopSpeakingPlan`/`analysisPlan`/`artifactPlan`/`voicemailDetection`/
   `messagePlan`/`maxDurationSeconds`/`silenceTimeoutSeconds`) in `/api/vapi/assistants`. The
   in-browser test call applies the same tuning. 🟡 needs `VAPI_API_KEY`.
-- ❌ **Voice-call booking tool** (book into the calendar from a live phone call) — chat books;
-  the live-call booking tool isn't wired yet.
+- ✅ **Voice-call booking tool** — the voice agent now books/reschedules/cancels from a LIVE
+  phone call, exactly like chat. `/api/vapi/assistants` attaches `book_appointment` /
+  `get_available_slots` / `reschedule_appointment` / `cancel_appointment` tools (based on the
+  agent's abilities) + sets the assistant `server.url` to `/api/vapi/events`. When the model
+  calls a tool mid-call, Vapi POSTs `tool-calls` to that webhook, which runs the booking via
+  the shared `src/lib/booking-server.ts` (Calendar + Open Dental) and returns the result, so
+  the agent only says "booked" after it really is. The booking captures name/phone/email/
+  treatment/fee and is stamped with `source='voice'` + `booked_by=<agent>`; the Calendar
+  detail shows Treatment, Fee, and "Booked via" (Calling agent / Chat agent · WhatsApp / Front
+  desk). Chat bookings now capture fee + source too. Needs migration 0036. 🟡 needs `VAPI_API_KEY`.
 - ❌ Call Logs as a full **dedicated detail page** + "To"/campaign columns (currently a side
   panel; needs extra Vapi webhook fields). SIP form stores config; live SIP handshake is done in Vapi.
 
@@ -141,7 +149,9 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
    privacy / post-call extraction) — the Vapi/Callab-style editor.~~ ✅ **DONE** — collapsible
    "Advanced voice settings" panel in the agent editor; persisted as `voice_settings` JSONB
    (migration 0035) and mapped onto the Vapi assistant in `/api/vapi/assistants`.
-2. **Voice-call booking tool** (book from a live call → calendar + Open Dental).
+2. ~~**Voice-call booking tool** (book from a live call → calendar + Open Dental).~~ ✅ **DONE**
+   — Vapi tools + `/api/vapi/events` tool-call handler + shared `booking-server.ts`; captures
+   name/phone/email/treatment/fee and tags the booking source (voice vs chat agent). Migration 0036.
 3. **Open Dental local connector** + live test (when the user enables the key).
 4. **Patients → Contacts** rename + contact detail page + trim patient tabs + voice-only
    contacts + country-flag phone picker + bulk select/import/export.
@@ -156,7 +166,9 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
 
 ## Migrations: run **RUN_PENDING_MIGRATIONS.sql** (bundles 0024→0034) in Supabase, then
 **`0035_voice_settings.sql`** (adds `agents.voice_settings` JSONB for advanced voice
-settings). Idempotent, no ON CONFLICT.
+settings), then **`0036_appointment_booking_meta.sql`** (adds `appointments.fee`,
+`appointments.source`, `appointments.booked_by` for voice/chat booking metadata).
+Idempotent, no ON CONFLICT.
 
 ## 2. Repo, branch, hosting
 - **GitHub:** `afnanimad19-dot/pydentclaude`. **Work only on branch

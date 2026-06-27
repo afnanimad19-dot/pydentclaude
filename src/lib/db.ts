@@ -93,6 +93,9 @@ function rowToAppointment(r: any, patientName: string): Appointment {
     durationMin: r.duration_min ?? 60,
     status: r.status,
     confirmedVia: r.confirmed_via ?? null,
+    fee: r.fee != null ? Number(r.fee) : null,
+    source: r.source ?? r.confirmed_via ?? null,
+    bookedBy: r.booked_by ?? null,
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -257,6 +260,7 @@ export async function createBooking(input: {
   time: string;
   provider?: string;
   operatory?: string;
+  fee?: number | null;
 }): Promise<{ ok: boolean; message: string; openDental?: string }> {
   const ws = await getWorkspaceId();
   if (!ws) return { ok: false, message: "Sign in first." };
@@ -281,7 +285,7 @@ export async function createBooking(input: {
     patientId = data.id;
   }
 
-  const { error: aerr } = await supabase.from("appointments").insert({
+  const apptRow: Record<string, unknown> = {
     patient_id: patientId,
     procedure: input.service || "Consultation",
     date: input.date,
@@ -289,7 +293,17 @@ export async function createBooking(input: {
     provider: input.provider ?? "",
     operatory: input.operatory ?? "",
     status: "Scheduled",
-  });
+    fee: input.fee ?? null,
+    source: "manual",
+    booked_by: "Staff",
+  };
+  let { error: aerr } = await supabase.from("appointments").insert(apptRow);
+  if (aerr && /fee|source|booked_by/.test(aerr.message)) {
+    delete apptRow.fee;
+    delete apptRow.source;
+    delete apptRow.booked_by;
+    ({ error: aerr } = await supabase.from("appointments").insert(apptRow));
+  }
   if (aerr) return { ok: false, message: aerr.message };
 
   // Best-effort: also book in Open Dental when the clinic has it enabled.

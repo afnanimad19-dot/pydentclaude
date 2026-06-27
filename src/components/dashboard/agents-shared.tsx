@@ -1003,6 +1003,9 @@ export function AgentModal({
             language: form.language,
             firstMessageMode: form.firstMessageMode,
             voiceSettings: form.voiceSettings,
+            canBook: form.canBook,
+            canReschedule: form.canReschedule,
+            canCancel: form.canCancel,
           }),
         });
         const vapiData = await vapiRes.json();

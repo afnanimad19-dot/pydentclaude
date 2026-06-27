@@ -135,26 +135,126 @@ function advancedFromSettings(vs: any): Record<string, any> {
 
   return out;
 }
+// Live-call booking tools. When the model calls one, Vapi POSTs to our server
+// (the events webhook) which actually books on the Calendar + Open Dental and
+// returns the result — so the agent only says "booked" after it really is.
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function bookingTools(
+  caps: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean },
+  serverUrl: string
+): any[] {
+  const server = { url: serverUrl };
+  const tools: any[] = [];
+  if (caps.canBook) {
+    tools.push({
+      type: "function",
+      server,
+      function: {
+        name: "get_available_slots",
+        description: "Fetch real open appointment times for a treatment on a date BEFORE offering times to the caller.",
+        parameters: {
+          type: "object",
+          properties: {
+            treatment: { type: "string", description: "e.g. cleaning, check-up, consultation, whitening" },
+            doctor: { type: "string", description: "Doctor name if specified, else empty" },
+            date: { type: "string", description: "Date as YYYY-MM-DD" },
+          },
+          required: ["date"],
+        },
+      },
+    });
+    tools.push({
+      type: "function",
+      server,
+      function: {
+        name: "book_appointment",
+        description:
+          "Book the appointment once the caller agreed on a specific date and time. Collect and pass the patient's name, phone, email, the treatment, and the fee/price quoted. Only tell the caller it is booked AFTER this returns success.",
+        parameters: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "Patient full name" },
+            phone: { type: "string", description: "Patient phone number (defaults to the caller's number)" },
+            email: { type: "string", description: "Patient email if given" },
+            treatment: { type: "string", description: "The treatment/service booked" },
+            fee: { type: "number", description: "The fee/price the patient is booking for, if mentioned (number only)" },
+            doctor: { type: "string", description: "Doctor name if specified" },
+            datetime: { type: "string", description: "ISO 8601 date-time, e.g. 2026-06-22T14:00" },
+          },
+          required: ["treatment", "datetime"],
+        },
+      },
+    });
+  }
+  if (caps.canReschedule) {
+    tools.push({
+      type: "function",
+      server,
+      function: {
+        name: "reschedule_appointment",
+        description: "Move the caller's existing appointment to a new date and time.",
+        parameters: { type: "object", properties: { datetime: { type: "string", description: "New ISO date-time" } }, required: ["datetime"] },
+      },
+    });
+  }
+  if (caps.canCancel) {
+    tools.push({
+      type: "function",
+      server,
+      function: {
+        name: "cancel_appointment",
+        description: "Cancel the caller's existing appointment.",
+        parameters: { type: "object", properties: { reason: { type: "string" } } },
+      },
+    });
+  }
+  return tools;
+}
+
+function bookingPrompt(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean }): string {
+  if (!caps.canBook && !caps.canReschedule && !caps.canCancel) return "";
+  return (
+    "BOOKING — read carefully: You can ONLY change the schedule by calling the tools. " +
+    "Saying 'booked' in words does NOT book anything. To book: first call get_available_slots to offer real open times, " +
+    "then once the caller agrees on a specific date and time, collect their full name, phone number, email, the treatment they want, " +
+    "and the fee/price, and call book_appointment with all of them. NEVER tell the caller the appointment is booked unless book_appointment returned success."
+  );
+}
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 export async function POST(req: NextRequest) {
   if (!process.env.VAPI_API_KEY) return notConfigured();
   const agent = await req.json();
 
+  // Absolute URL Vapi calls back for status updates, end-of-call reports, and
+  // tool-calls (live booking). Derived from the deployment origin.
+  const origin =
+    process.env.VAPI_SERVER_URL?.replace(/\/$/, "") ||
+    process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
+    new URL(req.url).origin;
+  const serverUrl = `${origin}/api/vapi/events`;
+
+  const caps = { canBook: agent.canBook, canReschedule: agent.canReschedule, canCancel: agent.canCancel };
+  const tools = bookingTools(caps, serverUrl);
+
   // Map a Pydent voice agent onto a Vapi assistant definition.
   const assistant = {
     name: agent.name,
     firstMessage: agent.firstMessage || `Hi, this is ${agent.name} from the dental office. How can I help?`,
     firstMessageMode: FIRST_MESSAGE_MODE[agent.firstMessageMode] ?? "assistant-speaks-first",
+    // Vapi calls this for status updates, end-of-call reports, and tool-calls.
+    server: { url: serverUrl, ...(process.env.VAPI_WEBHOOK_SECRET ? { secret: process.env.VAPI_WEBHOOK_SECRET } : {}) },
     model: {
       provider: "openai",
       model: agent.model || "gpt-4o-mini",
+      ...(tools.length ? { tools } : {}),
       messages: [
         {
           role: "system",
           content: [
             agent.instructions,
             agent.behavior && `BEHAVIOR RULES (how to act, what NOT to do):\n${agent.behavior}`,
+            bookingPrompt(caps),
             agent.knowledgeBase && `KNOWLEDGE BASE:\n${agent.knowledgeBase}`,
           ]
             .filter(Boolean)
