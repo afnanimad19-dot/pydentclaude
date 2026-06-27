@@ -9,12 +9,13 @@ import { BookingModal } from "@/components/dashboard/booking-modal";
 import { fetchAppointments, fetchPatients } from "@/lib/db";
 import { type Appointment, type Patient } from "@/lib/mock-data";
 
-const HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
-const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const HOURS = Array.from({ length: 24 }, (_, i) => i); // all 24 hours
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]; // full week
 
 function mondayOf(d: Date): Date {
+  // Start of the week = Sunday (we show Sun → Sat).
   const out = new Date(d);
-  out.setUTCDate(out.getUTCDate() - ((out.getUTCDay() + 6) % 7));
+  out.setUTCDate(out.getUTCDate() - out.getUTCDay());
   out.setUTCHours(0, 0, 0, 0);
   return out;
 }
@@ -228,7 +229,7 @@ export default function CalendarPage() {
           </div>
         ) : (
         <div className="overflow-x-auto">
-          <div className="grid min-w-[800px] grid-cols-[56px_repeat(6,1fr)]">
+          <div className="grid min-w-[920px] grid-cols-[56px_repeat(7,1fr)]">
             {/* Header row */}
             <div className="border-b border-ink-200 bg-ink-50" />
             {days.map((d, i) => (
@@ -242,7 +243,7 @@ export default function CalendarPage() {
             {HOURS.map((h) => (
               <div key={h} className="contents">
                 <div className="border-b border-ink-100 px-2 py-1 text-right text-[11px] text-ink-400">
-                  {h <= 12 ? `${h}:00` : `${h - 12}:00`} {h < 12 ? "AM" : "PM"}
+                  {((h % 12) || 12)}:00 {h < 12 ? "AM" : "PM"}
                 </div>
                 {days.map((d, i) => {
                   const date = iso(d);

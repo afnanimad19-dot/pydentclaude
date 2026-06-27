@@ -39,14 +39,10 @@ import {
   setAgentVapiId,
   fetchChannelDefaults,
   setChannelDefault,
-  fetchPhoneLines,
-  addPhoneLine,
-  removePhoneLine,
   fetchClinicSettings,
   type AiAgent,
   type DataSource,
   type ChannelDefault,
-  type PhoneLine,
 } from "@/lib/db";
 
 const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4.1-mini"];
@@ -311,17 +307,11 @@ export function AgentHubView() {
   }, []);
 
   const chatAgents = agents.filter((a) => a.kind === "chat");
-  const voiceAgents = agents.filter((a) => a.kind === "voice");
   const [defaults, setDefaults] = useState<Record<string, ChannelDefault>>({});
-  const [lines, setLines] = useState<PhoneLine[]>([]);
-  const [newNumber, setNewNumber] = useState("");
-  const [newLineAgent, setNewLineAgent] = useState("");
-  const [newLineDirection, setNewLineDirection] = useState<PhoneLine["direction"]>("inbound");
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
     fetchChannelDefaults().then((d) => setDefaults(Object.fromEntries(d.map((x) => [x.channel, x]))));
-    fetchPhoneLines().then(setLines);
   }, []);
 
   async function saveDefault(channel: string, agentId: string | null, enabled: boolean) {
@@ -330,22 +320,11 @@ export function AgentHubView() {
     if (!res.ok) setNote(`Could not save (${res.message}) — run migration 0003 in the SQL Editor.`);
   }
 
-  async function addLine() {
-    if (!newNumber.trim()) return;
-    const res = await addPhoneLine(newNumber.trim(), newLineAgent || null, newLineDirection);
-    if (!res.ok) {
-      setNote(`Could not save (${res.message}) — run migration 0003 in the SQL Editor.`);
-      return;
-    }
-    setNewNumber("");
-    fetchPhoneLines().then(setLines);
-  }
-
   return (
     <>
       <PageHeader
         title="Agent Hub"
-        subtitle="Route every channel and phone line to the right agent — automatically."
+        subtitle="Route every chat channel to the right agent — automatically."
       />
       <div className="space-y-6">
         {note && (
@@ -393,72 +372,6 @@ export function AgentHubView() {
                 </div>
               );
             })}
-          </div>
-        </Card>
-
-        <Card className="p-6">
-          <h2 className="flex items-center gap-2 font-semibold text-ink-900">
-            <PhoneCall className="h-5 w-5 text-orange-500" /> Voice — phone lines
-          </h2>
-          <p className="mt-1 text-sm text-ink-500">
-            Connect a number and route it: inbound calls, outbound campaigns, or both. You can run
-            different agents on the same number for different directions.
-          </p>
-
-          <div className="mt-5 space-y-2.5">
-            {lines.map((l) => (
-              <div key={l.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-ink-100 px-4 py-3">
-                <span className="min-w-36 text-sm font-medium text-ink-900">{l.number}</span>
-                <span className="rounded-full bg-orange-500/15 px-2.5 py-0.5 text-xs font-medium capitalize text-orange-500">{l.direction}</span>
-                <span className="flex-1 text-sm text-ink-600">
-                  {voiceAgents.find((a) => a.id === l.agentId)?.name ?? "No agent assigned"}
-                </span>
-                <button
-                  onClick={async () => {
-                    await removePhoneLine(l.id);
-                    setLines((prev) => prev.filter((x) => x.id !== l.id));
-                  }}
-                  className="rounded-lg p-1.5 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
-            {lines.length === 0 && (
-              <p className="rounded-xl border border-dashed border-ink-200 px-4 py-5 text-center text-sm text-ink-400">
-                No phone lines connected yet.
-              </p>
-            )}
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-end gap-2 border-t border-ink-100 pt-4">
-            <div className="flex-1">
-              <Field label="Phone number">
-                <input className={inputCls} placeholder="+1 (305) 555-0100" value={newNumber} onChange={(e) => setNewNumber(e.target.value)} />
-              </Field>
-            </div>
-            <div className="flex-1">
-              <Field label="Voice agent">
-                <select className={inputCls} value={newLineAgent} onChange={(e) => setNewLineAgent(e.target.value)}>
-                  <option value="">Choose agent…</option>
-                  {voiceAgents.map((a) => (
-                    <option key={a.id} value={a.id}>{a.name} — {a.role}</option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-            <div>
-              <Field label="Direction">
-                <select className={inputCls} value={newLineDirection} onChange={(e) => setNewLineDirection(e.target.value as PhoneLine["direction"])}>
-                  <option value="inbound">Inbound</option>
-                  <option value="outbound">Outbound</option>
-                  <option value="both">Both</option>
-                </select>
-              </Field>
-            </div>
-            <button onClick={addLine} className="rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
-              Connect line
-            </button>
           </div>
         </Card>
       </div>
@@ -638,26 +551,12 @@ export function AgentModal({
             <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-600">{result.message}</div>
           )}
 
-          <div className="mb-5 grid grid-cols-2 gap-2">
-            {(
-              [
-                { kind: "chat", icon: MessageCircle, label: "Chat agent", sub: "WhatsApp · Instagram · SMS · Email — replies in the inbox" },
-                { kind: "voice", icon: PhoneCall, label: "Voice agent", sub: "Phone calls — everything runs on Vapi" },
-              ] as const
-            ).map((k) => (
-              <button
-                key={k.kind}
-                disabled={!!initial}
-                onClick={() => set("kind", k.kind)}
-                className={`rounded-xl border p-4 text-left transition-colors disabled:opacity-60 ${
-                  form.kind === k.kind ? "border-brand-500 bg-brand-50" : "border-ink-200 hover:border-ink-300"
-                }`}
-              >
-                <k.icon className={`h-5 w-5 ${form.kind === k.kind ? "text-brand-600 dark:text-brand-300" : "text-ink-400"}`} />
-                <p className="mt-2 text-sm font-semibold text-ink-900">{k.label}</p>
-                <p className="text-xs text-ink-500">{k.sub}</p>
-              </button>
-            ))}
+          <div className="mb-5 flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50/50 px-4 py-3">
+            {form.kind === "voice" ? <PhoneCall className="h-5 w-5 text-brand-600 dark:text-brand-300" /> : <MessageCircle className="h-5 w-5 text-brand-600 dark:text-brand-300" />}
+            <div>
+              <p className="text-sm font-semibold text-ink-900">{form.kind === "voice" ? "Voice agent" : "Chat agent"}</p>
+              <p className="text-xs text-ink-500">{form.kind === "voice" ? "Phone calls — runs on Vapi + ElevenLabs." : "WhatsApp · Instagram · SMS · Email — replies in the inbox."}</p>
+            </div>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">

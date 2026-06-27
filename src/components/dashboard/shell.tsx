@@ -202,8 +202,12 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           {nav
             .filter((item) => CLINICAL_MODULES_ENABLED || item.href !== "/dashboard/clinical")
             .map((item) => {
+            const childPaths = (item.children ?? []).map((c) => c.href.split(/[?#]/)[0]);
+            const matches = (p: string) => pathname === p || pathname.startsWith(p + "/");
             const active =
-              item.href === "/dashboard" ? pathname === "/dashboard" : pathname.startsWith(item.href);
+              item.href === "/dashboard"
+                ? pathname === "/dashboard"
+                : matches(item.href) || childPaths.some(matches);
             return (
               <div key={item.href}>
                 <Link
