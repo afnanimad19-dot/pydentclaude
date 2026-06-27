@@ -17,6 +17,8 @@ export interface Patient {
   nextAppointment: string | null;
   recallDue: boolean;
   status: "Active" | "Inactive" | "New";
+  sourceChannel?: string | null; // where this contact came from (voice / whatsapp / …)
+  sourceAgent?: string | null; // which agent / inbox captured them
 }
 
 export interface Appointment {

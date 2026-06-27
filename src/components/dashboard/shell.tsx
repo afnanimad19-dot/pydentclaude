@@ -116,10 +116,10 @@ const nav: NavItem[] = [
   { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDays },
   {
     href: "/dashboard/patients",
-    label: "Patients",
+    label: "Contacts",
     icon: Users,
     children: [
-      { href: "/dashboard/patients", label: "Roster" },
+      { href: "/dashboard/patients", label: "All contacts" },
       { href: "/dashboard/patients#appointments", label: "Appointments" },
       { href: "/dashboard/patients#recall", label: "Recall worklist" },
     ],

@@ -112,12 +112,18 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
   external-id mirror ✅ (code). ❌ the **local connector** (Node app installed at the clinic)
   is NOT built. 🟡 user has the API key but is intentionally NOT connecting it yet.
 
-### Patients / Contacts / Pipeline ✅ (UI; some demo)
-- Patients list + profile (appointments). Reports = real patient/appointment data + CSV.
-- ❌ User wants: rename "Patients" tab to **Contacts**; contact click should open a contact
-  detail (NOT the patient page); trim the patient detail (remove payments/documents/insurance/
-  treatment-plans/collect-payment, keep appointments); Voice-Agent Contacts = voice-source only,
-  with **checkboxes/select-all + bulk export/import/delete** + a **country-flag phone dropdown**.
+### Patients / Contacts / Pipeline ✅
+- ✅ **Patients → Contacts** done: sidebar tab renamed **Contacts**; the roster page is now
+  "Contacts" and clicking a contact opens a lightweight **contact-detail modal**
+  (`src/components/dashboard/contact-detail.tsx` — name/phone/email/source/appointments + an
+  "Open full chart →" link) instead of the clinical page. The patient detail (`patients/[id]`)
+  is trimmed to **Overview + Appointments** (payments/documents/insurance/treatment-plans/
+  collect-payment removed; clinical chart/ledger/claims/rx stay gated behind
+  `CLINICAL_MODULES_ENABLED`). **Voice Contacts** (`agents/contacts`) now defaults to
+  **voice-source only** (toggle to All), with **select-all + per-row checkboxes**, **bulk
+  export-selected + bulk delete** (alongside import/export), and a **country-flag phone
+  picker** in Add contact. New/imported voice contacts are tagged `source_channel='voice'`.
+- Contacts carry `source_channel`/`source_agent` (read in `db.ts`); `deletePatients()` added.
 
 ### Workflows 🟡
 - Workflow list + **builder** page exist (UI). ❌ not executing real automations yet (no runner
@@ -153,8 +159,10 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
    — Vapi tools + `/api/vapi/events` tool-call handler + shared `booking-server.ts`; captures
    name/phone/email/treatment/fee and tags the booking source (voice vs chat agent). Migration 0036.
 3. **Open Dental local connector** + live test (when the user enables the key).
-4. **Patients → Contacts** rename + contact detail page + trim patient tabs + voice-only
-   contacts + country-flag phone picker + bulk select/import/export.
+4. ~~**Patients → Contacts** rename + contact detail page + trim patient tabs + voice-only
+   contacts + country-flag phone picker + bulk select/import/export.~~ ✅ **DONE** — see the
+   Contacts section above. (`contact-detail.tsx`, trimmed `patients/[id]`, rebuilt voice
+   `agents/contacts`, `deletePatients()`, `source_channel`/`source_agent` on contacts.)
 5. **Call Logs full detail page** + To/campaign columns; **Phone Numbers** card layout +
    provider methods (Ziwo/Maqsam/Vocalcom/GoAutoDial) like Callab.
 6. **Workflows runner** (execute triggers→actions).

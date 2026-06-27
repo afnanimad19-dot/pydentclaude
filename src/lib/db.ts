@@ -76,6 +76,8 @@ function rowToPatient(r: any): Patient {
     nextAppointment: r.next_appointment ? r.next_appointment.slice(0, 16).replace("T", " ") : null,
     recallDue: !!r.recall_due,
     status: r.status,
+    sourceChannel: r.source_channel ?? null,
+    sourceAgent: r.source_agent ?? null,
   };
 }
 
@@ -214,17 +216,35 @@ export async function createPatient(input: {
   birthdate: string;
   insurance: string;
   status: string;
+  sourceChannel?: string;
+  sourceAgent?: string;
 }): Promise<{ ok: boolean; message: string }> {
-  const { error } = await supabase.from("patients").insert({
+  const row: Record<string, unknown> = {
     name: input.name,
     phone: input.phone,
     email: input.email,
     birthdate: input.birthdate || null,
     insurance: input.insurance || "Self-pay",
     status: input.status,
-  });
+  };
+  if (input.sourceChannel) row.source_channel = input.sourceChannel;
+  if (input.sourceAgent) row.source_agent = input.sourceAgent;
+  let { error } = await supabase.from("patients").insert(row);
+  if (error && /source_channel|source_agent/.test(error.message)) {
+    delete row.source_channel;
+    delete row.source_agent;
+    ({ error } = await supabase.from("patients").insert(row));
+  }
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Patient created and saved to the database." };
+}
+
+// Delete contacts/patients by id (used by the Contacts bulk-delete action).
+export async function deletePatients(ids: string[]): Promise<{ ok: boolean; message: string }> {
+  if (ids.length === 0) return { ok: true, message: "Nothing to delete." };
+  const { error } = await supabase.from("patients").delete().in("id", ids);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: `Deleted ${ids.length} contact${ids.length === 1 ? "" : "s"}.` };
 }
 
 export async function createAppointment(input: {

@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { Users, CalendarClock, BellRing, Database, Plus, CalendarPlus, FolderPlus, Folder } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge, Avatar } from "@/components/ui";
 import { NewPatientModal, NewAppointmentModal } from "@/components/dashboard/create-modals";
+import { ContactDetailModal } from "@/components/dashboard/contact-detail";
 import { toast } from "@/components/toast";
 import {
   fetchPatients,
@@ -45,6 +45,7 @@ export default function PatientsPage() {
   const [addingFolder, setAddingFolder] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkFolder, setBulkFolder] = useState("");
+  const [detail, setDetail] = useState<Patient | null>(null);
 
   const refresh = useCallback(() => {
     fetchPatients().then((r) => {
@@ -117,6 +118,7 @@ export default function PatientsPage() {
 
   return (
     <>
+      {detail && <ContactDetailModal contact={detail} onClose={() => setDetail(null)} />}
       <NewPatientModal open={patientModal} onClose={() => setPatientModal(false)} onCreated={refresh} />
       <NewAppointmentModal
         open={aptModal}
@@ -130,8 +132,8 @@ export default function PatientsPage() {
         <DemoBanner context="Database not reachable — showing the bundled sample roster." />
       )}
       <PageHeader
-        title="Patients"
-        subtitle="Roster, schedule, recalls — click any patient for their full profile."
+        title="Contacts"
+        subtitle="Everyone who reached the clinic — click a contact for their details, or open the full chart."
         actions={
           <>
             <span className="hidden items-center gap-2 rounded-xl border border-ink-200 bg-surface px-3.5 py-2 text-xs font-medium text-ink-500 md:flex">
@@ -157,7 +159,7 @@ export default function PatientsPage() {
       <div className="grid gap-4 md:grid-cols-3">
         <StatCard
           icon={Users}
-          label="Patients on file"
+          label="Contacts on file"
           value={String(patients.length)}
           hint={`${patients.filter((p) => p.status === "New").length} new`}
           accent="brand"
@@ -186,7 +188,7 @@ export default function PatientsPage() {
             activeFolder === "all" ? "bg-brand-600 text-white" : "border border-ink-200 bg-surface text-ink-600 hover:bg-ink-50"
           }`}
         >
-          All patients
+          All contacts
         </button>
         {folders.map((f) => (
           <button
@@ -225,7 +227,7 @@ export default function PatientsPage() {
       <Card className="mt-4 overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-200 px-5 py-4">
           <h2 className="font-semibold text-ink-900">
-            {activeFolder === "all" ? "Patient roster" : `Folder: ${folders.find((f) => f.id === activeFolder)?.name}`}
+            {activeFolder === "all" ? "All contacts" : `Folder: ${folders.find((f) => f.id === activeFolder)?.name}`}
           </h2>
           {selected.size > 0 && (
             <div className="flex flex-wrap items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-3 py-2">
@@ -271,8 +273,8 @@ export default function PatientsPage() {
                     title="Select all"
                   />
                 </th>
-                <th className="px-5 py-3">Patient</th>
-                <th className="px-4 py-3">Contact</th>
+                <th className="px-5 py-3">Contact</th>
+                <th className="px-4 py-3">Phone / Email</th>
                 <th className="px-4 py-3">Insurance</th>
                 <th className="px-4 py-3">Last visit</th>
                 <th className="px-4 py-3">Next appt</th>
@@ -296,13 +298,13 @@ export default function PatientsPage() {
                     />
                   </td>
                   <td className="px-5 py-3.5">
-                    <Link href={`/dashboard/patients/${p.id}`} className="flex items-center gap-3">
+                    <button onClick={() => setDetail(p)} className="flex items-center gap-3 text-left">
                       <Avatar name={p.name} size="sm" />
                       <div>
                         <p className="font-medium text-ink-900 hover:text-brand-600">{p.name}</p>
-                        <p className="text-xs text-ink-400">PatNum {p.patNum}</p>
+                        <p className="text-xs text-ink-400">{p.sourceChannel ? `via ${p.sourceChannel}` : `PatNum ${p.patNum}`}</p>
                       </div>
-                    </Link>
+                    </button>
                   </td>
                   <td className="px-4 py-3.5">
                     <p className="text-ink-700">{p.phone}</p>
