@@ -17,10 +17,29 @@ async function upsertCall(vapiCallId: string, row: Record<string, any>) {
   let { error } = await write(row);
   // Newer columns (to_phone/ended_reason/messages/structured_data) may not be
   // migrated yet — strip them and retry so the core record still saves.
-  if (error && /to_phone|ended_reason|messages|structured_data/.test(error.message)) {
+  if (error && /to_phone|ended_reason|messages|structured_data|campaign_id/.test(error.message)) {
     const slim = { ...row };
-    delete slim.to_phone; delete slim.ended_reason; delete slim.messages; delete slim.structured_data;
+    delete slim.to_phone; delete slim.ended_reason; delete slim.messages; delete slim.structured_data; delete slim.campaign_id;
     ({ error } = await write(slim));
+  }
+}
+
+// Best-effort: which campaign does this call belong to? Match by the agent that
+// took the call (prefer an active campaign).
+async function resolveCampaign(ws: string | null, agentId: string | null): Promise<string | null> {
+  if (!ws || !agentId) return null;
+  try {
+    const { data } = await supabase
+      .from("campaigns")
+      .select("id, status")
+      .eq("workspace_id", ws)
+      .eq("agent_id", agentId)
+      .order("status", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    return data?.id ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -169,6 +188,7 @@ export async function POST(req: NextRequest) {
       const endedReason = msg?.endedReason ?? msg?.call?.endedReason ?? "";
       const messages = msg?.artifact?.messages ?? msg?.messages ?? [];
       const structuredData = msg?.analysis?.structuredData ?? {};
+      const campaignId = await resolveCampaign(ctx.ws, ctx.agentId);
       const row: Record<string, unknown> = {
         workspace_id: ctx.ws,
         agent_id: ctx.agentId,
@@ -187,6 +207,7 @@ export async function POST(req: NextRequest) {
         ended_reason: endedReason,
         messages,
         structured_data: structuredData,
+        campaign_id: campaignId,
       };
       await upsertCall(callId, row);
     }

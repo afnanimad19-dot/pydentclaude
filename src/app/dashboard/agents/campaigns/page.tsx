@@ -1,0 +1,207 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Megaphone, Plus, Trash2, PhoneOutgoing, PhoneIncoming, Users, Bot } from "lucide-react";
+import { Card, PageHeader, StatusBadge } from "@/components/ui";
+import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
+import { toast } from "@/components/toast";
+import {
+  fetchCampaigns,
+  createCampaign,
+  updateCampaignStatus,
+  deleteCampaign,
+  fetchAgents,
+  fetchVoiceNumbers,
+  fetchFolders,
+  fetchVoiceCalls,
+  type Campaign,
+  type AiAgent,
+  type VoiceNumber,
+  type PatientFolder,
+  type VoiceCallRecord,
+} from "@/lib/db";
+
+const statusTone = { active: "green", paused: "amber", draft: "gray" } as const;
+
+export default function CampaignsPage() {
+  const router = useRouter();
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [agents, setAgents] = useState<AiAgent[]>([]);
+  const [numbers, setNumbers] = useState<VoiceNumber[]>([]);
+  const [folders, setFolders] = useState<PatientFolder[]>([]);
+  const [calls, setCalls] = useState<VoiceCallRecord[]>([]);
+  const [open, setOpen] = useState(false);
+
+  function refresh() { fetchCampaigns().then(setCampaigns); }
+  useEffect(() => {
+    refresh();
+    fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "voice")));
+    fetchVoiceNumbers().then(setNumbers);
+    fetchFolders().then(setFolders);
+    fetchVoiceCalls().then(setCalls);
+  }, []);
+
+  const callsByCampaign = useMemo(() => {
+    const m: Record<string, number> = {};
+    calls.forEach((c) => { if (c.campaignId) m[c.campaignId] = (m[c.campaignId] ?? 0) + 1; });
+    return m;
+  }, [calls]);
+
+  async function toggle(c: Campaign) {
+    const next = c.status === "active" ? "paused" : "active";
+    setCampaigns((prev) => prev.map((x) => (x.id === c.id ? { ...x, status: next } : x)));
+    await updateCampaignStatus(c.id, next);
+  }
+  async function del(c: Campaign) {
+    if (!confirm(`Delete campaign “${c.name}”?`)) return;
+    setCampaigns((prev) => prev.filter((x) => x.id !== c.id));
+    await deleteCampaign(c.id);
+    toast("Campaign deleted.", "success");
+  }
+
+  return (
+    <>
+      {open && (
+        <CampaignModal
+          agents={agents}
+          numbers={numbers}
+          folders={folders}
+          onClose={() => setOpen(false)}
+          onSaved={() => { setOpen(false); refresh(); }}
+        />
+      )}
+      <PageHeader
+        title="Campaigns"
+        subtitle="Group your calls into campaigns — pair a voice agent with a phone number and a contact list, then track every call under it."
+        actions={
+          <button onClick={() => setOpen(true)} className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+            <Plus className="h-4 w-4" /> New campaign
+          </button>
+        }
+      />
+
+      {campaigns.length === 0 ? (
+        <Card className="p-10 text-center text-sm text-ink-500">
+          <Megaphone className="mx-auto mb-2 h-6 w-6 text-ink-300" /> No campaigns yet — create one to organise your calling.
+        </Card>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {campaigns.map((c) => {
+            const agent = agents.find((a) => a.id === c.agentId);
+            const number = numbers.find((n) => n.id === c.numberId);
+            const folder = folders.find((f) => f.id === c.folderId);
+            return (
+              <Card key={c.id} className="flex flex-col p-5">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="rounded-xl bg-brand-500/15 p-2 text-brand-600">
+                      {c.direction === "inbound" ? <PhoneIncoming className="h-5 w-5" /> : <PhoneOutgoing className="h-5 w-5" />}
+                    </div>
+                    <div>
+                      <p className="font-semibold text-ink-900">{c.name || "Untitled campaign"}</p>
+                      <p className="text-xs capitalize text-ink-400">{c.direction} · {callsByCampaign[c.id] ?? 0} calls</p>
+                    </div>
+                  </div>
+                  <button onClick={() => toggle(c)} title="Toggle active/paused">
+                    <StatusBadge status={c.status} tone={statusTone[c.status]} />
+                  </button>
+                </div>
+
+                <div className="mt-4 space-y-1.5 text-sm">
+                  <p className="flex items-center gap-2 text-ink-600"><Bot className="h-4 w-4 text-ink-400" /> {agent?.name ?? "No agent"}</p>
+                  <p className="flex items-center gap-2 text-ink-600"><PhoneOutgoing className="h-4 w-4 text-ink-400" /> {number?.number ?? "No number"}</p>
+                  <p className="flex items-center gap-2 text-ink-600"><Users className="h-4 w-4 text-ink-400" /> {folder?.name ?? "No contact list"}</p>
+                </div>
+
+                <div className="mt-4 flex gap-2 border-t border-ink-100 pt-4">
+                  <button
+                    onClick={() => router.push(`/dashboard/voice?campaign=${c.id}`)}
+                    className="flex-1 rounded-xl bg-brand-600 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+                  >
+                    View calls
+                  </button>
+                  <button onClick={() => del(c)} className="rounded-xl border border-ink-200 px-3 py-2 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+function CampaignModal({
+  agents,
+  numbers,
+  folders,
+  onClose,
+  onSaved,
+}: {
+  agents: AiAgent[];
+  numbers: VoiceNumber[];
+  folders: PatientFolder[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [numberId, setNumberId] = useState("");
+  const [folderId, setFolderId] = useState("");
+  const [direction, setDirection] = useState<"inbound" | "outbound">("outbound");
+  const [status, setStatus] = useState<"active" | "paused" | "draft">("active");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!name.trim()) { toast("Name your campaign.", "info"); return; }
+    setSaving(true);
+    const res = await createCampaign({ name: name.trim(), agentId: agentId || null, numberId: numberId || null, folderId: folderId || null, direction, status });
+    setSaving(false);
+    if (!res.ok) { toast(res.message, "info"); return; }
+    toast("Campaign created.", "success");
+    onSaved();
+  }
+
+  return (
+    <Modal open onClose={onClose} title="New campaign" subtitle="Pair an agent, a number and a contact list.">
+      <div className="space-y-4">
+        <Field label="Campaign name"><input className={inputCls} placeholder="Leila Hariri inbound" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Voice agent">
+            <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+              <option value="">Choose agent…</option>
+              {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
+            </select>
+          </Field>
+          <Field label="Phone number">
+            <select className={inputCls} value={numberId} onChange={(e) => setNumberId(e.target.value)}>
+              <option value="">Choose number…</option>
+              {numbers.map((n) => <option key={n.id} value={n.id}>{n.number}{n.nickname ? ` — ${n.nickname}` : ""}</option>)}
+            </select>
+          </Field>
+          <Field label="Contact list (optional)">
+            <select className={inputCls} value={folderId} onChange={(e) => setFolderId(e.target.value)}>
+              <option value="">No list</option>
+              {folders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Direction">
+            <select className={inputCls} value={direction} onChange={(e) => setDirection(e.target.value as "inbound" | "outbound")}>
+              <option value="outbound">Outbound</option>
+              <option value="inbound">Inbound</option>
+            </select>
+          </Field>
+        </div>
+        <Field label="Status">
+          <select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value as "active" | "paused" | "draft")}>
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="draft">Draft</option>
+          </select>
+        </Field>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Creating…" : "Create campaign"} onSubmit={submit} />
+    </Modal>
+  );
+}

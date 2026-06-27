@@ -60,6 +60,7 @@ const nav: NavItem[] = [
     icon: PhoneCall,
     children: [
       { href: "/dashboard/agents/voice", label: "All voice agents" },
+      { href: "/dashboard/agents/campaigns", label: "Campaigns" },
       { href: "/dashboard/agents/phone-numbers", label: "Phone Numbers" },
       { href: "/dashboard/agents/contacts", label: "Contacts" },
       { href: "/dashboard/voice", label: "Call Logs" },

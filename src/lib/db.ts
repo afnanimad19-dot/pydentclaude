@@ -1426,6 +1426,7 @@ export interface VoiceCallRecord {
   summary: string;
   recordingUrl: string;
   outcome: string;
+  campaignId: string | null;
   messages: CallMessage[];
   structuredData: Record<string, unknown>;
 }
@@ -1473,6 +1474,7 @@ function rowToVoiceCall(r: any): VoiceCallRecord {
     summary: r.summary ?? "",
     recordingUrl: r.recording_url ?? "",
     outcome: r.outcome ?? "",
+    campaignId: r.campaign_id ?? null,
     messages: normalizeCallMessages(r.messages),
     structuredData: (r.structured_data && typeof r.structured_data === "object") ? r.structured_data : {},
   };
@@ -1497,6 +1499,64 @@ export async function fetchVoiceCall(id: string): Promise<VoiceCallRecord | null
   } catch {
     return null;
   }
+}
+
+// ----------------------------------------------------------- campaigns (0039)
+
+export interface Campaign {
+  id: string;
+  name: string;
+  agentId: string | null;
+  numberId: string | null;
+  folderId: string | null;
+  direction: "inbound" | "outbound";
+  status: "active" | "paused" | "draft";
+  createdAt: string;
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function rowToCampaign(r: any): Campaign {
+  return {
+    id: r.id,
+    name: r.name ?? "",
+    agentId: r.agent_id ?? null,
+    numberId: r.number_id ?? null,
+    folderId: r.folder_id ?? null,
+    direction: r.direction ?? "outbound",
+    status: r.status ?? "active",
+    createdAt: r.created_at,
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+export async function fetchCampaigns(): Promise<Campaign[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("campaigns").select("*").eq("workspace_id", ws).order("created_at", { ascending: false });
+    return (data ?? []).map(rowToCampaign);
+  } catch {
+    return [];
+  }
+}
+
+export async function createCampaign(input: Omit<Campaign, "id" | "createdAt">): Promise<{ ok: boolean; message: string; id?: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { data, error } = await supabase
+    .from("campaigns")
+    .insert({ workspace_id: ws, name: input.name, agent_id: input.agentId, number_id: input.numberId, folder_id: input.folderId, direction: input.direction, status: input.status })
+    .select("id")
+    .single();
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Campaign created.", id: data?.id };
+}
+
+export async function updateCampaignStatus(id: string, status: Campaign["status"]): Promise<void> {
+  await supabase.from("campaigns").update({ status }).eq("id", id);
+}
+
+export async function deleteCampaign(id: string): Promise<void> {
+  await supabase.from("campaigns").delete().eq("id", id);
 }
 
 // ----------------------------------------------------------- team members (0023)

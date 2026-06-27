@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PhoneCall, PhoneIncoming, PhoneOutgoing, CalendarCheck2, Timer, FileText, Search, RefreshCw, Play, ChevronLeft, ChevronRight } from "lucide-react";
 import { Card, PageHeader, StatCard, StatusBadge } from "@/components/ui";
-import { fetchVoiceCalls, type VoiceCallRecord } from "@/lib/db";
+import { fetchVoiceCalls, fetchCampaigns, type VoiceCallRecord, type Campaign } from "@/lib/db";
 
 // Duration as M:SS (e.g. 3:12), matching the Callab call log.
 function fmtDur(s: number) {
@@ -34,28 +34,35 @@ function statusText(c: VoiceCallRecord): string {
 
 export default function CallLogsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [calls, setCalls] = useState<VoiceCallRecord[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [directionFilter, setDirectionFilter] = useState("");
+  const [campaignFilter, setCampaignFilter] = useState(searchParams.get("campaign") ?? "");
   const [page, setPage] = useState(1);
 
   const refresh = useCallback(() => { fetchVoiceCalls().then(setCalls); }, []);
   useEffect(() => {
     refresh();
+    fetchCampaigns().then(setCampaigns);
     const t = setInterval(refresh, 8000); // pick up live calls
     return () => clearInterval(t);
   }, [refresh]);
+
+  const campaignName = useMemo(() => Object.fromEntries(campaigns.map((c) => [c.id, c.name])), [campaigns]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return calls.filter((c) => {
       if (statusFilter && statusText(c) !== statusFilter) return false;
       if (directionFilter && c.direction !== directionFilter) return false;
+      if (campaignFilter && c.campaignId !== campaignFilter) return false;
       if (!q) return true;
       return [c.callerPhone, c.toPhone, c.agentName, c.summary].some((v) => String(v).toLowerCase().includes(q));
     });
-  }, [calls, query, statusFilter, directionFilter]);
+  }, [calls, query, statusFilter, directionFilter, campaignFilter]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
   const current = Math.min(page, pageCount);
@@ -68,8 +75,8 @@ export default function CallLogsPage() {
 
   function exportCalls() {
     const esc = (v: string | number) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const rows: (string | number)[][] = [["Date", "From", "To", "Direction", "Duration", "Status", "Agent", "Summary"]];
-    filtered.forEach((c) => rows.push([fmtDateTime(c.startedAt), c.callerPhone, c.toPhone, c.direction, fmtDur(c.durationSec), statusText(c), c.agentName, c.summary]));
+    const rows: (string | number)[][] = [["Date", "From", "To", "Direction", "Duration", "Status", "Campaign", "Agent", "Summary"]];
+    filtered.forEach((c) => rows.push([fmtDateTime(c.startedAt), c.callerPhone, c.toPhone, c.direction, fmtDur(c.durationSec), statusText(c), (c.campaignId && campaignName[c.campaignId]) || "", c.agentName, c.summary]));
     const url = URL.createObjectURL(new Blob([rows.map((r) => r.map(esc).join(",")).join("\r\n")], { type: "text/csv" }));
     const a = document.createElement("a"); a.href = url; a.download = `call-logs-${today}.csv`; a.click(); URL.revokeObjectURL(url);
   }
@@ -108,6 +115,10 @@ export default function CallLogsPage() {
           <option value="inbound">Incoming</option>
           <option value="outbound">Outgoing</option>
         </select>
+        <select value={campaignFilter} onChange={(e) => { setCampaignFilter(e.target.value); setPage(1); }} className="rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-700 outline-none">
+          <option value="">All Campaigns</option>
+          {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
         <button onClick={refresh} title="Refresh" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><RefreshCw className="h-4 w-4" /></button>
       </div>
 
@@ -119,7 +130,7 @@ export default function CallLogsPage() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-sm">
+              <table className="w-full min-w-[1000px] text-left text-sm">
                 <thead className="border-b border-ink-200 bg-ink-50/60 text-xs font-semibold uppercase tracking-wide text-ink-500">
                   <tr>
                     <th className="px-5 py-3">Date</th>
@@ -128,6 +139,7 @@ export default function CallLogsPage() {
                     <th className="px-4 py-3">Direction</th>
                     <th className="px-4 py-3">Duration</th>
                     <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Campaign</th>
                     <th className="px-4 py-3">Agent</th>
                     <th className="px-4 py-3">Recording</th>
                     <th className="px-4 py-3">Summary</th>
@@ -157,6 +169,7 @@ export default function CallLogsPage() {
                           <StatusBadge status={statusText(c)} tone={statusTone(c)} />
                         )}
                       </td>
+                      <td className="px-4 py-3.5 text-ink-600">{(c.campaignId && campaignName[c.campaignId]) || "—"}</td>
                       <td className="px-4 py-3.5 text-ink-700">{c.agentName || "—"}</td>
                       <td className="px-4 py-3.5">
                         {c.recordingUrl ? <Play className="h-4 w-4 text-brand-500" /> : <span className="text-ink-300">—</span>}

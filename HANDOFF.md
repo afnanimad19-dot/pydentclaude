@@ -23,8 +23,14 @@ Legend: ✅ built & working · 🟡 built, needs an API key / approval to go liv
 ### Sidebar structure (recently reorganised)
 Overview · Omnichannel Inbox · **AI Team** (Helena/Sam/Kai/Angela) · **Chat Agents**
 (All chat agents / Agent Hub / AI Learning) · **Voice Agents** (All voice agents /
-Phone Numbers / Contacts / Call Logs) · WhatsApp · Instagram · Pipeline · Calendar ·
-Patients · Workflows · Reports · Settings.
+**Campaigns** / Phone Numbers / Contacts / Call Logs) · WhatsApp · Instagram · Pipeline ·
+Calendar · Contacts · Workflows · Reports · Settings.
+
+> **Voice Agents tab is now feature-complete:** All voice agents (editor w/ Prompt
+> Configuration + Advanced Settings + live booking), **Campaigns** (agent + number +
+> contact-list, calls tagged + filterable), Phone Numbers (Callab card grid + 6-provider
+> picker), Contacts (voice-only + bulk + flag picker), Call Logs (Callab list w/ Campaign
+> column + dedicated detail page w/ timeline + tool-call cards).
 
 ### Messaging
 - **WhatsApp** ✅ inbound+outbound, webhook (`/api/whatsapp/webhook`), templates,
@@ -191,7 +197,9 @@ settings), then **`0036_appointment_booking_meta.sql`** (adds `appointments.fee`
 then **`0037_agent_identity.sql`** (adds `agents.agent_identity` for the Callab-style
 Prompt Configuration — Agent Identity / Tasks / Style Guardrails), then
 **`0038_voice_call_detail.sql`** (adds `voice_calls.to_phone` / `ended_reason` / `messages` /
-`structured_data` for the Call Logs detail page). Idempotent, no ON CONFLICT.
+`structured_data` for the Call Logs detail page), then **`0039_campaigns.sql`** (creates
+`campaigns` + adds `voice_calls.campaign_id` for the Voice Agents → Campaigns tab and the
+Call Logs Campaign column/filter). Idempotent, no ON CONFLICT.
 
 > **Prompt Configuration (Callab-style):** the agent editor's two boxes (Instructions +
 > Behavior) are now three under a "Prompt Configuration" header — **Agent Identity**

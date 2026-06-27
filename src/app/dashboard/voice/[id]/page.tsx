@@ -4,7 +4,7 @@ import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Phone, MessageSquare, Info, CheckCircle2, Download, User } from "lucide-react";
 import { Card } from "@/components/ui";
-import { fetchVoiceCall, type VoiceCallRecord, type CallMessage } from "@/lib/db";
+import { fetchVoiceCall, fetchCampaigns, type VoiceCallRecord, type CallMessage } from "@/lib/db";
 
 function fmtDur(s: number) {
   const m = Math.floor(s / 60);
@@ -84,10 +84,14 @@ function TimelineRow({ m }: { m: CallMessage }) {
 export default function CallDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [call, setCall] = useState<VoiceCallRecord | null>(null);
+  const [campaignName, setCampaignName] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchVoiceCall(id).then(setCall).finally(() => setLoading(false));
+    fetchVoiceCall(id).then((c) => {
+      setCall(c);
+      if (c?.campaignId) fetchCampaigns().then((cs) => setCampaignName(cs.find((x) => x.id === c.campaignId)?.name ?? ""));
+    }).finally(() => setLoading(false));
   }, [id]);
 
   if (loading) return <p className="py-20 text-center text-sm text-ink-400">Loading call…</p>;
@@ -128,6 +132,7 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
             <Detail label="Connection Duration" value={fmtDur(call.durationSec)} />
             <Detail label="Reason" value={call.endedReason || "—"} />
             <Detail label="Agent" value={call.agentName || "—"} />
+            <Detail label="Campaign" value={campaignName || "—"} />
             {call.patientId && (
               <div className="col-span-2">
                 <Link href={`/dashboard/patients/${call.patientId}`} className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-semibold text-ink-700 hover:bg-ink-50"><User className="h-3.5 w-3.5" /> Open caller&apos;s contact →</Link>
