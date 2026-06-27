@@ -252,8 +252,9 @@ export async function POST(req: NextRequest) {
         {
           role: "system",
           content: [
-            agent.instructions,
-            agent.behavior && `BEHAVIOR RULES (how to act, what NOT to do):\n${agent.behavior}`,
+            agent.agentIdentity && `AGENT IDENTITY (who you are, your tone and role):\n${agent.agentIdentity}`,
+            agent.instructions && `TASKS (what you do — your goals and the actions to perform):\n${agent.instructions}`,
+            agent.behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${agent.behavior}`,
             bookingPrompt(caps),
             agent.knowledgeBase && `KNOWLEDGE BASE:\n${agent.knowledgeBase}`,
           ]

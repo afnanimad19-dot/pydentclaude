@@ -431,8 +431,9 @@ export interface AiAgent {
   voiceId: string | null;
   firstMessage: string;
   language: string;
-  instructions: string;
-  behavior: string;
+  agentIdentity: string; // Callab "Agent Identity" — who the agent is, tone, role
+  instructions: string; // Callab "Tasks" — what the agent does
+  behavior: string; // Callab "Style Guardrails" — phrases to use/avoid, flow
   knowledgeBase: string;
   canBook: boolean;
   canReschedule: boolean;
@@ -458,6 +459,7 @@ function rowToAgent(r: any): AiAgent {
     voiceId: r.voice_id ?? null,
     firstMessage: r.first_message ?? "",
     language: r.language ?? "English",
+    agentIdentity: r.agent_identity ?? "",
     instructions: r.instructions ?? "",
     behavior: r.behavior ?? "",
     knowledgeBase: r.knowledge_base ?? "",
@@ -484,6 +486,7 @@ function agentToRow(input: Omit<AiAgent, "id" | "vapiAssistantId">): Record<stri
     voice_id: input.kind === "voice" ? input.voiceId : null,
     first_message: input.firstMessage,
     language: input.language,
+    agent_identity: input.agentIdentity,
     instructions: input.instructions,
     behavior: input.behavior,
     knowledge_base: input.knowledgeBase,
@@ -513,12 +516,13 @@ export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSo
 export async function createAgent(input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string; id?: string }> {
   const row = agentToRow(input);
   let { data, error } = await supabase.from("agents").insert(row).select("id").single();
-  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id|voice_settings/.test(error.message)) {
+  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id|voice_settings|agent_identity/.test(error.message)) {
     // Newer columns not migrated yet — retry without them.
     delete row.purpose;
     delete row.first_message_mode;
     delete row.kb_files;
     delete row.behavior;
+    delete row.agent_identity;
     delete row.voice_id;
     delete row.voice_settings;
     ({data, error } = await supabase.from("agents").insert(row).select("id").single());
@@ -534,11 +538,12 @@ export async function setAgentVapiId(id: string, vapiId: string): Promise<void> 
 export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
   const row = agentToRow(input);
   let { error } = await supabase.from("agents").update(row).eq("id", id);
-  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id|voice_settings/.test(error.message)) {
+  if (error && /purpose|first_message_mode|kb_files|behavior|voice_id|voice_settings|agent_identity/.test(error.message)) {
     delete row.purpose;
     delete row.first_message_mode;
     delete row.kb_files;
     delete row.behavior;
+    delete row.agent_identity;
     delete row.voice_id;
     delete row.voice_settings;
     ({error } = await supabase.from("agents").update(row).eq("id", id));

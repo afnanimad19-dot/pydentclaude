@@ -5,6 +5,7 @@
 export interface AgentReplyInput {
   model?: string;
   agentName?: string;
+  agentIdentity?: string;
   instructions?: string;
   behavior?: string;
   knowledgeBase?: string;
@@ -24,7 +25,7 @@ export interface BookingArgs {
 }
 
 function buildSystem(input: AgentReplyInput): string {
-  const { agentName = "Assistant", instructions = "", behavior = "", knowledgeBase = "", capabilities = {}, patientContext = "", sessionNote = "" } = input;
+  const { agentName = "Assistant", agentIdentity = "", instructions = "", behavior = "", knowledgeBase = "", capabilities = {}, patientContext = "", sessionNote = "" } = input;
   const abilities = [
     capabilities.canBook && "book new appointments",
     capabilities.canReschedule && "reschedule existing appointments",
@@ -36,8 +37,9 @@ function buildSystem(input: AgentReplyInput): string {
   return [
     `You are ${agentName}, an AI assistant for a dental clinic, chatting with a patient.`,
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
-    instructions,
-    behavior && `BEHAVIOR RULES (follow strictly — how to act):\n${behavior}`,
+    agentIdentity && `AGENT IDENTITY (who you are, your tone and role):\n${agentIdentity}`,
+    instructions && `TASKS (what you do — your goals and the actions to perform):\n${instructions}`,
+    behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${behavior}`,
     // Cap the knowledge base sent per message — a huge KB (e.g. a full website
     // import) makes every reply slow and costly. ~12k chars is plenty of context.
     knowledgeBase && `KNOWLEDGE BASE (answer only from this; if the answer isn't here, say you'll check with the team):\n${knowledgeBase.slice(0, 12000)}`,

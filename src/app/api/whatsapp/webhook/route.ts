@@ -377,6 +377,7 @@ async function storeInbound(
   const replyInput = {
     model: agent.model ?? "openai/gpt-4o-mini",
     agentName: agent.name,
+    agentIdentity: agent.agent_identity ?? "",
     instructions: agent.instructions ?? "",
     behavior: agent.behavior ?? "",
     knowledgeBase: agent.knowledge_base ?? "",

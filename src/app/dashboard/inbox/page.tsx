@@ -418,6 +418,7 @@ export default function InboxPage() {
         body: JSON.stringify({
           model: agent.model,
           agentName: agent.name,
+          agentIdentity: agent.agentIdentity,
           instructions: agent.instructions,
           behavior: agent.behavior,
           knowledgeBase: agent.knowledgeBase,

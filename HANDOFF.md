@@ -175,8 +175,15 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
 ## Migrations: run **RUN_PENDING_MIGRATIONS.sql** (bundles 0024→0034) in Supabase, then
 **`0035_voice_settings.sql`** (adds `agents.voice_settings` JSONB for advanced voice
 settings), then **`0036_appointment_booking_meta.sql`** (adds `appointments.fee`,
-`appointments.source`, `appointments.booked_by` for voice/chat booking metadata).
-Idempotent, no ON CONFLICT.
+`appointments.source`, `appointments.booked_by` for voice/chat booking metadata),
+then **`0037_agent_identity.sql`** (adds `agents.agent_identity` for the Callab-style
+Prompt Configuration — Agent Identity / Tasks / Style Guardrails). Idempotent, no ON CONFLICT.
+
+> **Prompt Configuration (Callab-style):** the agent editor's two boxes (Instructions +
+> Behavior) are now three under a "Prompt Configuration" header — **Agent Identity**
+> (new `agent_identity`), **Tasks** (= `instructions`), **Style Guardrails** (= `behavior`).
+> All three flow into the chat system prompt (`agent-reply.ts`), the Vapi assistant, and
+> the in-browser test chat/call. Existing agents' instructions/behavior carry over unchanged.
 
 ## 2. Repo, branch, hosting
 - **GitHub:** `afnanimad19-dot/pydentclaude`. **Work only on branch
