@@ -48,9 +48,10 @@ Patients · Workflows · Reports · Settings.
 
 ### Voice Agents 🟡 (IMPORTANT — see gap)
 - Voice agent editor (voice picker = **ElevenLabs library + cloning + preview**), test call
-  (Vapi), behavior applied on calls, **Phone Numbers** page (Add: existing / Twilio / full
-  **SIP-trunk** form), **Contacts**, **Call Logs** (list + recording/transcript/summary
-  detail + status filter + CSV export). 🟡 needs `VAPI_API_KEY` + `ELEVENLABS_API_KEY` + a number.
+  (Vapi), behavior applied on calls, **Phone Numbers** page (Callab-style card grid + 6-provider
+  Add picker: Custom SIP Trunk / Ziwo / Go Auto Dial / Maqsam / BYOT Twilio / Vocalcom Hermes,
+  each with its own credential form), **Contacts**, **Call Logs** (Callab-style paginated list +
+  dedicated detail page). 🟡 needs `VAPI_API_KEY` + `ELEVENLABS_API_KEY` + a number.
 - ✅ **Vapi-/Callab-style ADVANCED voice settings** in the agent editor (collapsible
   "Advanced settings" panel, voice agents only) — laid out to match Callab exactly:
   **Agent Speaking → Voice Activity Detection** (Min Speech / Min Silence / Activation
@@ -170,10 +171,12 @@ channels panel (green when connected), **Documents** (downloadable reports DOCX/
    contacts + country-flag phone picker + bulk select/import/export.~~ ✅ **DONE** — see the
    Contacts section above. (`contact-detail.tsx`, trimmed `patients/[id]`, rebuilt voice
    `agents/contacts`, `deletePatients()`, `source_channel`/`source_agent` on contacts.)
-5. ~~**Call Logs full detail page** + To/campaign columns~~ ✅ **DONE** (Callab-style list +
-   `/dashboard/voice/[id]` detail with timeline + tool-call cards; migration 0038). Campaign
-   column still pending (needs a campaigns model). ▶ NEXT: **Phone Numbers** card layout +
-   provider methods (Ziwo/Maqsam/Vocalcom/GoAutoDial) like Callab.
+5. ~~**Call Logs full detail page** + To/campaign columns; **Phone Numbers** card layout +
+   provider methods (Ziwo/Maqsam/Vocalcom/GoAutoDial) like Callab.~~ ✅ **DONE** — Callab-style
+   Call Logs list + `/dashboard/voice/[id]` detail (timeline + tool-call cards; migration 0038),
+   AND Phone Numbers rebuilt as a card grid with search + provider/status filters and a 6-provider
+   Add picker (Custom SIP Trunk / Ziwo / Go Auto Dial / Maqsam / BYOT Twilio / Vocalcom Hermes),
+   each with its own credential form. Campaign column still pending (needs a campaigns model).
 6. **Workflows runner** (execute triggers→actions).
 7. **SMS (Twilio)**, **Google Calendar push**, **WhatsApp audio delivery**,
    **Mailchimp send**, **X/Shopify/TikTok-Ads/Stripe/Notion** connectors.

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Phone, Plus, Trash2, Info, Server, ArrowLeft } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Phone, Plus, Trash2, Info, Server, ArrowLeft, Search, RefreshCw, MoreVertical, Radio, PhoneForwarded, LayoutGrid, Smartphone, Network } from "lucide-react";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -15,10 +15,62 @@ import {
   type AiAgent,
 } from "@/lib/db";
 
+type ProviderKey = "sip" | "ziwo" | "goautodial" | "maqsam" | "twilio" | "vocalcom";
+
+const PROVIDERS: { key: ProviderKey; name: string; desc: string; icon: typeof Phone; color: string }[] = [
+  { key: "sip", name: "Custom SIP Trunk", desc: "Connect your own SIP trunk configuration", icon: Server, color: "text-violet-500 bg-violet-500/10" },
+  { key: "ziwo", name: "Ziwo", desc: "Add extensions from your Ziwo account", icon: Radio, color: "text-fuchsia-500 bg-fuchsia-500/10" },
+  { key: "goautodial", name: "Go Auto Dial", desc: "Connect extensions from Go Auto Dial system", icon: PhoneForwarded, color: "text-emerald-500 bg-emerald-500/10" },
+  { key: "maqsam", name: "Maqsam", desc: "Add numbers from Maqsam provider", icon: LayoutGrid, color: "text-rose-500 bg-rose-500/10" },
+  { key: "twilio", name: "BYOT Phone", desc: "Bring your own Twilio phone number", icon: Smartphone, color: "text-red-500 bg-red-500/10" },
+  { key: "vocalcom", name: "Vocalcom Hermes", desc: "Add phone numbers from Vocalcom Hermes", icon: Network, color: "text-blue-500 bg-blue-500/10" },
+];
+
+const PROVIDER_LABEL: Record<string, string> = {
+  sip: "Custom SIP Trunk", ziwo: "Ziwo", goautodial: "Go Auto Dial", maqsam: "Maqsam", twilio: "BYOT Phone", vocalcom: "Vocalcom Hermes", vapi: "Vapi",
+};
+
+// Per-provider credential fields (stored in config; live connection done in the
+// provider / Vapi). SIP has its own richer form below.
+const PROVIDER_FIELDS: Record<string, { key: string; label: string; placeholder?: string; password?: boolean }[]> = {
+  ziwo: [
+    { key: "subdomain", label: "Ziwo subdomain", placeholder: "yourcompany" },
+    { key: "apiKey", label: "API key", password: true },
+    { key: "extension", label: "Extension", placeholder: "1001" },
+  ],
+  goautodial: [
+    { key: "serverUrl", label: "Server URL", placeholder: "https://dialer.yourclinic.com" },
+    { key: "username", label: "Username" },
+    { key: "password", label: "Password", password: true },
+    { key: "extension", label: "Extension", placeholder: "1001" },
+  ],
+  maqsam: [
+    { key: "apiKey", label: "API key", password: true },
+    { key: "apiSecret", label: "API secret", password: true },
+  ],
+  vocalcom: [
+    { key: "endpoint", label: "Hermes endpoint", placeholder: "https://hermes.yourclinic.com" },
+    { key: "apiKey", label: "API key", password: true },
+  ],
+  twilio: [
+    { key: "twilioAccountSid", label: "Twilio Account SID", placeholder: "ACxxxxxxxx" },
+    { key: "twilioAuthToken", label: "Twilio Auth Token", password: true },
+  ],
+};
+
+function fmtDate(iso: string) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
 export default function PhoneNumbersPage() {
   const [numbers, setNumbers] = useState<VoiceNumber[]>([]);
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [providerFilter, setProviderFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
 
   function refresh() { fetchVoiceNumbers().then(setNumbers); }
   useEffect(() => {
@@ -26,87 +78,143 @@ export default function PhoneNumbersPage() {
     fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "voice")));
   }, []);
 
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return numbers.filter((n) => {
+      if (providerFilter && n.provider !== providerFilter) return false;
+      const status = (n.config?.status as string) || "active";
+      if (statusFilter && status !== statusFilter) return false;
+      if (!q) return true;
+      return [n.number, n.nickname].some((v) => String(v).toLowerCase().includes(q));
+    });
+  }, [numbers, query, providerFilter, statusFilter]);
+
   return (
     <>
       {open && <AddNumberModal agents={agents} onClose={() => setOpen(false)} onAdded={() => { setOpen(false); refresh(); }} />}
       <PageHeader
         title="Phone Numbers"
-        subtitle="Connect a number to a voice agent — import an existing one, bring a Twilio number, or build a SIP trunk."
+        subtitle="Manage phone numbers for your calling campaigns — SIP trunk, Twilio (BYOT), Ziwo, Maqsam, Go Auto Dial or Vocalcom Hermes."
         actions={
           <button onClick={() => setOpen(true)} className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
-            <Plus className="h-4 w-4" /> Add phone number
+            <Plus className="h-4 w-4" /> Add Phone Number
           </button>
         }
       />
 
-      {numbers.length === 0 ? (
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-56 flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search phone numbers…" className="w-full rounded-xl border border-ink-200 bg-surface py-2.5 pl-9 pr-3 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400" />
+        </div>
+        <select value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)} className="rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-700 outline-none">
+          <option value="">All Providers</option>
+          {PROVIDERS.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-700 outline-none">
+          <option value="">All Statuses</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+        <button onClick={refresh} title="Refresh" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><RefreshCw className="h-4 w-4" /></button>
+      </div>
+
+      {filtered.length === 0 ? (
         <Card className="p-10 text-center text-sm text-ink-500">
           <Phone className="mx-auto mb-2 h-6 w-6 text-ink-300" /> No phone numbers yet — add one and assign a voice agent.
         </Card>
       ) : (
-        <Card className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-sm">
-            <thead>
-              <tr className="border-b border-ink-200 bg-ink-50/50 text-left text-xs uppercase tracking-wide text-ink-400">
-                <th className="px-5 py-3 font-semibold">Number</th>
-                <th className="px-5 py-3 font-semibold">Nickname</th>
-                <th className="px-5 py-3 font-semibold">Type</th>
-                <th className="px-5 py-3 font-semibold">Concurrency</th>
-                <th className="px-5 py-3 font-semibold">Direction</th>
-                <th className="px-5 py-3 font-semibold">Agent</th>
-                <th className="px-5 py-3"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {numbers.map((n) => (
-                <tr key={n.id} className="border-b border-ink-100 last:border-0">
-                  <td className="px-5 py-3 font-medium text-ink-900"><span className="flex items-center gap-2"><Phone className="h-4 w-4 text-brand-500" /> {n.number}</span></td>
-                  <td className="px-5 py-3 text-ink-600">{n.nickname || "—"}</td>
-                  <td className="px-5 py-3"><span className="rounded-full bg-ink-100 px-2 py-0.5 text-xs font-medium uppercase text-ink-600">{n.provider}</span></td>
-                  <td className="px-5 py-3 text-ink-600">{n.concurrency}</td>
-                  <td className="px-5 py-3 capitalize text-ink-600">{n.direction}</td>
-                  <td className="px-5 py-3 text-ink-600">{agents.find((a) => a.id === n.agentId)?.name ?? "— not assigned —"}</td>
-                  <td className="px-5 py-3 text-right">
-                    <button onClick={async () => { await deleteVoiceNumber(n.id); refresh(); }} className="rounded-lg p-1.5 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
+        <>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {filtered.map((n) => (
+              <NumberCard key={n.id} n={n} agentName={agents.find((a) => a.id === n.agentId)?.name} onDeleted={refresh} />
+            ))}
+          </div>
+          <p className="mt-6 text-center text-sm text-ink-400">You&apos;ve reached the end of the list.</p>
+        </>
       )}
     </>
   );
 }
 
-type Method = "existing" | "twilio" | "sip" | null;
+function NumberCard({ n, agentName, onDeleted }: { n: VoiceNumber; agentName?: string; onDeleted: () => void }) {
+  const [menu, setMenu] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onDoc(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setMenu(false); }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  const status = (n.config?.status as string) || "active";
+  const numberType = (n.config?.numberType as string) || "national";
+  const scope = (n.config?.scope as string) || "Global";
+
+  async function del() {
+    if (!confirm(`Delete ${n.number}? This cannot be undone.`)) return;
+    await deleteVoiceNumber(n.id);
+    toast("Phone number deleted.", "success");
+    onDeleted();
+  }
+
+  return (
+    <Card className="flex flex-col p-5">
+      <div className="flex items-start justify-between">
+        <p className="text-sm font-medium text-ink-500">{PROVIDER_LABEL[n.provider] ?? n.provider}</p>
+        <div className="relative" ref={ref}>
+          <button onClick={() => setMenu((m) => !m)} className="rounded-lg p-1 text-ink-400 hover:bg-ink-100"><MoreVertical className="h-4 w-4" /></button>
+          {menu && (
+            <div className="absolute right-0 z-10 mt-1 w-36 rounded-xl border border-ink-200 bg-surface py-1 shadow-lg">
+              <button onClick={del} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-500/10"><Trash2 className="h-4 w-4" /> Delete</button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <p className="mt-1 text-2xl font-bold tracking-tight text-ink-900">{n.number}</p>
+      <p className="mt-0.5 text-sm text-ink-500">{n.nickname || "Untitled number"}</p>
+
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <span className="rounded-md bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-600">{numberType}</span>
+        <span className="rounded-md bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-600">{scope}</span>
+        <span className={`rounded-md px-2 py-0.5 text-xs font-medium ${status === "active" ? "bg-emerald-500/15 text-emerald-600" : "bg-ink-100 text-ink-500"}`}>{status}</span>
+        {agentName && <span className="rounded-md bg-brand-500/10 px-2 py-0.5 text-xs font-medium text-brand-600">{agentName}</span>}
+      </div>
+
+      <div className="mt-4 flex items-center justify-between border-t border-ink-100 pt-3 text-[11px] text-ink-400">
+        <span>Created {fmtDate(n.createdAt)}</span>
+        <span className="capitalize">{n.direction}</span>
+      </div>
+    </Card>
+  );
+}
 
 function AddNumberModal({ agents, onClose, onAdded }: { agents: AiAgent[]; onClose: () => void; onAdded: () => void }) {
-  const [method, setMethod] = useState<Method>(null);
+  const [provider, setProvider] = useState<ProviderKey | null>(null);
 
-  if (!method) {
+  if (!provider) {
     return (
-      <Modal open onClose={onClose} title="Add a phone number" subtitle="Choose how you want to connect a number.">
-        <div className="grid gap-3">
-          <MethodCard icon={Phone} title="Add an existing number" detail="A number already in Vapi — just register it here and assign an agent." onClick={() => setMethod("existing")} />
-          <MethodCard icon={Phone} title="Import from Twilio" detail="Bring a Twilio number (Account SID + Auth Token)." onClick={() => setMethod("twilio")} />
-          <MethodCard icon={Server} title="Create a SIP trunk from scratch" detail="For a UAE +971 or carrier number via SIP — full trunk configuration." onClick={() => setMethod("sip")} />
+      <Modal open onClose={onClose} title="Add New Phone Number" subtitle="Select the type of phone number you want to add." wide>
+        <div className="grid gap-3 md:grid-cols-2">
+          {PROVIDERS.map((p) => (
+            <button
+              key={p.key}
+              onClick={() => setProvider(p.key)}
+              className="flex items-start gap-3 rounded-xl border border-ink-200 p-4 text-left hover:border-brand-400 hover:bg-brand-50/40"
+            >
+              <div className={`rounded-lg p-2 ${p.color}`}><p.icon className="h-5 w-5" /></div>
+              <div><p className="text-sm font-semibold text-ink-900">{p.name}</p><p className="text-xs text-ink-500">{p.desc}</p></div>
+            </button>
+          ))}
         </div>
       </Modal>
     );
   }
-  if (method === "existing") return <ExistingForm agents={agents} onBack={() => setMethod(null)} onClose={onClose} onAdded={onAdded} />;
-  if (method === "twilio") return <TwilioForm agents={agents} onBack={() => setMethod(null)} onClose={onClose} onAdded={onAdded} />;
-  return <SipForm agents={agents} onBack={() => setMethod(null)} onClose={onClose} onAdded={onAdded} />;
+  if (provider === "sip") return <SipForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
+  return <ProviderForm provider={provider} agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
 }
 
-function MethodCard({ icon: Icon, title, detail, onClick }: { icon: typeof Phone; title: string; detail: string; onClick: () => void }) {
-  return (
-    <button onClick={onClick} className="flex items-start gap-3 rounded-xl border border-ink-200 p-4 text-left hover:border-brand-400 hover:bg-brand-50/40">
-      <div className="rounded-lg bg-brand-500/15 p-2 text-brand-600"><Icon className="h-5 w-5" /></div>
-      <div><p className="text-sm font-semibold text-ink-900">{title}</p><p className="text-xs text-ink-500">{detail}</p></div>
-    </button>
-  );
+function BackBar({ onBack }: { onBack: () => void }) {
+  return <button onClick={onBack} className="mb-3 flex items-center gap-1.5 text-sm font-medium text-ink-500 hover:text-ink-800"><ArrowLeft className="h-4 w-4" /> Back</button>;
 }
 
 function AgentDir({ agentId, setAgentId, direction, setDirection, agents }: { agentId: string; setAgentId: (v: string) => void; direction: string; setDirection: (v: string) => void; agents: AiAgent[] }) {
@@ -127,54 +235,70 @@ function AgentDir({ agentId, setAgentId, direction, setDirection, agents }: { ag
   );
 }
 
-function BackBar({ onBack, title }: { onBack: () => void; title: string }) {
-  return <button onClick={onBack} className="mb-3 flex items-center gap-1.5 text-sm font-medium text-ink-500 hover:text-ink-800"><ArrowLeft className="h-4 w-4" /> {title}</button>;
-}
+// Generic provider credential form (Ziwo / Go Auto Dial / Maqsam / Vocalcom / BYOT Twilio).
+function ProviderForm({ provider, agents, onBack, onClose, onAdded }: { provider: ProviderKey; agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
+  const meta = PROVIDERS.find((p) => p.key === provider)!;
+  const fields = PROVIDER_FIELDS[provider] ?? [];
+  const [number, setNumber] = useState("");
+  const [nickname, setNickname] = useState("");
+  const [creds, setCreds] = useState<Record<string, string>>({});
+  const [numberType, setNumberType] = useState("national");
+  const [status, setStatus] = useState("active");
+  const [agentId, setAgentId] = useState("");
+  const [direction, setDirection] = useState("inbound");
+  const [saving, setSaving] = useState(false);
 
-function ExistingForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
-  const [number, setNumber] = useState(""); const [nickname, setNickname] = useState(""); const [agentId, setAgentId] = useState(""); const [direction, setDirection] = useState("inbound"); const [saving, setSaving] = useState(false);
   async function submit() {
-    if (!number.trim()) { toast("Enter the number.", "info"); return; }
+    if (!number.trim()) { toast("Enter the phone number.", "info"); return; }
     setSaving(true);
-    const res = await createVoiceNumber({ number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider: "vapi", concurrency: 1, config: {} });
+    const res = await createVoiceNumber({
+      number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider, concurrency: 1,
+      config: { ...creds, numberType, scope: "Global", status },
+    });
     setSaving(false);
-    if (!res.ok) { toast(res.message, "info"); return; } toast("Number added.", "success"); onAdded();
+    if (!res.ok) { toast(res.message, "info"); return; }
+    toast(`${meta.name} number added.`, "success");
+    onAdded();
   }
-  return (
-    <Modal open onClose={onClose} title="Add an existing number">
-      <BackBar onBack={onBack} title="Back" />
-      <div className="space-y-4">
-        <Field label="Phone number (E.164, e.g. +9714…)"><input className={inputCls} value={number} onChange={(e) => setNumber(e.target.value)} /></Field>
-        <Field label="Nickname"><input className={inputCls} placeholder="Reception line" value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
-        <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} />
-      </div>
-      <ModalFooter onClose={onClose} submitLabel={saving ? "Adding…" : "Add number"} onSubmit={submit} />
-    </Modal>
-  );
-}
 
-function TwilioForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
-  const [number, setNumber] = useState(""); const [nickname, setNickname] = useState(""); const [sid, setSid] = useState(""); const [token, setToken] = useState(""); const [agentId, setAgentId] = useState(""); const [direction, setDirection] = useState("inbound"); const [saving, setSaving] = useState(false);
-  async function submit() {
-    if (!number.trim() || !sid.trim() || !token.trim()) { toast("Number, Account SID and Auth Token are required.", "info"); return; }
-    setSaving(true);
-    const res = await createVoiceNumber({ number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider: "twilio", concurrency: 1, config: { twilioAccountSid: sid.trim(), twilioAuthToken: token.trim() } });
-    setSaving(false);
-    if (!res.ok) { toast(res.message, "info"); return; } toast("Twilio number added.", "success"); onAdded();
-  }
   return (
-    <Modal open onClose={onClose} title="Import from Twilio">
-      <BackBar onBack={onBack} title="Back" />
+    <Modal open onClose={onClose} title={`Add ${meta.name} number`} subtitle={meta.desc}>
+      <BackBar onBack={onBack} />
       <div className="space-y-4">
-        <Field label="Phone number"><input className={inputCls} placeholder="+1…" value={number} onChange={(e) => setNumber(e.target.value)} /></Field>
-        <Field label="Nickname"><input className={inputCls} value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
         <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Twilio Account SID"><input className={inputCls} placeholder="ACxxxxxxxx" value={sid} onChange={(e) => setSid(e.target.value)} /></Field>
-          <Field label="Twilio Auth Token"><input type="password" className={inputCls} value={token} onChange={(e) => setToken(e.target.value)} /></Field>
+          <Field label="Phone number"><input className={inputCls} placeholder="+9714…" value={number} onChange={(e) => setNumber(e.target.value)} /></Field>
+          <Field label="Label / nickname"><input className={inputCls} placeholder="Reception line" value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
+        </div>
+        {fields.length > 0 && (
+          <div className="grid gap-4 md:grid-cols-2">
+            {fields.map((f) => (
+              <Field key={f.key} label={f.label}>
+                <input className={inputCls} type={f.password ? "password" : "text"} placeholder={f.placeholder} value={creds[f.key] ?? ""} onChange={(e) => setCreds((c) => ({ ...c, [f.key]: e.target.value }))} />
+              </Field>
+            ))}
+          </div>
+        )}
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Number type">
+            <select className={inputCls} value={numberType} onChange={(e) => setNumberType(e.target.value)}>
+              <option value="national">National</option>
+              <option value="international">International</option>
+              <option value="toll-free">Toll-free</option>
+            </select>
+          </Field>
+          <Field label="Status">
+            <select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </Field>
         </div>
         <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} />
+        <div className="flex items-start gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-xs text-ink-500">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Pydent stores this provider config and assigns the agent. The live phone connection is completed in {meta.name} / Vapi using these same values.
+        </div>
       </div>
-      <ModalFooter onClose={onClose} submitLabel={saving ? "Importing…" : "Import number"} onSubmit={submit} />
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Adding…" : "Add number"} onSubmit={submit} />
     </Modal>
   );
 }
@@ -192,6 +316,7 @@ function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBa
   const [number, setNumber] = useState(""); const [nickname, setNickname] = useState(""); const [concurrency, setConcurrency] = useState(1);
   const [agentId, setAgentId] = useState(""); const [direction, setDirection] = useState("inbound");
   const [terminationUri, setTerminationUri] = useState("");
+  const [numberType, setNumberType] = useState("national"); const [status, setStatus] = useState("active");
   const [e164, setE164] = useState(true); const [requiresReg, setRequiresReg] = useState(false); const [publicIp, setPublicIp] = useState(false);
   const [username, setUsername] = useState(""); const [password, setPassword] = useState("");
   const [categories, setCategories] = useState<SipCategory[]>([]);
@@ -205,20 +330,32 @@ function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBa
     setSaving(true);
     const res = await createVoiceNumber({
       number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider: "sip", concurrency,
-      config: { terminationUri: terminationUri.trim(), e164LeadingPlus: e164, requiresRegistration: requiresReg, registeredPublicIp: publicIp, username: requiresReg ? username : "", password: requiresReg ? password : "", categories },
+      config: { terminationUri: terminationUri.trim(), e164LeadingPlus: e164, requiresRegistration: requiresReg, registeredPublicIp: publicIp, username: requiresReg ? username : "", password: requiresReg ? password : "", categories, numberType, scope: "Global", status },
     });
     setSaving(false);
     if (!res.ok) { toast(res.message, "info"); return; } toast("SIP trunk number created.", "success"); onAdded();
   }
 
   return (
-    <Modal open onClose={onClose} title="Create a SIP trunk" subtitle="Connect a carrier / UAE +971 number over SIP." wide>
-      <BackBar onBack={onBack} title="Back" />
+    <Modal open onClose={onClose} title="Custom SIP Trunk" subtitle="Connect a carrier / UAE +971 number over SIP." wide>
+      <BackBar onBack={onBack} />
       <div className="max-h-[62vh] space-y-4 overflow-y-auto pr-1">
         <div className="grid gap-4 md:grid-cols-3">
           <Field label="Phone number"><input className={inputCls} placeholder="+9714…" value={number} onChange={(e) => setNumber(e.target.value)} /></Field>
           <Field label="Nickname"><input className={inputCls} placeholder="Clinic SIP" value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
           <Field label="Concurrency limit (max simultaneous calls)"><input type="number" min={1} className={inputCls} value={concurrency} onChange={(e) => setConcurrency(Math.max(1, Number(e.target.value) || 1))} /></Field>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Number type">
+            <select className={inputCls} value={numberType} onChange={(e) => setNumberType(e.target.value)}>
+              <option value="national">National</option><option value="international">International</option><option value="toll-free">Toll-free</option>
+            </select>
+          </Field>
+          <Field label="Status">
+            <select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="active">Active</option><option value="inactive">Inactive</option>
+            </select>
+          </Field>
         </div>
         <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} />
 

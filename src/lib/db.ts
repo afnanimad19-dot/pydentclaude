@@ -1575,7 +1575,7 @@ export interface VoiceNumber {
   nickname: string;
   agentId: string | null;
   direction: "inbound" | "outbound" | "both";
-  provider: "vapi" | "twilio" | "sip";
+  provider: "vapi" | "twilio" | "sip" | "ziwo" | "goautodial" | "maqsam" | "vocalcom";
   concurrency: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config: Record<string, any>;
