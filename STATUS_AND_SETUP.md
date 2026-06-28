@@ -95,30 +95,47 @@ A multi-tenant SaaS for dental clinics:
 
 > "Have it" = you already have a subscription/key. Most of these are **pay-as-you-go**, not fixed monthly.
 
+> Column key: **HAVE** = you already have it · **BUY** = you need to subscribe/pay ·
+> **ADDING** = optional, you're adding it · **SKIP** = optional, not needed now.
+
 ### Required platforms (the SaaS itself runs on these)
-| Service | What it's for | Plan & rough cost | Have? |
+| Service | What it's for | Plan & rough cost | Status |
 |---|---|---|---|
-| **Netlify** | Hosting the web app + serverless API routes | **Free** to start; **Pro ≈ $19/mo per member** when you need more build minutes / function calls / bandwidth. (There's no $9 Netlify tier — $19 Pro is the one.) | applying now |
-| **Supabase** | Postgres database + Auth | **Free** (500 MB DB, 50k monthly users — fine to launch); **Pro ≈ $25/mo** for production (daily backups, no auto-pause, more storage) | have |
-| **Domain name** | e.g. `pydent.app` | ~$10–15/yr (optional; Netlify gives a free `*.netlify.app`) | optional |
+| **Netlify** | Hosting the web app + serverless API routes | **Personal $9/mo** ("ready for real traffic", 1,000 credits, Agent Runners) is the right one to start; **Pro $20/mo** adds private repos, shared env vars, 3+ concurrent builds, password-protected projects, 3,000 credits — go Pro only when you have a team | **BUY — $9 Personal** |
+| **Supabase** | Postgres database + Auth | **Free** (500 MB DB, 50k monthly users — fine to launch); **Pro $25/mo** for production (daily backups, no auto-pause, more storage) | **BUY when live — $25 Pro** |
+| **Domain name** | e.g. `pydent.app` | ~$10–15/yr (optional; Netlify gives a free `*.netlify.app`) | SKIP for now |
 
-### AI / channel services (pay-as-you-go)
-| Service | What it's for | Cost | Have? |
+### AI / channel services (pay-as-you-go — pay only for what you use)
+| Service | What it's for | Cost | Status |
 |---|---|---|---|
-| **OpenRouter** | All AI text (chat agents, AI Team) **and now image generation** | pay per token; add ~$10–20 credit to start | have ✅ |
-| **Vapi** | Voice calls (runs the phone agent) | ~$0.05–0.10 / minute | have ✅ |
-| **ElevenLabs** | Realistic voices + voice cloning | your existing subscription | have ✅ |
-| **Twilio** | SMS (and optionally phone numbers) | number ~$1–15/mo + ~$0.01–0.08 per SMS | needed for SMS |
-| **Meta (WhatsApp/IG/FB)** | WhatsApp Business, Instagram/Messenger DMs, posting, ads data | API is free; WhatsApp has per-conversation pricing | app exists, must be **Live** |
-| **Google Cloud** | Google + Gmail OAuth (Calendar, Analytics, Gmail send, etc.) | free within quota | have ✅ |
-| **Brevo** (optional) | Higher-volume email if you don't use Gmail | Free 300 emails/day | not needed if Gmail |
-| **DataForSEO** (optional) | Full SEO data for Sam (free fallback works without it) | pay-as-you-go | optional |
-| **Firecrawl** (optional) | Whole-site crawling for KB import | pay-as-you-go | adding |
-| **OpenAI** (optional) | Image gen — **not needed**, OpenRouter covers it | — | skip |
-| **Google Ads developer token** (optional) | Pull Google **Ads** spend into reports | free but needs Ads MCC approval (1–2 days) | skip for now |
+| **OpenRouter** | All AI text (chat agents, AI Team) **and image generation** | pay per token; add ~$10–20 credit | **HAVE ✅** |
+| **Vapi** | Runs the phone calls (the voice agent's brain on the call) | ~$0.05–0.10 / minute | **HAVE ✅** |
+| **ElevenLabs** | Realistic voices + voice cloning | your existing subscription | **HAVE ✅** |
+| **Twilio** | **Both**: (a) **SMS** send/receive, **and** (b) the **phone number the customer calls** — Twilio provides the number, Vapi answers it with the agent. Needed for inbound + outbound calling unless you use a SIP/Ziwo/Maqsam number instead. | number ~$1–15/mo + ~$0.01–0.08 per SMS, ~$0.013/min for calls | **BUY — for SMS + calling** |
+| **Meta (WhatsApp/IG/FB)** | WhatsApp Business, Instagram/Messenger DMs, posting, ads data | API is free; WhatsApp has per-conversation pricing | app exists, must go **Live** |
+| **Google Cloud** | Google + Gmail OAuth (Calendar, Analytics, Gmail send) | free within quota | **HAVE ✅** |
+| **OpenAI** | Image gen at higher quality (DALL·E 3). Without it, OpenRouter makes the images. | pay per image (~$0.04 each) | **ADDING (optional)** |
+| **Firecrawl** | Whole-site crawling for KB import / research | pay-as-you-go | **ADDING (optional)** |
+| **Brevo** | Higher-volume email — **not needed**, Gmail covers sending | Free 300 emails/day | **SKIP (Gmail covers it)** |
+| **DataForSEO** | Full SEO data for Sam — free fallback works without it | pay-as-you-go | **SKIP (optional)** |
+| **Google Ads developer token** | Pull Google **Ads** spend into reports | free but needs Ads MCC approval (1–2 days) | **SKIP for now** |
 
-**Bottom line to launch:** Netlify (Free→Pro) + Supabase (Free→Pro) + OpenRouter credit +
-Vapi + ElevenLabs (have) + Twilio (for SMS) + Meta app Live. Everything else is optional.
+**Bottom line — what you actually need to BUY to launch:**
+1. **Netlify $9/mo** (Personal) — hosting.
+2. **Supabase** — free now, **$25/mo** when you go to production.
+3. **Twilio** — pay-as-you-go, for **SMS and the phone number customers call**.
+4. (Already have: OpenRouter, Vapi, ElevenLabs, Google.) (Adding, optional: OpenAI, Firecrawl.)
+Everything else is free or optional.
+
+### "If I add an OpenAI key right now, what happens? What do we build after?"
+- **Nothing else to build — it just works.** Image generation is already wired with a
+  fallback: if `OPENAI_API_KEY` is present it uses **DALL·E 3** (sharper marketing images);
+  if not, it uses **OpenRouter**. So adding the key simply **upgrades image quality** for
+  Helena's blog featured images and Instagram post images. No redeploy of logic needed —
+  just add the env var in Netlify and trigger a deploy.
+- After that, the natural next image features (only if you want them) are: a "regenerate /
+  pick from 3 options" button, and on-image text/branding overlays. These are optional polish,
+  not required.
 
 ---
 
@@ -226,6 +243,45 @@ Dental locally. Only appointment scheduling crosses the line; the chart never le
 > Status today: the Pydent side (gateway routes `/api/opendental/*`, the Settings card, booking
 > forward, external-id mirror) is **code-ready**. The **local connector app is the remaining build.**
 
+### How WE will build the Open Dental connector (our plan)
+A small **Node.js service** that runs on the clinic's server. We already have the Pydent gateway
+that calls it; the connector is the missing on-prem half. Build steps:
+
+1. **Connector app** — a tiny Express service exposing only scheduling endpoints that mirror what
+   the Pydent gateway already calls:
+   - `POST /available-slots` → query Open Dental for open appointment times
+   - `POST /create-appointment` → find-or-create the patient (real PatNum) + book
+   - `POST /reschedule-appointment`, `POST /cancel-appointment`
+   - `GET /doctors` → provider list
+   It talks to Open Dental over the **local network only** (the Open Dental API on `localhost`),
+   using the clinic's Developer + Customer keys.
+2. **Shared-secret auth** — every request from Pydent carries an `x-api-key`; the connector
+   rejects anything else. So only your dashboard can reach it.
+3. **Find-or-create patient** — on booking, look up the caller by phone/name; if new, create a
+   minimal patient in Open Dental and return the **PatNum** (we store only that id, never the chart).
+4. **Packaging** — ship it as a Windows service (via `node-windows` or NSSM) so it auto-starts and
+   stays running, plus a one-page installer/README for the clinic's IT.
+5. **Secure tunnel** — bundle `cloudflared` config so the connector gets a stable HTTPS URL with
+   **no open ports** on the clinic firewall.
+6. **Test harness** — a mock Open Dental mode so we can verify booking end-to-end before touching
+   a live clinic (you asked not to disturb the live clinic — this lets us test safely).
+
+Estimated build: the connector itself is small (~1–2 days); most of the time is safe testing.
+
+### Why NO patient data leaks (the privacy guarantee)
+- **Clinical data never leaves the clinic.** The chart, x-rays, ledger, payments, insurance — all
+  of it stays inside Open Dental on the clinic's own server. Pydent has **no database table** for
+  any of it, and the UI **deliberately hides** payments/balance/insurance/treatment-plans.
+- **Only appointment scheduling crosses the wire** — and only the few fields needed to book a slot
+  (name, phone, the chosen time, the treatment label). No diagnoses, no history, no money.
+- **The tunnel is outbound-only and encrypted.** `cloudflared` makes an outbound HTTPS connection
+  from the clinic to Cloudflare; **no inbound ports are opened**, so the server isn't exposed to
+  the internet. Traffic is TLS-encrypted end to end.
+- **Shared-secret + per-clinic isolation.** Only your dashboard (with the secret key) can call the
+  connector, and every Pydent record is scoped by `workspace_id` so clinics never see each other's data.
+- **You hold the off switch.** Disabling the connection in Settings (or stopping the connector)
+  instantly cuts the link; Pydent keeps working on its own calendar in the meantime.
+
 ---
 
 ## 9. What's next (recommended order)
@@ -240,5 +296,5 @@ Dental locally. Only appointment scheduling crosses the line; the chart never le
 ---
 
 _Questions answered in this doc: what's done, what's left, what's only-UI, subscriptions
-(Netlify $19 Pro, Supabase $25 Pro, pay-as-you-go AI), where each key goes (Netlify vs Pydent),
+(Netlify $9 Personal / $20 Pro, Supabase free→$25 Pro, pay-as-you-go AI), where each key goes (Netlify vs Pydent),
 and the Open Dental local setup. Update this file as features land._
