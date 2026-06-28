@@ -50,6 +50,84 @@ A multi-tenant SaaS for dental clinics:
 
 ---
 
+## 3.1 AI Team — what each agent can actually do right now
+
+All four agents are **fully built and functional** — they think via OpenRouter (✅ you have
+the key) and they have **real tools** (not just chat). Each tool either works immediately or
+needs the matching clinic **connection** (made once in Settings → Connections / WordPress).
+Each agent now **stays in its lane** (declines out-of-area asks and names the right teammate).
+
+> **Direct answer to "can they publish a blog if we connect WordPress?" → YES.**
+> Connect the clinic's WordPress (Settings → Connections → WordPress, app password) and
+> **Helena writes a full SEO article herself and publishes it to that WordPress** — as a draft
+> by default, or live if you say "publish". She can also generate a featured image and attach it.
+
+### 🟣 Helena — Marketing Manager
+**Capabilities (tools she can actually run):**
+- ✍️ **Write + publish blog posts to WordPress** (`publish_blog_post`) — she writes the full
+  600–1200-word HTML article, then posts it (draft by default). _Needs: WordPress connected._
+- 🖼️ **Generate marketing images** (`generate_featured_image`) and upload to WordPress media.
+  _Needs: `OPENROUTER_API_KEY` ✅ (or OpenAI for higher quality)._
+- 📘 **Post to Facebook** (`post_to_facebook`) and 📸 **Instagram** (`post_to_instagram`, makes
+  the image too). _Needs: Meta connected + app Live._
+- 📊 **Pull Google Analytics** (`get_analytics_report`) and **Search Console** (`get_search_console_report`).
+  _Needs: Google connected._
+- 💰 **Pull Meta Ads** + **Google Ads** performance (`get_meta_ads_performance`, `get_google_ads_performance`).
+  _Needs: those ad accounts connected (Google Ads also needs the developer token)._
+- 🌐 **Research any URL** (`research_url`, Firecrawl) for content ideas. _Needs: Firecrawl (optional)._
+- 📄 **Create a downloadable report** (`create_report`) — Word .docx + print-to-PDF.
+- **Missing:** scheduled/auto-publishing of social posts (she posts on command, not on a calendar);
+  video content; LinkedIn/TikTok posting.
+
+### 🔵 Sam — SEO / Local Search Manager
+**Capabilities:**
+- 🔎 **Keyword research** (`keyword_research`) — **works WITHOUT any key** via free Google
+  Autocomplete; richer volumes/competition with DataForSEO.
+- 🏢 **Post to Google Business Profile** (`post_to_google_business`). _Needs: Google Business connected._
+- 📈 **Search Console** top queries + pages (`get_top_queries`, `get_top_pages`). _Needs: Google connected._
+- 🩺 **On-page SEO audit** of a URL (`audit_page_seo`) — works (fetches + analyses the page).
+- 🥊 **Competitor analysis** (`find_competitors`, `ranked_keywords`), **backlinks** (`backlinks_summary`),
+  **live SERP check** (`serp_check`). _Needs: `DATAFORSEO_API_KEY` (optional)._
+- 🕷️ **Crawl a site** (`crawl_url`, Firecrawl) + **create reports**.
+- **Missing:** automatic rank tracking over time; auto-applying on-page fixes (he recommends, you apply);
+  schema/structured-data generation.
+
+### 🟢 Kai — Reputation & Reviews Manager
+**Capabilities:**
+- ⭐ **Read Google reviews** (`get_google_reviews`) and **Facebook reviews** (`get_facebook_reviews`),
+  summarise sentiment, surface the urgent/negative ones first. _Needs: Google Business / Facebook connected._
+- 💬 **Draft + post replies to Google reviews** (`reply_to_google_review`) — only after you approve the wording.
+- 🧠 **Sentiment analysis** — done by the model on the pulled reviews (no extra key).
+- **Missing:** broad social-listening / brand-mention monitoring (needs a paid listening data source);
+  replying to Facebook/other-platform reviews (only Google review replies are wired); review-request automation.
+
+### 🟠 Angela — Patient Email & WhatsApp Manager
+**Capabilities:**
+- ✉️ **Write AND send patient email** (`send_email`) — recall reminders, newsletters, promos.
+  _Sends via the clinic's connected **Gmail** (or Brevo)._ ✅ works once Gmail is connected.
+- 📋 **Find recall-due patients** (`find_recall_patients`) from the live database — real data.
+- 📱 **List approved WhatsApp templates** (`list_whatsapp_templates`) and **schedule a WhatsApp
+  broadcast** (`schedule_whatsapp_broadcast`). _Needs: WhatsApp connected + an approved template._
+- ✍️ Always produces ready-to-use copy (subject + body for email; template-safe text for WhatsApp).
+- **Missing:** Mailchimp campaign send; SMS campaigns (separate SMS tab handles SMS); bulk
+  scheduled email drip sequences (single sends + WhatsApp broadcasts work today).
+
+### What ALL four can do regardless of connections
+- Hold a real conversation, use the **clinic's brand knowledge** + uploaded brand docs, keep
+  **chat history/sessions**, write to their **Activity feed**, produce **downloadable reports**,
+  and run on **Autopilot** (a schedule) once a cron hits `/api/cron/run`.
+- Switch the underlying model to Claude with `TEAM_AI_MODEL`.
+
+### One-line summary
+| Agent | Works now (no extra key) | Unlocks when you connect… |
+|---|---|---|
+| **Helena** | write blogs/social copy, generate images, write reports | **WordPress** (publish blogs), Google (analytics), Meta (post/ads) |
+| **Sam** | keyword research (free), page audits, reports | Google (Search Console/GBP), DataForSEO (deep SEO) |
+| **Kai** | analyse/sentiment + draft replies | Google Business / Facebook (read & post reviews) |
+| **Angela** | draft email/WhatsApp copy, find recall patients | **Gmail** (send email), WhatsApp (broadcasts) |
+
+---
+
 ## 4. 🟠 Built but the real functionality is NOT fully wired yet
 
 > These let you fill in / save options, but the backend doesn't yet perform the
