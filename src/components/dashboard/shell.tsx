@@ -268,8 +268,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main */}
-      <div className={`transition-all duration-200 ${open ? "pl-60" : "pl-[68px]"}`}>
-        <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-4 border-b border-ink-200 bg-surface/80 px-6 backdrop-blur">
+      <div className={`min-h-screen bg-background transition-all duration-200 ${open ? "pl-60" : "pl-[68px]"}`}>
+        <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-4 border-b border-ink-200 bg-surface px-6">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setOpen(!open)}
