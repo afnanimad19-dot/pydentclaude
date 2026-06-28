@@ -1160,58 +1160,96 @@ export function AgentModal({
             </div>
           )}
 
-          {/* Prompt Configuration — Callab-style: who the agent is, what it does,
-              and how it speaks. (Saved as agent_identity / instructions / behavior.) */}
-          <div className="mt-5 rounded-xl border border-ink-200 p-4">
-            <div className="mb-1 flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-brand-500" />
-              <p className="text-sm font-semibold text-ink-900">Prompt Configuration</p>
+          {/* Voice agents use the Callab-style Prompt Configuration (Identity /
+              Tasks / Style Guardrails). Chat agents keep the simple Instructions
+              + Behavior boxes, as before. */}
+          {form.kind === "voice" ? (
+            <div className="mt-5 rounded-xl border border-ink-200 p-4">
+              <div className="mb-1 flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-brand-500" />
+                <p className="text-sm font-semibold text-ink-900">Prompt Configuration</p>
+              </div>
+              <p className="mb-4 text-xs text-ink-400">Describe the AI&apos;s identity, tasks, and style guardrails.</p>
+
+              <div className="space-y-4">
+                <Field label="Agent Identity — who the agent is, its tone and role">
+                  <textarea
+                    rows={3}
+                    className={inputCls}
+                    placeholder="Sarah is the AI-powered receptionist for Bright Smile Dental. She is the first point of contact for all calls, handling patient inquiries, booking appointments, and providing clinic information. Sarah is warm, professional, and reassuring."
+                    value={form.agentIdentity}
+                    onChange={(e) => set("agentIdentity", e.target.value)}
+                  />
+                </Field>
+
+                <Field label="Tasks — the specific goals and actions the agent performs">
+                  <textarea
+                    rows={4}
+                    className={inputCls}
+                    placeholder={
+                      "• Greet the caller and ask how you can help.\n" +
+                      "• Answer questions about services, hours, pricing and insurance from the knowledge base.\n" +
+                      "• When they want to book: confirm the treatment, check real availability, collect name/phone/email, and book.\n" +
+                      "• Reschedule or cancel an existing appointment when asked."
+                    }
+                    value={form.instructions}
+                    onChange={(e) => set("instructions", e.target.value)}
+                  />
+                </Field>
+
+                <Field label="Style Guardrails — phrases to use or avoid, and the conversational flow">
+                  <textarea
+                    rows={4}
+                    className={inputCls}
+                    placeholder={
+                      "• Keep replies short — 1-2 sentences. Ask only one question at a time.\n" +
+                      "• Never ask the same question twice — remember what the patient already told you.\n" +
+                      "• Don't repeat the greeting on every message.\n" +
+                      "• Before offering times, check real availability; only offer open slots.\n" +
+                      "• If you don't know something, say you'll check with the team — never make up clinical advice."
+                    }
+                    value={form.behavior}
+                    onChange={(e) => set("behavior", e.target.value)}
+                  />
+                </Field>
+              </div>
             </div>
-            <p className="mb-4 text-xs text-ink-400">Describe the AI&apos;s identity, tasks, and style guardrails.</p>
+          ) : (
+            <>
+              <div className="mt-4">
+                <Field label="Instructions — role, goal, what to say">
+                  <textarea
+                    rows={4}
+                    className={inputCls}
+                    placeholder="You are Sarah, the receptionist for Bright Smile Dental. Your goal is to answer questions and BOOK appointments. Greet by name, confirm the service they want, check available times, and book. Keep replies to 1-2 short sentences."
+                    value={form.instructions}
+                    onChange={(e) => set("instructions", e.target.value)}
+                  />
+                </Field>
+              </div>
 
-            <div className="space-y-4">
-              <Field label="Agent Identity — who the agent is, its tone and role">
-                <textarea
-                  rows={3}
-                  className={inputCls}
-                  placeholder="Sarah is the AI-powered receptionist for Bright Smile Dental. She is the first point of contact for all calls, handling patient inquiries, booking appointments, and providing clinic information. Sarah is warm, professional, and reassuring."
-                  value={form.agentIdentity}
-                  onChange={(e) => set("agentIdentity", e.target.value)}
-                />
-              </Field>
-
-              <Field label="Tasks — the specific goals and actions the agent performs">
-                <textarea
-                  rows={4}
-                  className={inputCls}
-                  placeholder={
-                    "• Greet the caller and ask how you can help.\n" +
-                    "• Answer questions about services, hours, pricing and insurance from the knowledge base.\n" +
-                    "• When they want to book: confirm the treatment, check real availability, collect name/phone/email, and book.\n" +
-                    "• Reschedule or cancel an existing appointment when asked."
-                  }
-                  value={form.instructions}
-                  onChange={(e) => set("instructions", e.target.value)}
-                />
-              </Field>
-
-              <Field label="Style Guardrails — phrases to use or avoid, and the conversational flow">
-                <textarea
-                  rows={4}
-                  className={inputCls}
-                  placeholder={
-                    "• Keep replies short — 1-2 sentences. Ask only one question at a time.\n" +
-                    "• Never ask the same question twice — remember what the patient already told you.\n" +
-                    "• Don't repeat the greeting on every message.\n" +
-                    "• Before offering times, check real availability; only offer open slots.\n" +
-                    "• If you don't know something, say you'll check with the team — never make up clinical advice."
-                  }
-                  value={form.behavior}
-                  onChange={(e) => set("behavior", e.target.value)}
-                />
-              </Field>
-            </div>
-          </div>
+              <div className="mt-4">
+                <Field label="Behavior — rules, tone & negative rules (what NOT to do)">
+                  <textarea
+                    rows={4}
+                    className={inputCls}
+                    placeholder={
+                      "• Never ask the same question twice — remember what the patient already told you.\n" +
+                      "• Ask only one question at a time.\n" +
+                      "• Don't repeat the greeting on every message.\n" +
+                      "• Before offering times, check real availability; only offer open slots.\n" +
+                      "• If you don't know something, say you'll check with the team — never make up clinical advice."
+                    }
+                    value={form.behavior}
+                    onChange={(e) => set("behavior", e.target.value)}
+                  />
+                </Field>
+                <p className="mt-1.5 text-xs text-ink-400">
+                  Behavior is separate from Instructions: instructions say <em>what</em> the agent does; behavior says <em>how</em> it acts — the rules that stop repeated questions and keep replies natural.
+                </p>
+              </div>
+            </>
+          )}
 
           {form.kind === "voice" && (
             <VoiceAdvancedSettings
