@@ -734,6 +734,25 @@ function VoiceAdvancedSettings({
             )}
           </SettingsGroup>
 
+          {/* Call transfer to a human */}
+          <SettingsGroup
+            icon={PhoneCall}
+            title="Transfer to a human"
+            desc="If the agent can't help (or the caller asks for a person), transfer the live call to a real number."
+          >
+            <div>
+              <p className="mb-1 text-sm font-medium text-ink-800">Transfer to this number (E.164, e.g. +9714…)</p>
+              <input className={inputCls} placeholder="+97143495432" value={value.transferNumber} onChange={(e) => set("transferNumber", e.target.value)} />
+              <p className="mt-1 text-xs text-ink-400">Leave blank for no transfer. The agent transfers when a caller asks for a human, is upset, or it can&apos;t help.</p>
+            </div>
+            {value.transferNumber.trim() && (
+              <div>
+                <p className="mb-1 text-sm font-medium text-ink-800">What the agent says before transferring</p>
+                <input className={inputCls} placeholder="One moment — connecting you to a team member now." value={value.transferMessage} onChange={(e) => set("transferMessage", e.target.value)} />
+              </div>
+            )}
+          </SettingsGroup>
+
           {/* Reminder & Call Duration Settings */}
           <SettingsGroup
             icon={Clock}
@@ -1018,6 +1037,7 @@ export function AgentModal({
             language: form.language,
             firstMessageMode: form.firstMessageMode,
             voiceSettings: form.voiceSettings,
+            vapiAssistantId: initial?.vapiAssistantId ?? null,
             canBook: form.canBook,
             canReschedule: form.canReschedule,
             canCancel: form.canCancel,

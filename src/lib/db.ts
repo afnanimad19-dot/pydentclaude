@@ -391,6 +391,9 @@ export interface VoiceSettings {
   maxCallDuration: number;         // minutes · 1–60 · max call length (default 60)
   // Privacy
   dataStorage: "store_analyze" | "store_only" | "no_store"; // default store_analyze
+  // Call transfer to a human
+  transferNumber: string;   // E.164 number to transfer to (empty = no transfer)
+  transferMessage: string;  // what the agent says before transferring
   // Post-Call Data Extraction
   extractionFields: ExtractionField[];
 }
@@ -415,6 +418,8 @@ export function defaultVoiceSettings(): VoiceSettings {
     maxSilenceDuration: 120,
     maxCallDuration: 60,
     dataStorage: "store_analyze",
+    transferNumber: "",
+    transferMessage: "",
     extractionFields: [],
   };
 }

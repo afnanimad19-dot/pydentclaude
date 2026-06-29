@@ -237,6 +237,16 @@ export async function POST(req: NextRequest) {
   const caps = { canBook: agent.canBook, canReschedule: agent.canReschedule, canCancel: agent.canCancel };
   const tools = bookingTools(caps, serverUrl);
 
+  // Call transfer to a human: when the agent can't help (or the caller asks for a
+  // person), it can transfer the live call to a real number.
+  const transferNumber = (agent.voiceSettings?.transferNumber || "").trim();
+  if (transferNumber) {
+    tools.push({
+      type: "transferCall",
+      destinations: [{ type: "number", number: transferNumber, message: agent.voiceSettings?.transferMessage || "One moment — connecting you to a team member now." }],
+    });
+  }
+
   // Map a Pydent voice agent onto a Vapi assistant definition.
   const assistant = {
     name: agent.name,
@@ -256,6 +266,7 @@ export async function POST(req: NextRequest) {
             agent.instructions && `TASKS (what you do — your goals and the actions to perform):\n${agent.instructions}`,
             agent.behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${agent.behavior}`,
             bookingPrompt(caps),
+            transferNumber && `TRANSFER: If the caller asks for a human, is upset, has a clinical emergency, or you genuinely cannot help, use the transferCall tool to connect them to ${transferNumber}. Tell them you're connecting them before transferring.`,
             agent.knowledgeBase && `KNOWLEDGE BASE:\n${agent.knowledgeBase}`,
           ]
             .filter(Boolean)
@@ -274,11 +285,18 @@ export async function POST(req: NextRequest) {
     ...advancedFromSettings(agent.voiceSettings),
   };
 
-  const res = await fetch(`${VAPI_BASE}/assistant`, {
-    method: "POST",
-    headers: vapiHeaders(),
-    body: JSON.stringify(assistant),
-  });
-  const data = await res.json();
+  // Update the SAME Vapi assistant when we already have its id (no duplicates);
+  // otherwise create it. So "save/publish in Pydent" updates Vapi in place.
+  const existingId = (agent.vapiAssistantId || "").trim();
+  const res = existingId
+    ? await fetch(`${VAPI_BASE}/assistant/${existingId}`, { method: "PATCH", headers: vapiHeaders(), body: JSON.stringify(assistant) })
+    : await fetch(`${VAPI_BASE}/assistant`, { method: "POST", headers: vapiHeaders(), body: JSON.stringify(assistant) });
+  let data = await res.json();
+  // If the stored id no longer exists on Vapi (404), create a fresh one.
+  if (!res.ok && existingId && res.status === 404) {
+    const re = await fetch(`${VAPI_BASE}/assistant`, { method: "POST", headers: vapiHeaders(), body: JSON.stringify(assistant) });
+    data = await re.json();
+    return NextResponse.json(data, { status: re.status });
+  }
   return NextResponse.json(data, { status: res.status });
 }
