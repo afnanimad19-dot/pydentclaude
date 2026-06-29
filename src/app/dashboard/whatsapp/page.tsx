@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { MessageCircle, Megaphone, Plus, Zap } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge, Avatar, StatCard } from "@/components/ui";
 import { Modal } from "@/components/modal";
-import { NewCampaignModal } from "@/components/dashboard/create-modals";
 import { BroadcastWizard } from "@/components/dashboard/broadcast-wizard";
 import { fetchWaBroadcasts, fetchWaBroadcastRecipients, type WaBroadcast, type WaBroadcastRecipient } from "@/lib/db";
 import { broadcasts, conversations, type Broadcast } from "@/lib/mock-data";
@@ -21,7 +20,6 @@ export default function WhatsAppPage() {
   // URL is the source of truth so sidebar sub-links and tab buttons stay in sync
   const tab: Tab = urlTab === "broadcasts" ? "broadcasts" : "chats";
   const setTab = (t: Tab) => router.replace(`/dashboard/whatsapp?tab=${t}`, { scroll: false });
-  const [modalOpen, setModalOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [selected, setSelected] = useState<Broadcast | null>(null);
   const [liveBroadcasts, setLiveBroadcasts] = useState<WaBroadcast[]>([]);
@@ -40,18 +38,16 @@ export default function WhatsAppPage() {
       {wizardOpen && <BroadcastWizard onClose={() => setWizardOpen(false)} onDone={loadLive} />}
       {selected && <BroadcastDetail broadcast={selected} onClose={() => setSelected(null)} />}
       {selectedLive && <LiveBroadcastDetail broadcast={selectedLive} onClose={() => setSelectedLive(null)} />}
-      <NewCampaignModal open={modalOpen} onClose={() => setModalOpen(false)} channel="WhatsApp" />
       <DemoBanner context="WhatsApp Business is not connected yet — these are sample chats, broadcasts and flows." />
       <PageHeader
         title="WhatsApp"
         subtitle="Two-way chats, broadcast campaigns and automation flows on WhatsApp Business."
         actions={
           <button
-            onClick={() => (tab === "broadcasts" ? setWizardOpen(true) : setModalOpen(true))}
+            onClick={() => { setTab("broadcasts"); setWizardOpen(true); }}
             className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
           >
-            <Plus className="h-4 w-4" />
-            {tab === "broadcasts" ? "New broadcast" : "New campaign"}
+            <Plus className="h-4 w-4" /> New broadcast
           </button>
         }
       />
@@ -78,7 +74,7 @@ export default function WhatsAppPage() {
       {tab === "chats" && (
         <div className="grid gap-4">
           <div className="grid gap-4 md:grid-cols-3">
-            <StatCard icon={MessageCircle} label="Active chats" value="38" hint="last 24 hours" accent="green" />
+            <StatCard icon={MessageCircle} label="Active chats" value={String(waConversations.length)} hint="in the inbox" accent="green" />
             <StatCard icon={Zap} label="Bot resolution rate" value="78%" hint="resolved without a human" accent="brand" />
             <StatCard icon={Megaphone} label="Booked from WhatsApp" value="49" hint="this month" accent="violet" />
           </div>

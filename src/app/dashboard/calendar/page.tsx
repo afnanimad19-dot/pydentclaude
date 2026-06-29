@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, CalendarCheck2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, CalendarCheck2, Check, CalendarClock, X } from "lucide-react";
 import { Card, PageHeader } from "@/components/ui";
-import { Modal } from "@/components/modal";
+import { Modal, Field, inputCls } from "@/components/modal";
 import { NewAppointmentModal } from "@/components/dashboard/create-modals";
 import { BookingModal } from "@/components/dashboard/booking-modal";
-import { fetchAppointments, fetchPatients } from "@/lib/db";
+import { toast } from "@/components/toast";
+import { fetchAppointments, fetchPatients, updateAppointment, cancelAppointment } from "@/lib/db";
 import { type Appointment, type Patient } from "@/lib/mock-data";
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i); // all 24 hours
@@ -118,34 +119,12 @@ export default function CalendarPage() {
       />
       <BookingModal open={bookModal} onClose={() => setBookModal(false)} onBooked={refresh} />
       {selected && (
-        <Modal open onClose={() => setSelected(null)} title={selected.patientName} subtitle={`${selected.procedure}`}>
-          <div className="grid gap-3 text-sm">
-            <div className="flex items-center justify-between rounded-xl bg-ink-50 px-4 py-3">
-              <span className="text-ink-500">When</span>
-              <span className="font-medium text-ink-900">{selected.date} · {selected.time}</span>
-            </div>
-            {[
-              ["Treatment", selected.procedure],
-              ["Fee", selected.fee != null ? String(selected.fee) : "—"],
-              ["Provider", selected.provider || "—"],
-              ["Operatory", selected.operatory || "—"],
-              ["Status", selected.status],
-              ["Phone", selectedPatient?.phone || "—"],
-              ["Email", selectedPatient?.email || "—"],
-              ["Booked via", sourceLabel(selected)],
-            ].map(([k, v]) => (
-              <div key={k} className="flex items-center justify-between border-b border-ink-100 pb-2 last:border-0">
-                <span className="text-ink-500">{k}</span>
-                <span className="font-medium text-ink-900">{v}</span>
-              </div>
-            ))}
-            {selectedPatient && (
-              <a href={`/dashboard/patients/${selectedPatient.id}`} className="mt-1 rounded-xl bg-brand-600 px-4 py-2 text-center text-sm font-semibold text-white hover:bg-brand-700">
-                Open patient chart →
-              </a>
-            )}
-          </div>
-        </Modal>
+        <ApptDetail
+          appt={selected}
+          patient={selectedPatient}
+          onClose={() => setSelected(null)}
+          onChanged={() => { setSelected(null); refresh(); }}
+        />
       )}
       <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-600">
         <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" />
@@ -300,5 +279,91 @@ export default function CalendarPage() {
         </div>
       </Card>
     </>
+  );
+}
+
+// Appointment detail with Confirm / Reschedule / Cancel actions.
+function ApptDetail({ appt, patient, onClose, onChanged }: { appt: Appointment; patient?: Patient; onClose: () => void; onChanged: () => void }) {
+  const [date, setDate] = useState(appt.date);
+  const [time, setTime] = useState(appt.time);
+  const [busy, setBusy] = useState(false);
+  const isClosed = appt.status === "Completed" || appt.status === "Broken";
+
+  async function setStatus(status: string) {
+    setBusy(true);
+    const res = await updateAppointment(appt.id, { status });
+    setBusy(false);
+    toast(res.message, res.ok ? "success" : "info");
+    if (res.ok) onChanged();
+  }
+  async function reschedule() {
+    if (!date || !time) { toast("Pick a date and time.", "info"); return; }
+    setBusy(true);
+    const res = await updateAppointment(appt.id, { date, time, status: "Scheduled" });
+    setBusy(false);
+    toast(res.ok ? "Appointment rescheduled." : res.message, res.ok ? "success" : "info");
+    if (res.ok) onChanged();
+  }
+  async function cancel() {
+    if (!confirm("Cancel this appointment?")) return;
+    setBusy(true);
+    const res = await cancelAppointment(appt.id);
+    setBusy(false);
+    toast(res.message, res.ok ? "success" : "info");
+    if (res.ok) onChanged();
+  }
+
+  return (
+    <Modal open onClose={onClose} title={appt.patientName} subtitle={appt.procedure}>
+      <div className="grid gap-3 text-sm">
+        {[
+          ["Treatment", appt.procedure],
+          ["Fee", appt.fee != null ? String(appt.fee) : "—"],
+          ["Provider", appt.provider || "—"],
+          ["Operatory", appt.operatory || "—"],
+          ["Status", appt.status],
+          ["Phone", patient?.phone || "—"],
+          ["Email", patient?.email || "—"],
+          ["Booked via", sourceLabel(appt)],
+        ].map(([k, v]) => (
+          <div key={k} className="flex items-center justify-between border-b border-ink-100 pb-2 last:border-0">
+            <span className="text-ink-500">{k}</span>
+            <span className="font-medium text-ink-900">{v}</span>
+          </div>
+        ))}
+
+        {!isClosed && (
+          <div className="rounded-xl border border-ink-100 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">Reschedule</p>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Date"><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+              <Field label="Time"><input type="time" className={inputCls} value={time.length === 5 ? time : "09:00"} onChange={(e) => setTime(e.target.value)} /></Field>
+            </div>
+            <button onClick={reschedule} disabled={busy} className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-ink-200 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50 disabled:opacity-50">
+              <CalendarClock className="h-4 w-4" /> Reschedule
+            </button>
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {!isClosed && appt.status !== "Confirmed" && (
+            <button onClick={() => setStatus("Confirmed")} disabled={busy} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-emerald-600 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+              <Check className="h-4 w-4" /> Confirm
+            </button>
+          )}
+          {!isClosed && (
+            <button onClick={cancel} disabled={busy} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-ink-200 py-2 text-sm font-semibold text-rose-600 hover:bg-rose-500/10 disabled:opacity-50">
+              <X className="h-4 w-4" /> Cancel
+            </button>
+          )}
+        </div>
+
+        {patient && (
+          <a href={`/dashboard/patients/${patient.id}`} className="rounded-xl bg-brand-600 px-4 py-2 text-center text-sm font-semibold text-white hover:bg-brand-700">
+            Open patient chart →
+          </a>
+        )}
+      </div>
+    </Modal>
   );
 }
