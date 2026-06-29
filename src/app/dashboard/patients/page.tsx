@@ -13,6 +13,7 @@ import {
   createFolder,
   movePatientToFolder,
   fetchPatientFolderMap,
+  deletePatients,
   type DataSource,
   type PatientFolder,
 } from "@/lib/db";
@@ -82,6 +83,17 @@ export default function PatientsPage() {
       else next.add(patientId);
       return next;
     });
+  }
+
+  async function bulkDelete() {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} contact${ids.length > 1 ? "s" : ""}? This cannot be undone.`)) return;
+    setPatients((prev) => prev.filter((p) => !selected.has(p.id)));
+    setSelected(new Set());
+    const res = await deletePatients(ids);
+    toast(res.message, res.ok ? "success" : "info");
+    if (!res.ok) refresh();
   }
 
   async function bulkMove() {
@@ -250,6 +262,12 @@ export default function PatientsPage() {
                 className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
               >
                 Move
+              </button>
+              <button
+                onClick={bulkDelete}
+                className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700"
+              >
+                Delete
               </button>
               <button
                 onClick={() => setSelected(new Set())}

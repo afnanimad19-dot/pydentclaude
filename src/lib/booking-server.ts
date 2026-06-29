@@ -7,6 +7,7 @@
 import { supabase } from "@/lib/supabase";
 import { getOdConfig, odForward } from "@/lib/opendental-gateway";
 import { triggerWorkflows } from "@/lib/workflow-runner";
+import { pushToGoogleCalendar } from "@/lib/google-api";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -174,6 +175,18 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
   } catch {
     /* keep the Calendar booking even if Open Dental is unreachable */
   }
+
+  // Best-effort: mirror the booking to the clinic's Google Calendar.
+  try {
+    if (ws) {
+      const eventId = await pushToGoogleCalendar(ws, {
+        summary: `${treatment} — ${fullName || ctx.name || "Patient"}`,
+        description: [`Booked via ${ctx.source}`, args.phone || ctx.phone ? `Phone: ${args.phone || ctx.phone}` : "", fee != null ? `Fee: ${fee}` : ""].filter(Boolean).join("\n"),
+        date, time,
+      });
+      if (eventId && appt?.id) await supabase.from("appointments").update({ google_calendar_event_id: eventId }).eq("id", appt.id);
+    }
+  } catch { /* keep the booking even if Google Calendar push fails */ }
 
   // Fire any "appointment booked" workflows for this clinic (best-effort).
   try {

@@ -44,6 +44,7 @@ import {
   updateAgent,
   updateAgentStatus,
   setAgentVapiId,
+  deleteAgent,
   fetchChannelDefaults,
   setChannelDefault,
   fetchClinicSettings,
@@ -300,6 +301,18 @@ export function AgentsView({
                   className="flex items-center justify-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50"
                 >
                   <Pencil className="h-4 w-4" /> Edit
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!confirm(`Delete agent "${a.name}"? This cannot be undone.`)) return;
+                    const res = await deleteAgent(a.id);
+                    if (res.ok) { setAgents((prev) => prev.filter((x) => x.id !== a.id)); }
+                    else alert(res.message);
+                  }}
+                  title="Delete agent"
+                  className="flex items-center justify-center rounded-xl border border-ink-200 px-3 py-2 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500"
+                >
+                  <Trash2 className="h-4 w-4" />
                 </button>
               </div>
             </Card>

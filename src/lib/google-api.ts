@@ -225,3 +225,35 @@ export async function runSearchConsoleReport(ws: string, days = 28): Promise<str
     return `Search Console failed: ${e instanceof Error ? e.message : "error"}`;
   }
 }
+
+// Push a booked appointment to the clinic's connected Google Calendar (primary).
+// Best-effort: returns the created event id, or null if Calendar isn't connected.
+export async function pushToGoogleCalendar(
+  ws: string,
+  appt: { summary: string; description?: string; date: string; time: string; durationMin?: number }
+): Promise<string | null> {
+  try {
+    const token = await getValidGoogleToken(ws, "google_calendar");
+    if (!token) return null;
+    const tz = process.env.CLINIC_TIMEZONE ?? "Asia/Dubai";
+    const start = `${appt.date}T${(appt.time || "09:00").slice(0, 5)}:00`;
+    const [h, m] = (appt.time || "09:00").slice(0, 5).split(":").map(Number);
+    const endMin = (h * 60 + m) + (appt.durationMin ?? 30);
+    const end = `${appt.date}T${String(Math.floor(endMin / 60) % 24).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}:00`;
+    const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        summary: appt.summary,
+        description: appt.description ?? "",
+        start: { dateTime: start, timeZone: tz },
+        end: { dateTime: end, timeZone: tz },
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => ({}));
+    return data?.id ?? null;
+  } catch {
+    return null;
+  }
+}

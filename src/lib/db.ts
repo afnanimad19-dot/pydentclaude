@@ -535,6 +535,12 @@ export async function setAgentVapiId(id: string, vapiId: string): Promise<void> 
   await supabase.from("agents").update({ vapi_assistant_id: vapiId }).eq("id", id);
 }
 
+export async function deleteAgent(id: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("agents").delete().eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Agent deleted." };
+}
+
 export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
   const row = agentToRow(input);
   let { error } = await supabase.from("agents").update(row).eq("id", id);
