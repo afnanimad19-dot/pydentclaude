@@ -362,6 +362,50 @@ Estimated build: the connector itself is small (~1–2 days); most of the time i
 
 ---
 
+## 8.5 Phone numbers & UAE calling — how it works (the "Azure" question)
+
+**What Callab is doing with that Azure portal:** Azure (Azure Communication Services)
+is one way to **buy/host the phone number and the SIP/PSTN line**. It is NOT what runs the
+AI — the AI call itself runs on **Vapi/Retell**. So their chain is:
+
+```
+Phone number (carrier / Azure / SIP provider)  →  SIP trunk  →  Vapi/Retell (AI agent answers)  →  our app (/api/vapi/events: booking, logs)
+```
+
+Azure is just the "phone line" half. You don't strictly need Azure — any number source that
+can hand Vapi a SIP trunk works. **For a UAE local number specifically, Twilio usually can't
+sell you one**, so the realistic options are:
+
+1. **A UAE / regional SIP provider or CPaaS** — e.g. **Ziwo**, **Maqsam**, or a SIP trunk from
+   **Etisalat/du** (or an aggregator). You already have provider cards for these in
+   Voice Agents → Phone Numbers.
+2. **Azure Communication Services** — buy a number + PSTN there and expose a SIP trunk (works,
+   but UAE local-number availability on Azure is limited; a regional provider is usually easier).
+3. **Bring the clinic's existing number** — the clinic forwards their current landline to the
+   SIP/Vapi number, so patients keep dialing the same number.
+
+### How we do it in Pydent (already built)
+- Go to **Voice Agents → Phone Numbers → Add Phone Number** → pick **Custom SIP Trunk** (or
+  Ziwo / Maqsam / Go Auto Dial / Vocalcom / BYOT Twilio). Enter the trunk/credentials.
+- That number is connected to the **Vapi** assistant (our app sets the assistant's server URL
+  automatically). Vapi answers inbound calls with the voice agent; the agent books/reschedules
+  via `/api/vapi/events` (already wired).
+- **Nothing is installed at the clinic for voice** — the number lives in the cloud (provider →
+  Vapi). The only on-prem install is the **Open Dental connector** (for clinical data), §8.
+
+### Step-by-step to put a UAE number live
+1. Get a UAE number + SIP trunk from a regional provider (Ziwo/Maqsam/Etisalat/du) — or buy one
+   on Azure ACS and expose its SIP trunk.
+2. In **Vapi → Phone Numbers**, add the number via **SIP/BYO** using the trunk's host, username,
+   password (Vapi does the live SIP handshake).
+3. In **Pydent → Phone Numbers**, add the same number (SIP Trunk form) and assign the voice agent.
+4. Point the trunk's inbound route at Vapi. Test: call the number → the agent answers → book a
+   test appointment → it lands on the Calendar (and Open Dental when connected).
+
+> Summary: **Azure (or Ziwo/Maqsam/a SIP trunk) = the phone line; Vapi = the AI on the call;
+> Pydent = the agent's brain, booking and logs.** We support this today via the Phone Numbers
+> SIP/provider forms — no clinic-side install needed for voice.
+
 ## 9. What's next (recommended order)
 
 1. **Run migrations 0038–0040** + connect **Gmail** (email) and **Twilio** (SMS) → those tabs go fully live.
