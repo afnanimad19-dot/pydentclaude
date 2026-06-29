@@ -154,7 +154,11 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 7. **A few advanced voice VAD micro-params** (activation threshold, prefix padding, min-speech)
    are saved + shown, but Vapi only applies the subset it exposes (timeouts, turn detection,
    limits, privacy, extraction all apply).
-8. **Mailchimp** — connection card only; **no campaign send**.
+8. **Per-clinic connections** ✅ — Brevo/Mailchimp now connect **in-app** (paste the key in
+   Settings → Connections; stored per workspace, not in Netlify). Email send uses the clinic's
+   own Brevo key first, then a global key, then Gmail. (Mailchimp *campaign send* still TODO, but
+   the key is now stored per clinic.) **Timezone** is now a per-clinic setting (Settings → Profile)
+   used by Google Calendar push — no env needed.
 9. **Reports** — patient/appointment numbers are real; **ad/SEO charts need their data keys**.
 10. **Test-call inline booking** — booking works on the **saved/synced** Vapi assistant; the
     in-browser quick "Test call" (unsynced fallback) doesn't carry the booking tools.

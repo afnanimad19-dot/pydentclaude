@@ -62,6 +62,7 @@ export function IntegrationsPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [setupFor, setSetupFor] = useState<Provider | null>(null);
+  const [apiKeyFor, setApiKeyFor] = useState<Provider | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState<Provider | null>(null);
   const [wpSelfOpen, setWpSelfOpen] = useState(false);
 
@@ -115,6 +116,8 @@ export function IntegrationsPanel() {
       openPopup(`/api/oauth/${p.key}?ws=${encodeURIComponent(ws)}&popup=1`, p.key);
       return;
     }
+    // Key-based providers (Brevo, Mailchimp): paste the key right here, per clinic.
+    if (p.apiKey) { setApiKeyFor(p); return; }
     // Special providers that need a bespoke flow — explain the setup.
     setSetupFor(p);
   }
@@ -151,6 +154,9 @@ export function IntegrationsPanel() {
     <div className="space-y-6">
       {wpSelfOpen && ws && (
         <WordPressSelfModal ws={ws} onClose={() => setWpSelfOpen(false)} onConnected={() => { setWpSelfOpen(false); refresh(); }} />
+      )}
+      {apiKeyFor && ws && (
+        <ApiKeyModal provider={apiKeyFor} ws={ws} onClose={() => setApiKeyFor(null)} onConnected={() => { setApiKeyFor(null); refresh(); }} />
       )}
       {confirmDisconnect && (
         <Modal open onClose={() => setConfirmDisconnect(null)} title={`Disconnect ${confirmDisconnect.name}?`} subtitle="The clinic will need to reconnect to use it again." z="z-[60]">
@@ -364,6 +370,60 @@ function WordPressSelfModal({ ws, onClose, onConnected }: { ws: string; onClose:
         <button onClick={submit} disabled={saving} className="flex-1 rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
           {saving ? "Connecting…" : "Connect"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+// Per-clinic API-key connect (Brevo, Mailchimp, …). The clinic pastes their own
+// key here — stored per workspace via /api/connections/apikey. No Netlify needed.
+const KEY_HELP: Record<string, { where: string; prefix?: string; sender?: boolean }> = {
+  brevo: { where: "Brevo → SMTP & API → API Keys → Generate a new API key", prefix: "xkeysib-", sender: true },
+  mailchimp: { where: "Mailchimp → Account → Extras → API keys → Create A Key" },
+};
+
+function ApiKeyModal({ provider, ws, onClose, onConnected }: { provider: Provider; ws: string; onClose: () => void; onConnected: () => void }) {
+  const help = KEY_HELP[provider.key] ?? { where: `${provider.name} → API settings` };
+  const [key, setKey] = useState("");
+  const [fromEmail, setFromEmail] = useState("");
+  const [saving, setSaving] = useState(false);
+  async function submit() {
+    if (!key.trim()) { toast("Paste your API key.", "info"); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/connections/apikey", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ws, provider: provider.key, apiKey: key.trim(), fromEmail: fromEmail.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!data.ok) { toast(data.error ?? "Could not connect.", "info"); return; }
+      toast(`${provider.name} connected.`, "success");
+      onConnected();
+    } catch {
+      toast("Could not reach the server.", "info");
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <Modal open onClose={onClose} title={`Connect ${provider.name}`} subtitle={`Create an API key in ${provider.name} and paste it below.`} z="z-[60]">
+      <div className="space-y-4">
+        <p className="text-sm text-ink-500">Open <strong>{help.where}</strong>{help.prefix && <>, copy the key (starts with <code className="rounded bg-ink-100 px-1">{help.prefix}</code>)</>}.</p>
+        <div>
+          <p className="mb-1.5 text-sm font-medium text-ink-700">API Key</p>
+          <input className={inputCls} placeholder={help.prefix ? `${help.prefix}…` : "API key"} value={key} onChange={(e) => setKey(e.target.value)} />
+        </div>
+        {help.sender && (
+          <div>
+            <p className="mb-1.5 text-sm font-medium text-ink-700">Sender email (verified in {provider.name})</p>
+            <input className={inputCls} placeholder="reception@yourclinic.com" value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} />
+          </div>
+        )}
+        <div className="flex gap-2 pt-1">
+          <button onClick={onClose} className="flex-1 rounded-xl border border-ink-200 py-2.5 text-sm font-semibold text-ink-700 hover:bg-ink-50">Cancel</button>
+          <button onClick={submit} disabled={saving} className="flex-1 rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">{saving ? "Connecting…" : "Connect"}</button>
+        </div>
       </div>
     </Modal>
   );

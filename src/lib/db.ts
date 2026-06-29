@@ -2054,15 +2054,16 @@ export async function disconnectConnection(provider: string): Promise<{ ok: bool
 export interface ClinicSettings {
   website: string;
   showSampleData: boolean;
+  timezone: string;
 }
 
 export async function fetchClinicSettings(): Promise<ClinicSettings> {
   try {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("clinic_settings").select("*").eq("workspace_id", ws).maybeSingle();
-    return { website: data?.website ?? "", showSampleData: data?.show_sample_data ?? true };
+    return { website: data?.website ?? "", showSampleData: data?.show_sample_data ?? true, timezone: data?.timezone ?? "Asia/Dubai" };
   } catch {
-    return { website: "", showSampleData: true };
+    return { website: "", showSampleData: true, timezone: "Asia/Dubai" };
   }
 }
 
@@ -2074,9 +2075,17 @@ export async function saveClinicSettings(s: Partial<ClinicSettings>): Promise<{ 
   const row: Record<string, any> = { updated_at: new Date().toISOString() };
   if (s.website !== undefined) row.website = s.website.trim();
   if (s.showSampleData !== undefined) row.show_sample_data = s.showSampleData;
+  if (s.timezone !== undefined) row.timezone = s.timezone;
   let { error } = existing
     ? await supabase.from("clinic_settings").update(row).eq("workspace_id", ws)
     : await supabase.from("clinic_settings").insert({ workspace_id: ws, ...row });
+  // Older DBs without the timezone column — retry without it.
+  if (error && /timezone/.test(error.message)) {
+    delete row.timezone;
+    ({ error } = existing
+      ? await supabase.from("clinic_settings").update(row).eq("workspace_id", ws)
+      : await supabase.from("clinic_settings").insert({ workspace_id: ws, ...row }));
+  }
   // Older DBs without the show_sample_data column — retry without it.
   if (error && /show_sample_data/.test(error.message)) {
     delete row.show_sample_data;

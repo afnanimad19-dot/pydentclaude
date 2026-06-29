@@ -2,10 +2,9 @@
 // otherwise falls back to the clinic's connected Gmail (Google OAuth, gmail.send
 // scope) so "Send now" works without a separate email provider.
 
-import { getValidGoogleToken } from "@/lib/google-api";
+import { getValidGoogleToken, getConnectionApiKey } from "@/lib/google-api";
 
-async function sendViaBrevo(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string }): Promise<string> {
-  const key = process.env.BREVO_API_KEY!;
+async function sendViaBrevo(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string }, key: string): Promise<string> {
   const fromEmail = input.fromEmail || process.env.BREVO_FROM_EMAIL;
   if (!fromEmail) return "No sender email configured. Set BREVO_FROM_EMAIL to a verified sender in Brevo.";
   const res = await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -44,9 +43,16 @@ async function sendViaGmail(ws: string, input: { to: string; subject: string; ht
 
 export async function sendEmail(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string; ws?: string }): Promise<string> {
   try {
-    if (process.env.BREVO_API_KEY) return await sendViaBrevo(input);
+    // 1) the clinic's own Brevo key (connected in-app, per workspace)
+    if (input.ws) {
+      const brevo = await getConnectionApiKey(input.ws, "brevo");
+      if (brevo?.key) return await sendViaBrevo({ ...input, fromEmail: input.fromEmail || brevo.extra || undefined }, brevo.key);
+    }
+    // 2) a global Brevo key (Netlify), if the SaaS provides one
+    if (process.env.BREVO_API_KEY) return await sendViaBrevo(input, process.env.BREVO_API_KEY);
+    // 3) the clinic's connected Gmail
     if (input.ws) return await sendViaGmail(input.ws, input);
-    return "Email sending isn't connected. Connect Gmail in Settings → Connections, or add BREVO_API_KEY in Netlify.";
+    return "Email isn't connected. Connect Gmail or paste your Brevo key in Settings → Connections.";
   } catch (e) {
     return `Email send failed: ${e instanceof Error ? e.message : "error"}`;
   }

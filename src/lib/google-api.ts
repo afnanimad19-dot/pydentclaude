@@ -10,6 +10,20 @@ function admin() {
   return createClient(supabaseUrl, serviceKey);
 }
 
+// Reads a clinic's API key for a key-based connection (Brevo, Mailchimp, …)
+// stored in-app per workspace. Returns { key, extra } or null. Server-only.
+export async function getConnectionApiKey(ws: string, provider: string): Promise<{ key: string; extra: string | null } | null> {
+  const db = admin();
+  if (!db) return null;
+  try {
+    const { data } = await db.from("oauth_tokens").select("access_token, refresh_token").eq("workspace_id", ws).eq("provider", provider).maybeSingle();
+    if (!data?.access_token) return null;
+    return { key: data.access_token, extra: data.refresh_token ?? null };
+  } catch {
+    return null;
+  }
+}
+
 export async function getValidGoogleToken(ws: string, provider: string): Promise<string | null> {
   const db = admin();
   if (!db) return null;
@@ -235,7 +249,15 @@ export async function pushToGoogleCalendar(
   try {
     const token = await getValidGoogleToken(ws, "google_calendar");
     if (!token) return null;
-    const tz = process.env.CLINIC_TIMEZONE ?? "Asia/Dubai";
+    // Prefer the clinic's saved timezone, then env, then a sensible default.
+    let tz = process.env.CLINIC_TIMEZONE ?? "Asia/Dubai";
+    try {
+      const db = admin();
+      if (db) {
+        const { data } = await db.from("clinic_settings").select("timezone").eq("workspace_id", ws).maybeSingle();
+        if (data?.timezone) tz = data.timezone;
+      }
+    } catch { /* fall back to default */ }
     const start = `${appt.date}T${(appt.time || "09:00").slice(0, 5)}:00`;
     const [h, m] = (appt.time || "09:00").slice(0, 5).split(":").map(Number);
     const endMin = (h * 60 + m) + (appt.durationMin ?? 30);

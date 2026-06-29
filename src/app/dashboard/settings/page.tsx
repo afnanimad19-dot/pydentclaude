@@ -33,7 +33,13 @@ import { IntegrationsPanel } from "@/components/dashboard/integrations-panel";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
 import { BillingPanel } from "@/components/dashboard/billing-panel";
 import { ThemeToggle } from "@/components/theme";
-import { fetchPatients } from "@/lib/db";
+import { fetchPatients, fetchClinicSettings, saveClinicSettings } from "@/lib/db";
+
+const TIMEZONES = [
+  "Asia/Dubai", "Asia/Riyadh", "Asia/Qatar", "Asia/Kuwait", "Asia/Bahrain", "Asia/Muscat",
+  "Asia/Karachi", "Asia/Kolkata", "Europe/London", "Europe/Paris", "Europe/Berlin",
+  "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "UTC",
+];
 import { supabase } from "@/lib/supabase";
 import { toast } from "@/components/toast";
 
@@ -110,11 +116,13 @@ export default function SettingsPage() {
   const [health, setHealth] = useState<{ openrouter: boolean; vapi: boolean; google: boolean } | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("Dana Reyes");
+  const [timezone, setTimezone] = useState("Asia/Dubai");
   const [tags, setTags] = useState(SEED_TAGS);
   const [newTag, setNewTag] = useState("");
 
   useEffect(() => {
     fetchPatients().then((r) => setDbLive(r.source === "live"));
+    fetchClinicSettings().then((s) => setTimezone(s.timezone));
     fetch("/api/health").then((r) => r.json()).then(setHealth).catch(() => setHealth({ openrouter: false, vapi: false, google: false }));
     supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
   }, []);
@@ -168,8 +176,13 @@ export default function SettingsPage() {
               <Field label="Email">
                 <input className={`${inputCls} opacity-70`} value={email ?? "Demo mode (not signed in)"} disabled />
               </Field>
+              <Field label="Timezone (used for calendar & scheduled times)">
+                <select className={inputCls} value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                  {TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz.replace(/_/g, " ")}</option>)}
+                </select>
+              </Field>
               <div className="flex items-center gap-3 border-t border-ink-100 pt-4">
-                <button onClick={() => toast("Profile saved.")} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Save profile</button>
+                <button onClick={async () => { const r = await saveClinicSettings({ timezone }); toast(r.ok ? "Profile saved." : r.message, r.ok ? "success" : "info"); }} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Save profile</button>
                 <button onClick={signOut} className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
                   <LogOut className="h-4 w-4" /> Sign out
                 </button>
