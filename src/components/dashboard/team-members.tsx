@@ -40,6 +40,22 @@ export function TeamMembersPanel() {
     }
   }
 
+  async function changeRole(m: TeamMember, role: TeamMember["role"]) {
+    const prevRole = m.role;
+    setMembers((cur) => cur.map((x) => (x.id === m.id ? { ...x, role } : x)));
+    const res = await updateTeamMember(m.id, { role });
+    if (!res.ok) { toast(`Couldn't change role: ${res.message}`, "info"); setMembers((cur) => cur.map((x) => (x.id === m.id ? { ...x, role: prevRole } : x))); }
+  }
+
+  async function remove(m: TeamMember) {
+    if (!confirm(`Remove ${m.name || m.email} from this workspace?`)) return;
+    const prev = members;
+    setMembers((cur) => cur.filter((x) => x.id !== m.id));
+    const res = await removeTeamMember(m.id);
+    if (!res.ok) { toast(res.message, "info"); setMembers(prev); }
+    else toast("Team member removed.", "success");
+  }
+
   return (
     <Card className="p-6">
       <h2 className="flex items-center gap-2 font-semibold text-ink-900">
@@ -91,14 +107,14 @@ export function TeamMembersPanel() {
                 <span className="flex items-center gap-1 text-xs text-ink-400"><ShieldCheck className="h-3.5 w-3.5" /></span>
                 <select
                   value={m.role}
-                  onChange={(e) => { updateTeamMember(m.id, { role: e.target.value as TeamMember["role"] }); setMembers((prev) => prev.map((x) => (x.id === m.id ? { ...x, role: e.target.value as TeamMember["role"] } : x))); }}
+                  onChange={(e) => changeRole(m, e.target.value as TeamMember["role"])}
                   className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-700 outline-none"
                 >
                   <option value="admin">Administrator</option>
                   <option value="editor">Editor</option>
                   <option value="viewer">Viewer</option>
                 </select>
-                <button onClick={() => { removeTeamMember(m.id); setMembers((prev) => prev.filter((x) => x.id !== m.id)); }} className="rounded-lg p-1.5 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500">
+                <button onClick={() => remove(m)} className="rounded-lg p-1.5 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500">
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>

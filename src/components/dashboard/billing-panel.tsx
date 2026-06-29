@@ -350,7 +350,7 @@ function ManagePaymentDrawer({ settings, onClose }: { settings: BillingSettings;
                   <p className="text-xs text-ink-400">Expires {settings.cardExp ?? "••/••"}</p>
                 </div>
               </div>
-              <button className="rounded-lg p-1 text-ink-400 hover:bg-ink-100"><MoreVertical className="h-4 w-4" /></button>
+              <button onClick={() => toast("Card management (set default / remove) opens in the Stripe customer portal once Stripe is connected. Cards are never stored in Pydent.", "info")} className="rounded-lg p-1 text-ink-400 hover:bg-ink-100" title="Manage card"><MoreVertical className="h-4 w-4" /></button>
             </div>
           ) : (
             <p className="rounded-xl border border-dashed border-ink-200 p-6 text-center text-sm text-ink-400">No saved cards yet. Add one securely through Stripe.</p>

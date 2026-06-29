@@ -1772,20 +1772,16 @@ export async function inviteTeamMember(email: string, role: TeamMember["role"], 
   return { ok: true, message: `Invited ${clean}. They join your clinic when they sign up with this email.` };
 }
 
-export async function updateTeamMember(id: string, patch: Partial<Pick<TeamMember, "role">>): Promise<void> {
-  try {
-    await supabase.from("team_members").update(patch).eq("id", id);
-  } catch {
-    /* ignore */
-  }
+export async function updateTeamMember(id: string, patch: Partial<Pick<TeamMember, "role">>): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("team_members").update(patch).eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Updated." };
 }
 
-export async function removeTeamMember(id: string): Promise<void> {
-  try {
-    await supabase.from("team_members").delete().eq("id", id);
-  } catch {
-    /* ignore */
-  }
+export async function removeTeamMember(id: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("team_members").delete().eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Removed." };
 }
 
 // Assign a live conversation to a person (name/email) — turns AI off — or clear it.
@@ -2181,15 +2177,43 @@ export interface ClinicSettings {
   website: string;
   showSampleData: boolean;
   timezone: string;
+  displayName: string;
+}
+
+// ------------------------------------------------------------------- tags
+export interface ClinicTag { id: string; name: string; color: string }
+
+export async function fetchTags(): Promise<ClinicTag[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("clinic_tags").select("*").eq("workspace_id", ws).order("created_at");
+    return (data ?? []).map((r) => ({ id: r.id, name: r.name, color: r.color ?? "#7c3aed" }));
+  } catch {
+    return [];
+  }
+}
+
+export async function addTag(name: string, color: string): Promise<{ ok: boolean; id?: string; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { data, error } = await supabase.from("clinic_tags").insert({ workspace_id: ws, name, color }).select("id").single();
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, id: data?.id, message: "Tag added." };
+}
+
+export async function deleteTag(id: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("clinic_tags").delete().eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Tag removed." };
 }
 
 export async function fetchClinicSettings(): Promise<ClinicSettings> {
   try {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("clinic_settings").select("*").eq("workspace_id", ws).maybeSingle();
-    return { website: data?.website ?? "", showSampleData: data?.show_sample_data ?? true, timezone: data?.timezone ?? "Asia/Dubai" };
+    return { website: data?.website ?? "", showSampleData: data?.show_sample_data ?? true, timezone: data?.timezone ?? "Asia/Dubai", displayName: data?.display_name ?? "" };
   } catch {
-    return { website: "", showSampleData: true, timezone: "Asia/Dubai" };
+    return { website: "", showSampleData: true, timezone: "Asia/Dubai", displayName: "" };
   }
 }
 
@@ -2202,9 +2226,17 @@ export async function saveClinicSettings(s: Partial<ClinicSettings>): Promise<{ 
   if (s.website !== undefined) row.website = s.website.trim();
   if (s.showSampleData !== undefined) row.show_sample_data = s.showSampleData;
   if (s.timezone !== undefined) row.timezone = s.timezone;
+  if (s.displayName !== undefined) row.display_name = s.displayName.trim();
   let { error } = existing
     ? await supabase.from("clinic_settings").update(row).eq("workspace_id", ws)
     : await supabase.from("clinic_settings").insert({ workspace_id: ws, ...row });
+  // Older DBs without the display_name column — retry without it.
+  if (error && /display_name/.test(error.message)) {
+    delete row.display_name;
+    ({ error } = existing
+      ? await supabase.from("clinic_settings").update(row).eq("workspace_id", ws)
+      : await supabase.from("clinic_settings").insert({ workspace_id: ws, ...row }));
+  }
   // Older DBs without the timezone column — retry without it.
   if (error && /timezone/.test(error.message)) {
     delete row.timezone;

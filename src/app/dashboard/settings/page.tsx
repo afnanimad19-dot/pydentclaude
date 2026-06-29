@@ -33,7 +33,7 @@ import { IntegrationsPanel } from "@/components/dashboard/integrations-panel";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
 import { BillingPanel } from "@/components/dashboard/billing-panel";
 import { ThemeToggle } from "@/components/theme";
-import { fetchPatients, fetchClinicSettings, saveClinicSettings } from "@/lib/db";
+import { fetchPatients, fetchClinicSettings, saveClinicSettings, getWorkspaceId, fetchTags, addTag as addTagDb, deleteTag as deleteTagDb, type ClinicTag } from "@/lib/db";
 
 const TIMEZONES = [
   "Asia/Dubai", "Asia/Riyadh", "Asia/Qatar", "Asia/Kuwait", "Asia/Bahrain", "Asia/Muscat",
@@ -53,14 +53,6 @@ const channelIntegrations: { icon: typeof Database; name: string; detail: string
 ];
 
 const TAB_PALETTE = ["#8b5cf6", "#22c55e", "#3b82f6", "#f59e0b", "#ec4899", "#06b6d4", "#ef4444"];
-const SEED_TAGS = [
-  { id: "t1", name: "New patient", color: "#3b82f6" },
-  { id: "t2", name: "High value", color: "#8b5cf6" },
-  { id: "t3", name: "Recall due", color: "#f59e0b" },
-  { id: "t4", name: "Billing", color: "#ef4444" },
-  { id: "t5", name: "VIP", color: "#22c55e" },
-];
-
 const TABS = [
   { key: "profile", label: "Profile", icon: User },
   { key: "team", label: "Users", icon: UsersRound },
@@ -115,22 +107,34 @@ export default function SettingsPage() {
   const [dbLive, setDbLive] = useState<boolean | null>(null);
   const [health, setHealth] = useState<{ openrouter: boolean; vapi: boolean; google: boolean } | null>(null);
   const [email, setEmail] = useState<string | null>(null);
-  const [displayName, setDisplayName] = useState("Dana Reyes");
+  const [displayName, setDisplayName] = useState("");
   const [timezone, setTimezone] = useState("Asia/Dubai");
-  const [tags, setTags] = useState(SEED_TAGS);
+  const [tags, setTags] = useState<ClinicTag[]>([]);
   const [newTag, setNewTag] = useState("");
+  const [ws, setWs] = useState<string | null>(null);
 
   useEffect(() => {
+    getWorkspaceId().then(setWs);
+    fetchTags().then(setTags);
     fetchPatients().then((r) => setDbLive(r.source === "live"));
-    fetchClinicSettings().then((s) => setTimezone(s.timezone));
+    fetchClinicSettings().then((s) => { setTimezone(s.timezone); setDisplayName(s.displayName); });
     fetch("/api/health").then((r) => r.json()).then(setHealth).catch(() => setHealth({ openrouter: false, vapi: false, google: false }));
     supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
   }, []);
 
-  function addTag() {
+  async function addTag() {
     if (!newTag.trim()) return;
-    setTags((prev) => [...prev, { id: `t-${prev.length + 1}-${newTag.length}`, name: newTag.trim(), color: TAB_PALETTE[prev.length % TAB_PALETTE.length] }]);
+    const color = TAB_PALETTE[tags.length % TAB_PALETTE.length];
+    const name = newTag.trim();
     setNewTag("");
+    const res = await addTagDb(name, color);
+    if (!res.ok) { toast(res.message, "info"); return; }
+    setTags((prev) => [...prev, { id: res.id ?? `tmp-${Date.now()}`, name, color }]);
+  }
+
+  async function removeTag(id: string) {
+    setTags((prev) => prev.filter((x) => x.id !== id));
+    await deleteTagDb(id);
   }
 
   async function signOut() {
@@ -171,7 +175,7 @@ export default function SettingsPage() {
             <h2 className="flex items-center gap-2 font-semibold text-ink-900"><User className="h-5 w-5 text-brand-500" /> Account</h2>
             <div className="mt-5 grid gap-4">
               <Field label="Display name">
-                <input className={inputCls} value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+                <input className={inputCls} placeholder="Your name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
               </Field>
               <Field label="Email">
                 <input className={`${inputCls} opacity-70`} value={email ?? "Demo mode (not signed in)"} disabled />
@@ -182,7 +186,7 @@ export default function SettingsPage() {
                 </select>
               </Field>
               <div className="flex items-center gap-3 border-t border-ink-100 pt-4">
-                <button onClick={async () => { const r = await saveClinicSettings({ timezone }); toast(r.ok ? "Profile saved." : r.message, r.ok ? "success" : "info"); }} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Save profile</button>
+                <button onClick={async () => { const r = await saveClinicSettings({ timezone, displayName }); toast(r.ok ? "Profile saved." : r.message, r.ok ? "success" : "info"); }} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Save profile</button>
                 <button onClick={signOut} className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
                   <LogOut className="h-4 w-4" /> Sign out
                 </button>
@@ -239,7 +243,7 @@ export default function SettingsPage() {
                   i.href ? (
                     <button onClick={() => setTab("whatsapp")} className="shrink-0 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-brand-700">Set up</button>
                   ) : (
-                    <button onClick={() => toast(`${i.name}: the guided connection wizard ships with the channel-webhook update — your platform keys are already configured.`, "info")} className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">Connect</button>
+                    <button onClick={() => setTab("connections")} className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">Connect</button>
                   )
                 }
               />
@@ -252,7 +256,7 @@ export default function SettingsPage() {
               name="Website chat widget"
               detail="Drop a chat bubble on your WordPress, Wix or any website. New conversations flow into the inbox and your AI agent can answer 24/7. Paste the snippet before the closing </body> tag."
               badge={<StatusBadge status="Not connected" tone="gray" />}
-              action={<button onClick={() => toast('Embed snippet copied: <script src="https://cdn.pydental.ai/widget.js" data-clinic="YOUR_CLINIC_ID"></script>', "success")} className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">Copy embed code</button>}
+              action={<button onClick={() => { const snip = `<script src="https://cdn.pydental.ai/widget.js" data-clinic="${ws ?? "YOUR_CLINIC_ID"}"></script>`; navigator.clipboard?.writeText(snip).then(() => toast("Embed snippet copied to clipboard.", "success"), () => toast(snip, "success")); }} className="shrink-0 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">Copy embed code</button>}
             />
             <ConnCard icon={Globe} name="WordPress plugin" detail="Prefer a plugin? Install the Pydent plugin on WordPress to add the widget, booking form and lead capture without touching code." badge={<StatusBadge status="Planned" tone="gray" />} />
           </div>
@@ -277,7 +281,7 @@ export default function SettingsPage() {
               <span key={t.id} className="flex items-center gap-2 rounded-full border border-ink-200 bg-surface px-3 py-1.5 text-sm font-medium text-ink-700">
                 <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: t.color }} />
                 {t.name}
-                <button onClick={() => setTags((prev) => prev.filter((x) => x.id !== t.id))} className="text-ink-400 hover:text-rose-500">
+                <button onClick={() => removeTag(t.id)} className="text-ink-400 hover:text-rose-500">
                   <X className="h-3.5 w-3.5" />
                 </button>
               </span>
