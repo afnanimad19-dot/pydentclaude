@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Phone, Plus, Trash2, Info, Server, ArrowLeft, Search, RefreshCw, MoreVertical, Radio, PhoneForwarded, LayoutGrid, Smartphone, Network } from "lucide-react";
+import { Phone, Plus, Trash2, Info, Server, ArrowLeft, Search, RefreshCw, MoreVertical, Radio, PhoneForwarded, LayoutGrid, Smartphone, Network, Pencil } from "lucide-react";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -15,6 +15,7 @@ import {
   type SipCategory,
   type AiAgent,
 } from "@/lib/db";
+import { bindNumberToAgent } from "@/lib/voice-binding";
 
 type ProviderKey = "sip" | "ziwo" | "goautodial" | "maqsam" | "twilio" | "vocalcom";
 
@@ -146,7 +147,7 @@ export default function PhoneNumbersPage() {
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {filtered.map((n) => (
-              <NumberCard key={n.id} n={n} agentName={agents.find((a) => a.id === n.agentId)?.name} onDeleted={refresh} />
+              <NumberCard key={n.id} n={n} agents={agents} onChanged={refresh} />
             ))}
           </div>
           <p className="mt-6 text-center text-sm text-ink-400">You&apos;ve reached the end of the list.</p>
@@ -156,8 +157,9 @@ export default function PhoneNumbersPage() {
   );
 }
 
-function NumberCard({ n, agentName, onDeleted }: { n: VoiceNumber; agentName?: string; onDeleted: () => void }) {
+function NumberCard({ n, agents, onChanged }: { n: VoiceNumber; agents: AiAgent[]; onChanged: () => void }) {
   const [menu, setMenu] = useState(false);
+  const [edit, setEdit] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function onDoc(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setMenu(false); }
@@ -167,22 +169,25 @@ function NumberCard({ n, agentName, onDeleted }: { n: VoiceNumber; agentName?: s
   const status = (n.config?.status as string) || "active";
   const numberType = (n.config?.numberType as string) || "national";
   const scope = (n.config?.scope as string) || "Global";
+  const agentName = agents.find((a) => a.id === n.agentId)?.name;
 
   async function del() {
     if (!confirm(`Delete ${n.number}? This cannot be undone.`)) return;
     await deleteVoiceNumber(n.id);
     toast("Phone number deleted.", "success");
-    onDeleted();
+    onChanged();
   }
 
   return (
     <Card className="flex flex-col p-5">
+      {edit && <EditNumberModal n={n} agents={agents} onClose={() => setEdit(false)} onSaved={() => { setEdit(false); onChanged(); }} />}
       <div className="flex items-start justify-between">
         <p className="text-sm font-medium text-ink-500">{PROVIDER_LABEL[n.provider] ?? n.provider}</p>
         <div className="relative" ref={ref}>
           <button onClick={() => setMenu((m) => !m)} className="rounded-lg p-1 text-ink-400 hover:bg-ink-100"><MoreVertical className="h-4 w-4" /></button>
           {menu && (
             <div className="absolute right-0 z-10 mt-1 w-36 rounded-xl border border-ink-200 bg-surface py-1 shadow-lg">
+              <button onClick={() => { setMenu(false); setEdit(true); }} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-700 hover:bg-ink-50"><Pencil className="h-4 w-4" /> Edit</button>
               <button onClick={del} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-500/10"><Trash2 className="h-4 w-4" /> Delete</button>
             </div>
           )}
@@ -204,6 +209,50 @@ function NumberCard({ n, agentName, onDeleted }: { n: VoiceNumber; agentName?: s
         <span className="capitalize">{n.direction}</span>
       </div>
     </Card>
+  );
+}
+
+// Edit a saved number: nickname, direction, and which agent answers it. Changing
+// the agent re-routes inbound on Vapi via bindNumberToAgent.
+function EditNumberModal({ n, agents, onClose, onSaved }: { n: VoiceNumber; agents: AiAgent[]; onClose: () => void; onSaved: () => void }) {
+  const [nickname, setNickname] = useState(n.nickname);
+  const [direction, setDirection] = useState<VoiceNumber["direction"]>(n.direction);
+  const [agentId, setAgentId] = useState(n.agentId ?? "");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    setSaving(true);
+    await updateVoiceNumber(n.id, { nickname, direction });
+    let msg = "Number updated.";
+    if (agentId !== (n.agentId ?? "")) {
+      const res = await bindNumberToAgent({ ...n, nickname, direction }, agents.find((a) => a.id === agentId));
+      msg = res.message;
+    }
+    setSaving(false);
+    toast(msg, "success");
+    onSaved();
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Edit ${n.number}`} subtitle="Change the label, direction or assigned agent." z="z-[60]">
+      <div className="space-y-4">
+        <Field label="Label / nickname"><input className={inputCls} value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Assigned voice agent">
+            <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+              <option value="">Unassigned</option>
+              {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
+            </select>
+          </Field>
+          <Field label="Direction">
+            <select className={inputCls} value={direction} onChange={(e) => setDirection(e.target.value as VoiceNumber["direction"])}>
+              <option value="inbound">Inbound</option><option value="outbound">Outbound</option><option value="both">Both</option>
+            </select>
+          </Field>
+        </div>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save changes"} onSubmit={submit} />
+    </Modal>
   );
 }
 

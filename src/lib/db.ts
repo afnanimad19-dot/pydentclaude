@@ -247,6 +247,43 @@ export async function deletePatients(ids: string[]): Promise<{ ok: boolean; mess
   return { ok: true, message: `Deleted ${ids.length} contact${ids.length === 1 ? "" : "s"}.` };
 }
 
+// Edit a contact's core fields.
+export async function updatePatient(id: string, patch: { name?: string; phone?: string; email?: string; status?: string; insurance?: string; birthdate?: string }): Promise<{ ok: boolean; message: string }> {
+  const row: Record<string, unknown> = {};
+  if (patch.name !== undefined) row.name = patch.name;
+  if (patch.phone !== undefined) row.phone = patch.phone;
+  if (patch.email !== undefined) row.email = patch.email;
+  if (patch.status !== undefined) row.status = patch.status;
+  if (patch.insurance !== undefined) row.insurance = patch.insurance;
+  if (patch.birthdate !== undefined) row.birthdate = patch.birthdate || null;
+  const { error } = await supabase.from("patients").update(row).eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Contact updated." };
+}
+
+// Bulk-insert contacts from a CSV import. Rows that fail individually are counted.
+export async function importPatients(rows: { name: string; phone?: string; email?: string; status?: string; folderId?: string | null }[]): Promise<{ ok: boolean; inserted: number; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, inserted: 0, message: "Sign in first." };
+  const clean = rows.filter((r) => (r.name || "").trim());
+  if (clean.length === 0) return { ok: false, inserted: 0, message: "No valid rows found (need at least a name)." };
+  const payload = clean.map((r) => ({
+    workspace_id: ws, name: r.name.trim(), phone: (r.phone || "").trim(), email: (r.email || "").trim(),
+    insurance: "Self-pay", status: r.status || "New", folder_id: r.folderId ?? null,
+  }));
+  const { data, error } = await supabase.from("patients").insert(payload).select("id");
+  if (error) return { ok: false, inserted: 0, message: error.message };
+  return { ok: true, inserted: data?.length ?? clean.length, message: `Imported ${data?.length ?? clean.length} contact(s).` };
+}
+
+// Move several contacts into a folder/list at once (used for campaign lists).
+export async function setPatientsFolder(ids: string[], folderId: string | null): Promise<{ ok: boolean; message: string }> {
+  if (ids.length === 0) return { ok: true, message: "Nothing to move." };
+  const { error } = await supabase.from("patients").update({ folder_id: folderId }).in("id", ids);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: `Updated ${ids.length} contact${ids.length === 1 ? "" : "s"}.` };
+}
+
 export async function createAppointment(input: {
   patientId: string;
   provider: string;
@@ -266,6 +303,26 @@ export async function createAppointment(input: {
   });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Appointment saved to the schedule." };
+}
+
+// Confirm / reschedule / change an appointment.
+export async function updateAppointment(id: string, patch: { date?: string; time?: string; status?: string; provider?: string; operatory?: string }): Promise<{ ok: boolean; message: string }> {
+  const row: Record<string, unknown> = {};
+  if (patch.date !== undefined) row.date = patch.date;
+  if (patch.time !== undefined) row.time = patch.time;
+  if (patch.status !== undefined) row.status = patch.status;
+  if (patch.provider !== undefined) row.provider = patch.provider;
+  if (patch.operatory !== undefined) row.operatory = patch.operatory;
+  const { error } = await supabase.from("appointments").update(row).eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Appointment updated." };
+}
+
+// Cancel an appointment (keeps the row for history, marks it Cancelled).
+export async function cancelAppointment(id: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("appointments").update({ status: "Cancelled" }).eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Appointment cancelled." };
 }
 
 // A booking from a lead/agent: capture only name/email/phone + service, drop it on
@@ -751,6 +808,12 @@ export async function createWaTemplate(t: Omit<WaTemplate, "id">): Promise<{ ok:
   return { ok: true, message: "Template saved." };
 }
 
+export async function deleteWaTemplate(id: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("wa_templates").delete().eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Template deleted." };
+}
+
 // ------------------------------------------------------------ instagram posts
 
 export interface IgPost {
@@ -759,7 +822,7 @@ export interface IgPost {
   mediaName: string;
   scheduledFor: string; // YYYY-MM-DD
   time: string;
-  status: "Draft" | "Scheduled" | "Published";
+  status: "Draft" | "Scheduled" | "Publishing" | "Published" | "Failed";
 }
 
 export async function fetchIgPosts(): Promise<IgPost[]> {
@@ -789,6 +852,24 @@ export async function createIgPost(p: Omit<IgPost, "id">): Promise<{ ok: boolean
   });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Post scheduled." };
+}
+
+export async function updateIgPost(id: string, p: Partial<Omit<IgPost, "id">>): Promise<{ ok: boolean; message: string }> {
+  const row: Record<string, unknown> = {};
+  if (p.caption !== undefined) row.caption = p.caption;
+  if (p.mediaName !== undefined) row.media_name = p.mediaName;
+  if (p.scheduledFor !== undefined) row.scheduled_for = p.scheduledFor;
+  if (p.time !== undefined) row.time = p.time;
+  if (p.status !== undefined) row.status = p.status;
+  const { error } = await supabase.from("ig_posts").update(row).eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Post updated." };
+}
+
+export async function deleteIgPost(id: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("ig_posts").delete().eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Post deleted." };
 }
 
 // --------------------------------------------------- patient chart actions
@@ -897,8 +978,10 @@ export async function saveWorkflow(
   return { ok: true, message: "Workflow created.", id: data?.id };
 }
 
-export async function deleteWorkflow(id: string): Promise<void> {
-  await supabase.from("workflows").delete().eq("id", id);
+export async function deleteWorkflow(id: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("workflows").delete().eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Workflow deleted." };
 }
 
 // ---------------------------------------------- clinical chart modules (0006)
@@ -1639,6 +1722,19 @@ export async function createCampaign(input: Omit<Campaign, "id" | "createdAt">):
 
 export async function updateCampaignStatus(id: string, status: Campaign["status"]): Promise<void> {
   await supabase.from("campaigns").update({ status }).eq("id", id);
+}
+
+export async function updateCampaign(id: string, input: Partial<Omit<Campaign, "id" | "createdAt">>): Promise<{ ok: boolean; message: string }> {
+  const row: Record<string, unknown> = {};
+  if (input.name !== undefined) row.name = input.name;
+  if (input.agentId !== undefined) row.agent_id = input.agentId;
+  if (input.numberId !== undefined) row.number_id = input.numberId;
+  if (input.folderId !== undefined) row.folder_id = input.folderId;
+  if (input.direction !== undefined) row.direction = input.direction;
+  if (input.status !== undefined) row.status = input.status;
+  const { error } = await supabase.from("campaigns").update(row).eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Campaign updated." };
 }
 
 export async function deleteCampaign(id: string): Promise<void> {

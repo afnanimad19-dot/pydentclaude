@@ -35,9 +35,11 @@ export default function WorkflowsPage() {
   );
 
   async function remove(id: string, name: string) {
-    await deleteWorkflow(id);
+    if (!confirm(`Delete workflow “${name}”? This cannot be undone.`)) return;
+    const res = await deleteWorkflow(id);
+    if (!res.ok) { toast(`Could not delete: ${res.message}`, "info"); return; }
     setWorkflows((prev) => prev.filter((w) => w.id !== id));
-    toast(`Workflow “${name}” deleted.`);
+    toast(`Workflow “${name}” deleted.`, "success");
   }
 
   async function runNow(w: Workflow) {

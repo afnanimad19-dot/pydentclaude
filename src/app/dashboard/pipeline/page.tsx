@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Plus, TrendingUp, Layers, Hourglass, Bot, Pencil, Check, X, Trash2 } from "lucide-react";
 import { PageHeader, LiveBanner, ChannelBadge, StatCard } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
+import { toast } from "@/components/toast";
 import {
   fetchAgents,
   fetchFollowUps,
@@ -161,7 +162,14 @@ export default function PipelinePage() {
   }
 
   function removeStage(id: string) {
-    setStages((prev) => prev.filter((s) => s.id !== id || s.deals.length > 0));
+    // Only remove a stage that has NO cards at all — including live WhatsApp leads
+    // (which live in liveLeads, not stage.deals), so we never orphan a lead.
+    const stage = stages.find((s) => s.id === id);
+    if (stage && dealsForStage(stage).length > 0) {
+      toast("Move its leads to another stage first.", "info");
+      return;
+    }
+    setStages((prev) => prev.filter((s) => s.id !== id));
   }
 
   return (

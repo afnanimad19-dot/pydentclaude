@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Megaphone, Plus, Trash2, PhoneOutgoing, PhoneIncoming, Users, Bot, PhoneCall } from "lucide-react";
+import { Megaphone, Plus, Trash2, PhoneOutgoing, PhoneIncoming, Users, Bot, PhoneCall, Pencil } from "lucide-react";
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import {
   fetchCampaigns,
   createCampaign,
+  updateCampaign,
   updateCampaignStatus,
   deleteCampaign,
   fetchAgents,
@@ -38,6 +39,7 @@ export default function CampaignsPage() {
   const [folderMap, setFolderMap] = useState<Record<string, string>>({});
   const [calling, setCalling] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Campaign | null>(null);
 
   function refresh() { fetchCampaigns().then(setCampaigns); }
   useEffect(() => {
@@ -111,13 +113,14 @@ export default function CampaignsPage() {
 
   return (
     <>
-      {open && (
+      {(open || editing) && (
         <CampaignModal
           agents={agents}
           numbers={numbers}
           folders={folders}
-          onClose={() => setOpen(false)}
-          onSaved={() => { setOpen(false); refresh(); }}
+          editing={editing}
+          onClose={() => { setOpen(false); setEditing(null); }}
+          onSaved={() => { setOpen(false); setEditing(null); refresh(); }}
         />
       )}
       <PageHeader
@@ -184,7 +187,8 @@ export default function CampaignsPage() {
                   >
                     View calls
                   </button>
-                  <button onClick={() => del(c)} className="rounded-xl border border-ink-200 px-3 py-2 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>
+                  <button onClick={() => setEditing(c)} className="rounded-xl border border-ink-200 px-3 py-2 text-ink-400 hover:bg-ink-50 hover:text-ink-700" title="Edit"><Pencil className="h-4 w-4" /></button>
+                  <button onClick={() => del(c)} className="rounded-xl border border-ink-200 px-3 py-2 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500" title="Delete"><Trash2 className="h-4 w-4" /></button>
                 </div>
               </Card>
             );
@@ -199,35 +203,38 @@ function CampaignModal({
   agents,
   numbers,
   folders,
+  editing,
   onClose,
   onSaved,
 }: {
   agents: AiAgent[];
   numbers: VoiceNumber[];
   folders: PatientFolder[];
+  editing: Campaign | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [name, setName] = useState("");
-  const [agentId, setAgentId] = useState("");
-  const [numberId, setNumberId] = useState("");
-  const [folderId, setFolderId] = useState("");
-  const [direction, setDirection] = useState<"inbound" | "outbound">("outbound");
-  const [status, setStatus] = useState<"active" | "paused" | "draft">("active");
+  const [name, setName] = useState(editing?.name ?? "");
+  const [agentId, setAgentId] = useState(editing?.agentId ?? "");
+  const [numberId, setNumberId] = useState(editing?.numberId ?? "");
+  const [folderId, setFolderId] = useState(editing?.folderId ?? "");
+  const [direction, setDirection] = useState<"inbound" | "outbound">(editing?.direction ?? "outbound");
+  const [status, setStatus] = useState<"active" | "paused" | "draft">(editing?.status ?? "active");
   const [saving, setSaving] = useState(false);
 
   async function submit() {
     if (!name.trim()) { toast("Name your campaign.", "info"); return; }
     setSaving(true);
-    const res = await createCampaign({ name: name.trim(), agentId: agentId || null, numberId: numberId || null, folderId: folderId || null, direction, status });
+    const input = { name: name.trim(), agentId: agentId || null, numberId: numberId || null, folderId: folderId || null, direction, status };
+    const res = editing ? await updateCampaign(editing.id, input) : await createCampaign(input);
     setSaving(false);
     if (!res.ok) { toast(res.message, "info"); return; }
-    toast("Campaign created.", "success");
+    toast(editing ? "Campaign updated." : "Campaign created.", "success");
     onSaved();
   }
 
   return (
-    <Modal open onClose={onClose} title="New campaign" subtitle="Pair an agent, a number and a contact list.">
+    <Modal open onClose={onClose} title={editing ? "Edit campaign" : "New campaign"} subtitle="Pair an agent, a number and a contact list.">
       <div className="space-y-4">
         <Field label="Campaign name"><input className={inputCls} placeholder="Leila Hariri inbound" value={name} onChange={(e) => setName(e.target.value)} /></Field>
         <div className="grid gap-4 md:grid-cols-2">

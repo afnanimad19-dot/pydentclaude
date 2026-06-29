@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Plus, ChevronLeft, ChevronRight, Image as ImageIcon, Clock } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight, Image as ImageIcon, Clock, Pencil, Trash2 } from "lucide-react";
 import { Card, PageHeader, LiveBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
-import { fetchIgPosts, createIgPost, type IgPost } from "@/lib/db";
+import { toast } from "@/components/toast";
+import { fetchIgPosts, createIgPost, updateIgPost, deleteIgPost, type IgPost } from "@/lib/db";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -26,6 +27,7 @@ export default function InstagramPage() {
   const [posts, setPosts] = useState<IgPost[]>([]);
   const [modalDate, setModalDate] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState<IgPost | null>(null);
 
   const refresh = useCallback(() => {
     fetchIgPosts().then(setPosts);
@@ -33,6 +35,14 @@ export default function InstagramPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  async function removePost(p: IgPost) {
+    if (!confirm(`Delete this ${p.status.toLowerCase()} post?`)) return;
+    setPosts((prev) => prev.filter((x) => x.id !== p.id));
+    const res = await deleteIgPost(p.id);
+    toast(res.message, res.ok ? "success" : "info");
+    if (!res.ok) refresh();
+  }
 
   function shiftMonth(delta: number) {
     let m = month + delta;
@@ -51,12 +61,15 @@ export default function InstagramPage() {
 
   return (
     <>
-      {(modalOpen || modalDate) && (
+      {(modalOpen || modalDate || editing) && (
         <NewPostModal
           date={modalDate}
+          fallbackDate={`${year}-${String(month + 1).padStart(2, "0")}-01`}
+          editing={editing}
           onClose={() => {
             setModalOpen(false);
             setModalDate(null);
+            setEditing(null);
           }}
           onCreated={refresh}
         />
@@ -109,9 +122,12 @@ export default function InstagramPage() {
                     {(byDate[date] ?? []).map((p) => (
                       <div
                         key={p.id}
-                        className={`truncate rounded-md px-1.5 py-1 text-[11px] font-medium ${
+                        onClick={(e) => { e.stopPropagation(); setEditing(p); }}
+                        className={`cursor-pointer truncate rounded-md px-1.5 py-1 text-[11px] font-medium ${
                           p.status === "Published"
                             ? "bg-emerald-500/15 text-emerald-600"
+                            : p.status === "Failed"
+                            ? "bg-rose-500/15 text-rose-600"
                             : p.status === "Scheduled"
                             ? "bg-brand-500/15 text-brand-600 dark:text-brand-300"
                             : "bg-ink-100 text-ink-500"
@@ -150,7 +166,9 @@ export default function InstagramPage() {
                     {p.mediaName && ` · ${p.mediaName}`}
                   </p>
                 </div>
-                <StatusBadge status={p.status} tone={p.status === "Published" ? "green" : p.status === "Scheduled" ? "blue" : "gray"} />
+                <StatusBadge status={p.status} tone={p.status === "Published" ? "green" : p.status === "Failed" ? "red" : p.status === "Scheduled" ? "blue" : "gray"} />
+                <button onClick={() => setEditing(p)} className="rounded-lg p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-700" title="Edit"><Pencil className="h-4 w-4" /></button>
+                <button onClick={() => removePost(p)} className="rounded-lg p-1.5 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500" title="Delete"><Trash2 className="h-4 w-4" /></button>
               </li>
             ))}
           </ul>
@@ -162,18 +180,22 @@ export default function InstagramPage() {
 
 function NewPostModal({
   date,
+  fallbackDate,
+  editing,
   onClose,
   onCreated,
 }: {
   date: string | null;
+  fallbackDate: string;
+  editing: IgPost | null;
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [caption, setCaption] = useState("");
-  const [mediaName, setMediaName] = useState("");
-  const [scheduledFor, setScheduledFor] = useState(date ?? "2026-06-15");
-  const [time, setTime] = useState("10:00");
-  const [status, setStatus] = useState<IgPost["status"]>("Scheduled");
+  const [caption, setCaption] = useState(editing?.caption ?? "");
+  const [mediaName, setMediaName] = useState(editing?.mediaName ?? "");
+  const [scheduledFor, setScheduledFor] = useState(editing?.scheduledFor ?? date ?? fallbackDate);
+  const [time, setTime] = useState(editing?.time ?? "10:00");
+  const [status, setStatus] = useState<IgPost["status"]>(editing?.status ?? "Scheduled");
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -183,14 +205,16 @@ function NewPostModal({
       return;
     }
     setSaving(true);
-    const res = await createIgPost({ caption, mediaName, scheduledFor, time, status });
+    const res = editing
+      ? await updateIgPost(editing.id, { caption, mediaName, scheduledFor, time, status })
+      : await createIgPost({ caption, mediaName, scheduledFor, time, status });
     setSaving(false);
     setResult(res);
     if (res.ok) onCreated();
   }
 
   return (
-    <Modal open onClose={onClose} title="Create Instagram post" subtitle="Plan it on the calendar — publishing connects once Instagram is linked.">
+    <Modal open onClose={onClose} title={editing ? "Edit Instagram post" : "Create Instagram post"} subtitle="Scheduled posts auto-publish at the chosen time once Instagram is connected (Live).">
       {result?.ok ? (
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600">{result.message}</div>
       ) : (
@@ -222,12 +246,12 @@ function NewPostModal({
                 <select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value as IgPost["status"])}>
                   <option>Scheduled</option>
                   <option>Draft</option>
-                  <option>Published</option>
                 </select>
               </Field>
             </div>
+            <p className="text-xs text-ink-400">Set <strong>Scheduled</strong> and the post auto-publishes to Instagram at the date &amp; time above (once Meta is connected). <strong>Draft</strong> stays as a plan.</p>
           </div>
-          <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Schedule post"} onSubmit={submit} />
+          <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : editing ? "Save changes" : "Schedule post"} onSubmit={submit} />
         </>
       )}
     </Modal>

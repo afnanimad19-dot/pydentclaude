@@ -5,7 +5,7 @@ import { Plus, Image as ImageIcon, Video, FileText, Phone, Link2, MessageSquare,
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
-import { fetchWaTemplates, createWaTemplate, submitTemplateForApproval, syncTemplateStatuses, type WaTemplate, type WaTemplateButton, type DataSource } from "@/lib/db";
+import { fetchWaTemplates, createWaTemplate, deleteWaTemplate, submitTemplateForApproval, syncTemplateStatuses, type WaTemplate, type WaTemplateButton, type DataSource } from "@/lib/db";
 
 const statusTone = { Draft: "gray", "Pending approval": "amber", Approved: "green", Rejected: "red" } as const;
 
@@ -35,6 +35,14 @@ export default function WaTemplatesPage() {
     setBusyId(null);
     toast(res.ok ? "Submitted to Meta — approval usually takes a few minutes. Use ‘Sync from Meta’ to refresh." : `Submit failed: ${res.error}`, res.ok ? "success" : "info");
     if (res.ok) refresh();
+  }
+
+  async function remove(t: WaTemplate) {
+    if (!confirm(`Delete template “${t.name}”? This removes it from Pydent.`)) return;
+    setTemplates((prev) => prev.filter((x) => x.id !== t.id));
+    const res = await deleteWaTemplate(t.id);
+    toast(res.message, res.ok ? "success" : "info");
+    if (!res.ok) refresh();
   }
 
   async function sync() {
@@ -108,7 +116,10 @@ export default function WaTemplatesPage() {
                   <p className="font-mono text-sm font-semibold text-ink-900">{t.name}</p>
                   <p className="text-xs text-ink-400">{t.category} · {t.language}</p>
                 </div>
-                <StatusBadge status={t.status} tone={statusTone[t.status]} />
+                <div className="flex items-center gap-1.5">
+                  <StatusBadge status={t.status} tone={statusTone[t.status]} />
+                  <button onClick={() => remove(t)} className="rounded-lg p-1 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500" title="Delete template"><Trash2 className="h-3.5 w-3.5" /></button>
+                </div>
               </div>
               <div className="mt-3 flex-1 rounded-xl bg-[#e7f8d4] p-3 text-sm text-gray-800 shadow-inner dark:bg-[#1f2c1a] dark:text-gray-100">
                 {t.headerType === "text" && t.headerText && <p className="mb-1 font-semibold">{t.headerText}</p>}
