@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { resumeDueRuns } from "@/lib/workflow-runner";
+import { resumeDueRuns, triggerScheduledWorkflows } from "@/lib/workflow-runner";
 
 // Autopilot runner. Point a scheduler (Netlify Scheduled Function, Supabase cron,
 // or cron-job.org) at /api/cron/run?key=CRON_SECRET every ~15 min. It runs the
@@ -34,10 +34,13 @@ export async function GET(req: NextRequest) {
   // Resume any workflow runs whose wait timer has elapsed.
   let workflowsResumed = 0;
   try { workflowsResumed = await resumeDueRuns(db); } catch { /* keep going */ }
+  // Fire scheduled (recurring) workflows whose cadence has elapsed (e.g. weekly reports).
+  let scheduledFired = 0;
+  try { scheduledFired = await triggerScheduledWorkflows(db); } catch { /* keep going */ }
 
   const nowIso = new Date().toISOString();
   const { data: tasks } = await db.from("scheduled_tasks").select("*").eq("status", "active").lte("next_run", nowIso).order("next_run").limit(5);
-  if (!tasks?.length) return NextResponse.json({ ran: 0, workflowsResumed });
+  if (!tasks?.length) return NextResponse.json({ ran: 0, workflowsResumed, scheduledFired });
 
   const origin = req.nextUrl.origin;
   let ran = 0;
@@ -65,5 +68,5 @@ export async function GET(req: NextRequest) {
     await db.from("agent_activity").insert({ workspace_id: t.workspace_id, agent_key: t.agent_key, action: "Autopilot ran", detail: t.title || t.instruction.slice(0, 80) });
     ran++;
   }
-  return NextResponse.json({ ran, workflowsResumed });
+  return NextResponse.json({ ran, workflowsResumed, scheduledFired });
 }

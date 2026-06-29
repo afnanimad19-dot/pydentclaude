@@ -58,11 +58,43 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ provider: s
     return done(origin, popup, "error", provider);
   }
 
-  // Best-effort account label.
+  // ---- Meta durability: short-lived → ~60-day long-lived token, then capture a
+  // (non-expiring) Page token + linked Instagram business id so posting survives.
+  const isMeta = ["facebook", "instagram", "meta_ads"].includes(provider);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let metaExtra: any = null;
+  if (isMeta && tokens.access_token) {
+    let userToken: string = tokens.access_token;
+    try {
+      const ex = await fetch(
+        `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}&fb_exchange_token=${encodeURIComponent(userToken)}`
+      );
+      if (ex.ok) {
+        const ej = await ex.json();
+        if (ej?.access_token) { userToken = ej.access_token; tokens.access_token = ej.access_token; tokens.expires_in = ej.expires_in ?? 60 * 24 * 3600; }
+      }
+    } catch { /* keep the short-lived token */ }
+    // Capture the Page token + IG business id from the (now long-lived) user token.
+    try {
+      const pages = await fetch(`https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${encodeURIComponent(userToken)}`);
+      if (pages.ok) {
+        const pj = await pages.json();
+        const page = pj?.data?.[0];
+        if (page?.id && page?.access_token) {
+          metaExtra = { page_id: page.id, page_access_token: page.access_token, ig_id: page.instagram_business_account?.id ?? null, captured_at: new Date().toISOString() };
+        }
+      }
+    } catch { /* meta_ads-only or no Page — fine */ }
+  }
+
+  // Best-effort account label. (Meta's Graph rejects the Bearer header — it wants
+  // the token as a query param — so meta providers use ?access_token=.)
   let accountLabel = "";
   if (cfg.userInfoUrl && tokens.access_token) {
     try {
-      const info = await fetch(cfg.userInfoUrl, { headers: { Authorization: `Bearer ${tokens.access_token}` } });
+      const info = isMeta
+        ? await fetch(`${cfg.userInfoUrl}${cfg.userInfoUrl.includes("?") ? "&" : "?"}access_token=${encodeURIComponent(tokens.access_token)}`)
+        : await fetch(cfg.userInfoUrl, { headers: { Authorization: `Bearer ${tokens.access_token}` } });
       if (info.ok) {
         const j = await info.json();
         accountLabel = String(j?.[cfg.userInfoLabelKey ?? "name"] ?? j?.data?.[cfg.userInfoLabelKey ?? "name"] ?? "");
@@ -74,17 +106,22 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ provider: s
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://mzqynjywncbvqfikbzgm.supabase.co";
   if (serviceKey && state.ws && tokens.access_token) {
     const admin = createClient(supabaseUrl, serviceKey);
-    await admin.from("oauth_tokens").upsert(
-      {
-        workspace_id: state.ws,
-        provider,
-        access_token: tokens.access_token ?? null,
-        refresh_token: tokens.refresh_token ?? null,
-        expires_at: tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000).toISOString() : null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "workspace_id,provider" }
-    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tokenRow: any = {
+      workspace_id: state.ws,
+      provider,
+      access_token: tokens.access_token ?? null,
+      refresh_token: tokens.refresh_token ?? null,
+      expires_at: tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000).toISOString() : null,
+      updated_at: new Date().toISOString(),
+    };
+    if (metaExtra) tokenRow.meta = metaExtra;
+    const { error: upErr } = await admin.from("oauth_tokens").upsert(tokenRow, { onConflict: "workspace_id,provider" });
+    if (upErr && tokenRow.meta) {
+      // `meta` jsonb column not migrated yet — store the rest so the connection still lands.
+      delete tokenRow.meta;
+      await admin.from("oauth_tokens").upsert(tokenRow, { onConflict: "workspace_id,provider" });
+    }
     await admin.from("connections").upsert(
       { workspace_id: state.ws, provider, status: "connected", account_label: accountLabel, connected_at: new Date().toISOString() },
       { onConflict: "workspace_id,provider" }

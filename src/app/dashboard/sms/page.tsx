@@ -30,7 +30,7 @@ export default function SmsPage() {
       const res = await fetch("/api/sms/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: to.trim(), body }),
+        body: JSON.stringify({ to: to.trim(), body, ws }),
       });
       const data = await res.json();
       toast(data.message, data.ok ? "success" : "info");
@@ -73,7 +73,7 @@ export default function SmsPage() {
         <Card className="h-fit p-6">
           <h2 className="mb-3 flex items-center gap-2 font-semibold text-ink-900"><Info className="h-4 w-4 text-brand-500" /> Connect SMS</h2>
           <ul className="space-y-2.5 text-sm text-ink-600">
-            <li>• <strong>Single texts</strong> send through Twilio (<code>TWILIO_*</code> in Netlify) — set your number&apos;s inbound webhook to <code>/api/sms/webhook</code> so replies appear in the inbox.</li>
+            <li>• <strong>Single texts</strong> send through <strong>your own Twilio</strong> — connect it in <a href="/dashboard/settings?tab=connections" className="font-medium text-brand-600 dark:text-brand-300">Settings → Integrations</a> (Account SID, Auth Token, From number). A shared <code>TWILIO_*</code> in Netlify is the fallback. Point the number&apos;s inbound webhook at <code>/api/sms/webhook</code> so replies appear in the inbox.</li>
             <li>• <strong>SMS campaigns</strong> (below) send through your connected <strong>Brevo</strong> account to your contact lists — no Twilio needed.</li>
             <li>• Replies are captured as contacts automatically (source: SMS).</li>
           </ul>

@@ -16,6 +16,7 @@ import {
   Trash2,
   Save,
   ChevronDown,
+  FileText,
 } from "lucide-react";
 import { toast } from "@/components/toast";
 import { fetchWorkflow, saveWorkflow, fetchAgents, fetchVoiceNumbers, type WorkflowNode, type AiAgent, type VoiceNumber } from "@/lib/db";
@@ -29,9 +30,10 @@ const NODE_META: Record<WorkflowNode["type"], { icon: typeof Zap; label: string;
   wait: { icon: Clock, label: "Wait", chip: "bg-ink-300/30 text-ink-500" },
   action: { icon: PlugZap, label: "Action", chip: "bg-violet-500/15 text-violet-500" },
   handoff: { icon: UserRound, label: "Human handoff", chip: "bg-rose-500/15 text-rose-500" },
+  report: { icon: FileText, label: "Email a report", chip: "bg-cyan-500/15 text-cyan-500" },
 };
 
-const ADDABLE: WorkflowNode["type"][] = ["message", "condition", "agent", "wait", "action", "handoff"];
+const ADDABLE: WorkflowNode["type"][] = ["message", "condition", "agent", "wait", "action", "handoff", "report"];
 
 const DEFAULTS: Record<WorkflowNode["type"], { title: string; detail: string; config?: Record<string, unknown> }> = {
   trigger: { title: "Trigger: conversation opened", detail: "A contact starts a conversation", config: { event: "conversation_opened" } },
@@ -41,6 +43,7 @@ const DEFAULTS: Record<WorkflowNode["type"], { title: string; detail: string; co
   wait: { title: "Wait", detail: "Wait before the next step", config: { amount: 1, unit: "days" } },
   action: { title: "Action", detail: "Add to pipeline / tag the contact", config: { action: "add_to_pipeline", value: "" } },
   handoff: { title: "Human handoff", detail: "Assign to the Front Desk inbox with full context" },
+  report: { title: "Email weekly digest", detail: "Build a practice summary and email it", config: { recipient: "", format: "docx", days: 7, subject: "" } },
 };
 
 function newNode(type: WorkflowNode["type"]): WorkflowNode {
@@ -348,8 +351,26 @@ export default function WorkflowBuilderPage() {
                     <option value="conversation_opened">A contact opens a conversation</option>
                     <option value="new_lead">A new lead is captured</option>
                     <option value="appointment_booked">An appointment is booked</option>
+                    <option value="scheduled">On a schedule (recurring)</option>
                     <option value="manual">Manually / test run only</option>
                   </select>
+                  {selected.config?.event === "scheduled" && (
+                    <div className="mt-3 space-y-3">
+                      <label className="block">
+                        <span className="mb-1.5 block text-sm font-medium text-ink-700">How often</span>
+                        <select
+                          value={selected.config?.cadence ?? "weekly"}
+                          onChange={(e) => setCfg({ cadence: e.target.value })}
+                          className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                        >
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="monthly">Monthly</option>
+                        </select>
+                      </label>
+                      <p className="rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-500">Fires via the scheduler (cron at <code>/api/cron/run</code>). Add an &ldquo;Email a report&rdquo; step below to send a practice digest. Set the workflow to <strong>Live</strong> to enable it.</p>
+                    </div>
+                  )}
                 </label>
               )}
 
@@ -459,6 +480,53 @@ export default function WorkflowBuilderPage() {
                       <p className="rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-500">The agent calls the contact&apos;s phone number on this step. The agent must be synced to Vapi and the number registered (assign it in Voice Agent Settings).</p>
                     </div>
                   )}
+                </div>
+              )}
+
+              {selected.type === "report" && (
+                <div className="space-y-3">
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-ink-700">Email the report to</span>
+                    <input
+                      type="email"
+                      value={String(selected.config?.recipient ?? "")}
+                      onChange={(e) => setCfg({ recipient: e.target.value })}
+                      placeholder="owner@clinic.com"
+                      className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none focus:border-brand-400"
+                    />
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="mb-1.5 block text-sm font-medium text-ink-700">Period (days)</span>
+                      <input
+                        type="number" min={1}
+                        value={Number(selected.config?.days ?? 7)}
+                        onChange={(e) => setCfg({ days: Math.max(1, Number(e.target.value) || 7) })}
+                        className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-sm font-medium text-ink-700">Attachment</span>
+                      <select
+                        value={String(selected.config?.format ?? "docx")}
+                        onChange={(e) => setCfg({ format: e.target.value })}
+                        className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                      >
+                        <option value="docx">Word (.docx)</option>
+                        <option value="html">PDF / print (HTML)</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-medium text-ink-700">Email subject</span>
+                    <input
+                      value={String(selected.config?.subject ?? "")}
+                      onChange={(e) => setCfg({ subject: e.target.value })}
+                      placeholder="Weekly practice digest"
+                      className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none focus:border-brand-400"
+                    />
+                  </label>
+                  <p className="rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-500">Pair this with a &ldquo;Scheduled&rdquo; trigger for a recurring digest (new patients, recalls, bookings, production). Leave the recipient blank to use the scheduled trigger&apos;s recipient.</p>
                 </div>
               )}
             </div>

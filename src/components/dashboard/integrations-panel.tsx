@@ -49,6 +49,7 @@ const PROVIDERS: Provider[] = [
   { key: "notion", name: "Notion", detail: "Sync notes & docs.", group: "data", badge: "N", color: "bg-black text-white" },
   { key: "brevo", name: "Brevo", detail: "Send patient emails & newsletters (recommended).", group: "data", badge: "B", color: "bg-[#0b996e] text-white", apiKey: true },
   { key: "mailchimp", name: "Mailchimp", detail: "Email campaigns & audiences.", group: "data", badge: "M", color: "bg-[#ffe01b] text-ink-900", apiKey: true },
+  { key: "twilio", name: "Twilio SMS", detail: "Send single texts from your own Twilio number.", group: "data", badge: "Tw", color: "bg-[#f22f46] text-white" },
 ];
 
 // Catalog keys that are Google products (use the Google OAuth flow).
@@ -65,6 +66,7 @@ export function IntegrationsPanel() {
   const [apiKeyFor, setApiKeyFor] = useState<Provider | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState<Provider | null>(null);
   const [wpSelfOpen, setWpSelfOpen] = useState(false);
+  const [twilioOpen, setTwilioOpen] = useState(false);
 
   const refresh = useCallback(() => {
     fetchConnections().then(setConnections);
@@ -104,6 +106,8 @@ export function IntegrationsPanel() {
     if (!ws) { toast("Sign in first.", "info"); return; }
     // Self-hosted WordPress uses a form (site URL + application password), not OAuth.
     if (p.key === "wordpress_self") { setWpSelfOpen(true); return; }
+    // Twilio needs a bespoke 3-field form (SID + token + from number).
+    if (p.key === "twilio") { setTwilioOpen(true); return; }
     // Google products (incl. YouTube) use the Google OAuth flow.
     if (GOOGLE_KEYS.has(p.key)) {
       if (!googleReady) { toast("Add GOOGLE_OAUTH_CLIENT_ID / SECRET in Netlify to enable Google connections.", "info"); return; }
@@ -154,6 +158,9 @@ export function IntegrationsPanel() {
     <div className="space-y-6">
       {wpSelfOpen && ws && (
         <WordPressSelfModal ws={ws} onClose={() => setWpSelfOpen(false)} onConnected={() => { setWpSelfOpen(false); refresh(); }} />
+      )}
+      {twilioOpen && ws && (
+        <TwilioConnectModal ws={ws} onClose={() => setTwilioOpen(false)} onConnected={() => { setTwilioOpen(false); refresh(); }} />
       )}
       {apiKeyFor && ws && (
         <ApiKeyModal provider={apiKeyFor} ws={ws} onClose={() => setApiKeyFor(null)} onConnected={() => { setApiKeyFor(null); refresh(); }} />
@@ -384,6 +391,54 @@ function WordPressSelfModal({ ws, onClose, onConnected }: { ws: string; onClose:
         <button onClick={submit} disabled={saving} className="flex-1 rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
           {saving ? "Connecting…" : "Connect"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+// Per-clinic Twilio connect (3 fields: Account SID, Auth Token, From number).
+function TwilioConnectModal({ ws, onClose, onConnected }: { ws: string; onClose: () => void; onConnected: () => void }) {
+  const [accountSid, setAccountSid] = useState("");
+  const [authToken, setAuthToken] = useState("");
+  const [fromNumber, setFromNumber] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!accountSid.trim() || !authToken.trim() || !fromNumber.trim()) { toast("Fill in the Account SID, Auth Token and From number.", "info"); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/connections/twilio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ws, accountSid: accountSid.trim(), authToken: authToken.trim(), fromNumber: fromNumber.trim() }),
+      });
+      const data = await res.json();
+      if (!data.ok) { toast(data.error ?? "Could not connect.", "info"); return; }
+      toast("Twilio connected.", "success");
+      onConnected();
+    } catch {
+      toast("Could not reach the server.", "info");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Connect Twilio SMS" subtitle="Use your own Twilio account for single texts." z="z-[60]">
+      <div className="space-y-4">
+        <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-xs leading-relaxed text-ink-600">
+          In the <strong>Twilio Console</strong>: copy the <strong>Account SID</strong> + <strong>Auth Token</strong> from <em>Account → API keys &amp; tokens</em>, and an active number from <em>Phone Numbers → Active numbers</em>. (Point that number&apos;s inbound webhook at <code className="rounded bg-ink-100 px-1">/api/sms/webhook</code> so replies land in the inbox.)
+        </div>
+        <label className="block"><span className="mb-1.5 block text-sm font-medium text-ink-700">Account SID</span>
+          <input className={inputCls} placeholder="AC…" value={accountSid} onChange={(e) => setAccountSid(e.target.value)} /></label>
+        <label className="block"><span className="mb-1.5 block text-sm font-medium text-ink-700">Auth Token</span>
+          <input className={inputCls} type="password" placeholder="Your primary auth token" value={authToken} onChange={(e) => setAuthToken(e.target.value)} /></label>
+        <label className="block"><span className="mb-1.5 block text-sm font-medium text-ink-700">From number (E.164)</span>
+          <input className={inputCls} placeholder="+15551234567" value={fromNumber} onChange={(e) => setFromNumber(e.target.value)} /></label>
+      </div>
+      <div className="mt-5 flex gap-2">
+        <button onClick={onClose} className="flex-1 rounded-xl border border-ink-200 py-2.5 text-sm font-semibold text-ink-700 hover:bg-ink-50">Cancel</button>
+        <button onClick={submit} disabled={saving} className="flex-1 rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">{saving ? "Connecting…" : "Connect"}</button>
       </div>
     </Modal>
   );

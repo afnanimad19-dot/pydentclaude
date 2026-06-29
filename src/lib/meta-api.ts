@@ -12,24 +12,61 @@ function admin() {
   return createClient(supabaseUrl, serviceKey);
 }
 
+const META_PROVIDERS = ["facebook", "instagram", "meta_ads"];
+
+// User-level token (needed for /me/accounts and /me/adaccounts). Reads the stored
+// long-lived token captured at connect time.
 async function getMetaToken(ws: string): Promise<string | null> {
   const db = admin();
   if (!db) return null;
-  for (const provider of ["facebook", "instagram", "meta_ads"]) {
+  for (const provider of META_PROVIDERS) {
     const { data } = await db.from("oauth_tokens").select("access_token").eq("workspace_id", ws).eq("provider", provider).maybeSingle();
     if (data?.access_token) return data.access_token;
   }
   return null;
 }
 
-// Return the first managed Page (id + its page access token), and any linked IG account.
+// Read the stored meta extra (page token + ig id) captured at connect time, if any.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getStoredMeta(ws: string): Promise<{ provider: string; meta: any } | null> {
+  const db = admin();
+  if (!db) return null;
+  for (const provider of META_PROVIDERS) {
+    try {
+      const { data } = await db.from("oauth_tokens").select("meta").eq("workspace_id", ws).eq("provider", provider).maybeSingle();
+      if (data?.meta?.page_access_token) return { provider, meta: data.meta };
+    } catch { /* `meta` column may not be migrated yet */ }
+  }
+  return null;
+}
+
+// Return the managed Page (id + page token + linked IG). Prefers the durable
+// stored Page token; falls back to deriving it live, then self-heals storage.
 async function getPage(ws: string): Promise<{ pageId: string; pageToken: string; igId?: string } | null> {
+  const stored = await getStoredMeta(ws);
+  if (stored?.meta?.page_id && stored.meta.page_access_token) {
+    return { pageId: stored.meta.page_id, pageToken: stored.meta.page_access_token, igId: stored.meta.ig_id ?? undefined };
+  }
   const token = await getMetaToken(ws);
   if (!token) return null;
   const res = await fetch(`${GRAPH}/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${token}`);
   const json = await res.json();
   const page = json?.data?.[0];
   if (!page?.id || !page?.access_token) return null;
+  // Self-heal: persist the derived Page token so future calls are durable (only
+  // when nothing is stored yet, to avoid clobbering a fresh long-lived token).
+  const db = admin();
+  if (db) {
+    for (const provider of META_PROVIDERS) {
+      try {
+        const { data } = await db.from("oauth_tokens").select("provider").eq("workspace_id", ws).eq("provider", provider).maybeSingle();
+        if (data) {
+          await db.from("oauth_tokens").update({ meta: { page_id: page.id, page_access_token: page.access_token, ig_id: page.instagram_business_account?.id ?? null, captured_at: new Date().toISOString() } }).eq("workspace_id", ws).eq("provider", provider);
+          break;
+        }
+      } catch { /* meta column not migrated — ignore */ }
+    }
+  }
   return { pageId: page.id, pageToken: page.access_token, igId: page.instagram_business_account?.id };
 }
 

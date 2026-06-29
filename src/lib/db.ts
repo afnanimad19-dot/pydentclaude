@@ -820,7 +820,7 @@ export async function addPayment(patientId: string, amount: number, method: stri
 
 export interface WorkflowNode {
   id: string;
-  type: "trigger" | "message" | "condition" | "agent" | "wait" | "action" | "handoff";
+  type: "trigger" | "message" | "condition" | "agent" | "wait" | "action" | "handoff" | "report";
   title: string;
   detail: string;
   // Structured config the runner executes (trigger event, wait duration, etc.).
