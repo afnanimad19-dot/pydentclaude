@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Megaphone, Plus, Trash2, PhoneOutgoing, PhoneIncoming, Users, Bot } from "lucide-react";
+import { Megaphone, Plus, Trash2, PhoneOutgoing, PhoneIncoming, Users, Bot, PhoneCall } from "lucide-react";
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -15,12 +15,15 @@ import {
   fetchVoiceNumbers,
   fetchFolders,
   fetchVoiceCalls,
+  fetchPatients,
+  fetchPatientFolderMap,
   type Campaign,
   type AiAgent,
   type VoiceNumber,
   type PatientFolder,
   type VoiceCallRecord,
 } from "@/lib/db";
+import type { Patient } from "@/lib/mock-data";
 
 const statusTone = { active: "green", paused: "amber", draft: "gray" } as const;
 
@@ -31,6 +34,9 @@ export default function CampaignsPage() {
   const [numbers, setNumbers] = useState<VoiceNumber[]>([]);
   const [folders, setFolders] = useState<PatientFolder[]>([]);
   const [calls, setCalls] = useState<VoiceCallRecord[]>([]);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [folderMap, setFolderMap] = useState<Record<string, string>>({});
+  const [calling, setCalling] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
   function refresh() { fetchCampaigns().then(setCampaigns); }
@@ -40,6 +46,8 @@ export default function CampaignsPage() {
     fetchVoiceNumbers().then(setNumbers);
     fetchFolders().then(setFolders);
     fetchVoiceCalls().then(setCalls);
+    fetchPatients().then((r) => setPatients(r.patients));
+    fetchPatientFolderMap().then(setFolderMap);
   }, []);
 
   const callsByCampaign = useMemo(() => {
@@ -58,6 +66,46 @@ export default function CampaignsPage() {
     setCampaigns((prev) => prev.filter((x) => x.id !== c.id));
     await deleteCampaign(c.id);
     toast("Campaign deleted.", "success");
+  }
+
+  function contactsFor(c: Campaign): Patient[] {
+    if (!c.folderId) return [];
+    return patients.filter((p) => folderMap[p.id] === c.folderId && p.phone.trim());
+  }
+
+  async function startCalling(c: Campaign) {
+    const agent = agents.find((a) => a.id === c.agentId);
+    const number = numbers.find((n) => n.id === c.numberId);
+    if (!agent) { toast("Assign a voice agent to this campaign first.", "info"); return; }
+    if (!agent.vapiAssistantId) { toast(`Open “${agent.name}” and Save once to sync it to Vapi first.`, "info"); return; }
+    if (!number) { toast("Assign a phone number to this campaign first.", "info"); return; }
+    const contacts = contactsFor(c);
+    if (contacts.length === 0) { toast("This campaign's contact list has no numbers to call.", "info"); return; }
+    if (!confirm(`Start calling ${contacts.length} contact${contacts.length === 1 ? "" : "s"} with “${agent.name}” from ${number.number}?`)) return;
+
+    setCalling(c.id);
+    try {
+      const res = await fetch("/api/vapi/outbound", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assistantId: agent.vapiAssistantId,
+          fromNumber: number.number,
+          numbers: contacts.map((p) => p.phone.trim()),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) { toast(data.error || data.message || "Couldn't start the calls.", "info"); return; }
+      toast(data.message || "Calls started.", "success");
+      if (c.status !== "active") {
+        setCampaigns((prev) => prev.map((x) => (x.id === c.id ? { ...x, status: "active" } : x)));
+        await updateCampaignStatus(c.id, "active");
+      }
+    } catch {
+      toast("Network error starting the calls.", "info");
+    } finally {
+      setCalling(null);
+    }
   }
 
   return (
@@ -91,6 +139,7 @@ export default function CampaignsPage() {
             const agent = agents.find((a) => a.id === c.agentId);
             const number = numbers.find((n) => n.id === c.numberId);
             const folder = folders.find((f) => f.id === c.folderId);
+            const contactCount = contactsFor(c).length;
             return (
               <Card key={c.id} className="flex flex-col p-5">
                 <div className="flex items-start justify-between">
@@ -111,8 +160,21 @@ export default function CampaignsPage() {
                 <div className="mt-4 space-y-1.5 text-sm">
                   <p className="flex items-center gap-2 text-ink-600"><Bot className="h-4 w-4 text-ink-400" /> {agent?.name ?? "No agent"}</p>
                   <p className="flex items-center gap-2 text-ink-600"><PhoneOutgoing className="h-4 w-4 text-ink-400" /> {number?.number ?? "No number"}</p>
-                  <p className="flex items-center gap-2 text-ink-600"><Users className="h-4 w-4 text-ink-400" /> {folder?.name ?? "No contact list"}</p>
+                  <p className="flex items-center gap-2 text-ink-600">
+                    <Users className="h-4 w-4 text-ink-400" /> {folder?.name ?? "No contact list"}
+                    {c.direction === "outbound" && folder ? <span className="text-xs text-ink-400">· {contactCount} to call</span> : null}
+                  </p>
                 </div>
+
+                {c.direction === "outbound" && (
+                  <button
+                    onClick={() => startCalling(c)}
+                    disabled={calling === c.id}
+                    className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                  >
+                    <PhoneCall className="h-4 w-4" /> {calling === c.id ? "Starting calls…" : "Start calling"}
+                  </button>
+                )}
 
                 <div className="mt-4 flex gap-2 border-t border-ink-100 pt-4">
                   <button
