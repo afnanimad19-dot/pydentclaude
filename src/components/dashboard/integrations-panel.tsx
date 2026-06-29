@@ -177,7 +177,7 @@ export function IntegrationsPanel() {
                 <li>Add it in Netlify as <code className="rounded bg-ink-100 px-1">{setupFor.key.toUpperCase()}_API_KEY</code>{setupFor.key === "brevo" && <> plus <code className="rounded bg-ink-100 px-1">BREVO_FROM_EMAIL</code> (a verified sender)</>}.</li>
                 <li>Redeploy. Angela can then send email through it.</li>
               </ol>
-              <p className="text-xs text-ink-400">Brevo email send is wired today; Mailchimp campaign send is next.</p>
+              <p className="text-xs text-ink-400">Brevo runs full email &amp; SMS campaigns from the Email and SMS pages once connected. Mailchimp campaign send is next.</p>
             </div>
           ) : (
             <div className="space-y-3 text-sm text-ink-600">

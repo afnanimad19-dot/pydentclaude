@@ -6,6 +6,7 @@ import { Card, PageHeader, LiveBanner } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { getWorkspaceId } from "@/lib/db";
+import { MarketingCampaigns } from "@/components/dashboard/marketing-campaigns";
 
 export default function EmailPage() {
   const [ws, setWs] = useState<string | null>(null);
@@ -65,11 +66,15 @@ export default function EmailPage() {
           <h2 className="mb-3 flex items-center gap-2 font-semibold text-ink-900"><Info className="h-4 w-4 text-brand-500" /> How sending works</h2>
           <ul className="space-y-2.5 text-sm text-ink-600">
             <li>• Connect <strong>Gmail</strong> in Settings → Connections to send from the clinic&apos;s own inbox — no extra cost.</li>
-            <li>• Or add <code>BREVO_API_KEY</code> for higher-volume campaign sending.</li>
+            <li>• Connect <strong>Brevo</strong> in Settings → Connections to run full email campaigns to your contact lists (below).</li>
             <li>• <strong>Angela</strong> (AI Team) can draft and send recall reminders and newsletters for you.</li>
             <li>• For bulk sends, test to one address first.</li>
           </ul>
         </Card>
+      </div>
+
+      <div className="mt-6">
+        <MarketingCampaigns type="email" ws={ws} />
       </div>
     </>
   );

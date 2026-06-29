@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MessageSquareText, Send, Info } from "lucide-react";
 import { Card, PageHeader, LiveBanner } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
+import { getWorkspaceId } from "@/lib/db";
+import { MarketingCampaigns } from "@/components/dashboard/marketing-campaigns";
 
 // Quick-start texts the front desk can drop into the composer.
 const QUICK = [
@@ -14,9 +16,12 @@ const QUICK = [
 ];
 
 export default function SmsPage() {
+  const [ws, setWs] = useState<string | null>(null);
   const [to, setTo] = useState("");
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
+
+  useEffect(() => { getWorkspaceId().then(setWs); }, []);
 
   async function send() {
     if (!to.trim()) { toast("Enter a recipient number.", "info"); return; }
@@ -68,11 +73,15 @@ export default function SmsPage() {
         <Card className="h-fit p-6">
           <h2 className="mb-3 flex items-center gap-2 font-semibold text-ink-900"><Info className="h-4 w-4 text-brand-500" /> Connect SMS</h2>
           <ul className="space-y-2.5 text-sm text-ink-600">
-            <li>• Add <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code> and <code>TWILIO_FROM_NUMBER</code> in Netlify.</li>
-            <li>• In Twilio, set your number&apos;s inbound webhook to <code>/api/sms/webhook</code> — replies appear in the inbox.</li>
+            <li>• <strong>Single texts</strong> send through Twilio (<code>TWILIO_*</code> in Netlify) — set your number&apos;s inbound webhook to <code>/api/sms/webhook</code> so replies appear in the inbox.</li>
+            <li>• <strong>SMS campaigns</strong> (below) send through your connected <strong>Brevo</strong> account to your contact lists — no Twilio needed.</li>
             <li>• Replies are captured as contacts automatically (source: SMS).</li>
           </ul>
         </Card>
+      </div>
+
+      <div className="mt-6">
+        <MarketingCampaigns type="sms" ws={ws} />
       </div>
     </>
   );
