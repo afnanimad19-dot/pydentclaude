@@ -1504,6 +1504,78 @@ export async function fetchVoiceCall(id: string): Promise<VoiceCallRecord | null
   }
 }
 
+// ----------------------------------------------------------- billing (0041)
+
+export interface BillingSettings {
+  planName: string;
+  monthlyPrice: number;
+  minutesIncluded: number;
+  minutesBalance: number;
+  concurrencyLimit: number;
+  nextBilling: string | null;
+  autoRecharge: boolean;
+  rechargeBelow: number;
+  rechargeTo: number;
+  pricePerMinute: number;
+  cardBrand: string | null;
+  cardLast4: string | null;
+  cardExp: string | null;
+}
+
+export interface BillingInvoice {
+  id: string;
+  description: string;
+  amount: number;
+  status: string;
+  invoiceUrl: string | null;
+  paidAt: string | null;
+}
+
+function defaultBilling(): BillingSettings {
+  return {
+    planName: "Starter", monthlyPrice: 0, minutesIncluded: 0, minutesBalance: 0,
+    concurrencyLimit: 5, nextBilling: null, autoRecharge: false, rechargeBelow: 10,
+    rechargeTo: 60, pricePerMinute: 0.15, cardBrand: null, cardLast4: null, cardExp: null,
+  };
+}
+
+export async function fetchBilling(): Promise<{ settings: BillingSettings; invoices: BillingInvoice[] }> {
+  try {
+    const ws = await getWorkspaceId();
+    const [{ data: s }, { data: inv }] = await Promise.all([
+      supabase.from("billing_settings").select("*").eq("workspace_id", ws).maybeSingle(),
+      supabase.from("billing_invoices").select("*").eq("workspace_id", ws).order("paid_at", { ascending: false }),
+    ]);
+    const settings: BillingSettings = s
+      ? {
+          planName: s.plan_name ?? "Starter", monthlyPrice: Number(s.monthly_price ?? 0),
+          minutesIncluded: s.minutes_included ?? 0, minutesBalance: Number(s.minutes_balance ?? 0),
+          concurrencyLimit: s.concurrency_limit ?? 5, nextBilling: s.next_billing ?? null,
+          autoRecharge: !!s.auto_recharge, rechargeBelow: s.recharge_below ?? 10, rechargeTo: s.recharge_to ?? 60,
+          pricePerMinute: Number(s.price_per_minute ?? 0.15), cardBrand: s.card_brand ?? null,
+          cardLast4: s.card_last4 ?? null, cardExp: s.card_exp ?? null,
+        }
+      : defaultBilling();
+    const invoices: BillingInvoice[] = (inv ?? []).map((r) => ({
+      id: r.id, description: r.description ?? "", amount: Number(r.amount ?? 0), status: r.status ?? "paid",
+      invoiceUrl: r.invoice_url ?? null, paidAt: r.paid_at ?? null,
+    }));
+    return { settings, invoices };
+  } catch {
+    return { settings: defaultBilling(), invoices: [] };
+  }
+}
+
+export async function saveAutoRecharge(input: { autoRecharge: boolean; rechargeBelow: number; rechargeTo: number }): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { error } = await upsertRow("billing_settings", { workspace_id: ws }, {
+    auto_recharge: input.autoRecharge, recharge_below: input.rechargeBelow, recharge_to: input.rechargeTo, updated_at: new Date().toISOString(),
+  });
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Auto-recharge settings saved." };
+}
+
 // ----------------------------------------------------------- campaigns (0039)
 
 export interface Campaign {

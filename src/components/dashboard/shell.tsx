@@ -145,7 +145,20 @@ const nav: NavItem[] = [
       { href: "/dashboard/reports#channels", label: "Channels & agents" },
     ],
   },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings },
+  {
+    href: "/dashboard/settings",
+    label: "Settings",
+    icon: Settings,
+    children: [
+      { href: "/dashboard/settings?tab=profile", label: "Profile" },
+      { href: "/dashboard/settings?tab=team", label: "Users" },
+      { href: "/dashboard/settings?tab=billing", label: "Billing" },
+      { href: "/dashboard/settings?tab=connections", label: "Connections" },
+      { href: "/dashboard/settings?tab=channels", label: "Channels" },
+      { href: "/dashboard/settings?tab=whatsapp", label: "WhatsApp config" },
+      { href: "/dashboard/settings?tab=tags", label: "Tags" },
+    ],
+  },
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {

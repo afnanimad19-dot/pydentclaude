@@ -22,6 +22,7 @@ import {
   LogOut,
   Plus,
   X,
+  CreditCard,
 } from "lucide-react";
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
@@ -30,6 +31,7 @@ import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
 import { WebsiteConfigCard } from "@/components/dashboard/website-config";
 import { IntegrationsPanel } from "@/components/dashboard/integrations-panel";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
+import { BillingPanel } from "@/components/dashboard/billing-panel";
 import { ThemeToggle } from "@/components/theme";
 import { fetchPatients } from "@/lib/db";
 import { supabase } from "@/lib/supabase";
@@ -55,11 +57,12 @@ const SEED_TAGS = [
 
 const TABS = [
   { key: "profile", label: "Profile", icon: User },
+  { key: "team", label: "Users", icon: UsersRound },
+  { key: "billing", label: "Billing", icon: CreditCard },
   { key: "connections", label: "Connections", icon: PlugZap },
   { key: "channels", label: "Channels", icon: MessageCircle },
   { key: "whatsapp", label: "WhatsApp config", icon: MessageCircle },
   { key: "tags", label: "Tags", icon: TagIcon },
-  { key: "team", label: "Team", icon: UsersRound },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -283,6 +286,8 @@ export default function SettingsPage() {
       )}
 
       {tab === "team" && <TeamMembersPanel />}
+
+      {tab === "billing" && <BillingPanel />}
     </>
   );
 }
