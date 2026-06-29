@@ -339,7 +339,17 @@ export default function InboxPage() {
       const note: ThreadItem = { id: nextId("vn"), direction: "outbound", author: ME, body: text, time: "Just now", audioUrl };
       setVoiceNotes((prev) => ({ ...prev, [active.id]: [...(prev[active.id] ?? []), note] }));
       setDraft("");
-      toast("Voice note ready — recorded in your selected voice.", "success");
+      // Deliver it to the patient on WhatsApp for real (not just in-app).
+      if (active.live && active.channel === "whatsapp" && active.phone) {
+        const wa = await fetch("/api/voice/send-wa", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: active.phone, voiceId, text }),
+        }).then((r) => r.json()).catch(() => ({ ok: false, error: "network error" }));
+        toast(wa.ok ? "Voice note sent to the patient on WhatsApp." : `Played here; WhatsApp delivery: ${wa.error}`, wa.ok ? "success" : "info");
+      } else {
+        toast("Voice note ready — recorded in your selected voice.", "success");
+      }
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not create the voice note", "info");
     } finally {

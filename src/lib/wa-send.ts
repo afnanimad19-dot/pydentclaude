@@ -127,6 +127,51 @@ export async function sendWhatsAppText(to: string, body: string, override?: { ph
   }
 }
 
+// Upload audio (or any media) to the clinic's WhatsApp account; returns a media id.
+export async function uploadWhatsAppMedia(
+  creds: { phoneNumberId: string; accessToken: string },
+  bytes: Buffer,
+  mime: string,
+  filename = "voice.mp3"
+): Promise<{ ok: boolean; id?: string; error?: string }> {
+  try {
+    const fd = new FormData();
+    fd.append("messaging_product", "whatsapp");
+    fd.append("type", mime);
+    fd.append("file", new Blob([new Uint8Array(bytes)], { type: mime }), filename);
+    const res = await fetch(graphUrl(`${creds.phoneNumberId}/media`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      body: fd,
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data?.error?.message ?? `Graph error ${res.status}` };
+    return { ok: true, id: data?.id };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "media upload failed" };
+  }
+}
+
+// Send a previously-uploaded audio media id as a WhatsApp audio message (voice note).
+export async function sendWhatsAppAudio(
+  to: string,
+  mediaId: string,
+  creds: { phoneNumberId: string; accessToken: string }
+): Promise<{ ok: boolean; id?: string; error?: string }> {
+  try {
+    const res = await fetch(graphUrl(`${creds.phoneNumberId}/messages`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${creds.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", to, type: "audio", audio: { id: mediaId } }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { ok: false, error: data?.error?.message ?? `Graph error ${res.status}` };
+    return { ok: true, id: data?.messages?.[0]?.id };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "send failed" };
+  }
+}
+
 // Sends an approved template message. `bodyParams` fills the {{1}},{{2}}… body
 // variables in order. Uses the provided credentials to avoid refetching per send.
 export async function sendWhatsAppTemplate(

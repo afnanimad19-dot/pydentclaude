@@ -58,6 +58,24 @@ const PROVIDER_FIELDS: Record<string, { key: string; label: string; placeholder?
   ],
 };
 
+// After saving a number with an assigned agent, register it on Vapi + attach the
+// agent so inbound calls actually route to that agent. Returns a status message.
+async function connectNumberToVapi(opts: { provider: string; number: string; nickname: string; agent?: AiAgent; config: Record<string, unknown> }): Promise<string | null> {
+  if (!opts.agent) return null; // no agent assigned — nothing to route to yet
+  if (!opts.agent.vapiAssistantId) return `Saved. Note: open "${opts.agent.name}" and Save it once so it syncs to Vapi, then re-save this number to connect it.`;
+  try {
+    const res = await fetch("/api/vapi/phone-numbers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: opts.provider, number: opts.number, nickname: opts.nickname, assistantId: opts.agent.vapiAssistantId, config: opts.config }),
+    });
+    const data = await res.json();
+    return data.ok ? data.message : `Saved here. Vapi: ${data.error}`;
+  } catch {
+    return "Saved here. Could not reach Vapi to connect the number.";
+  }
+}
+
 function fmtDate(iso: string) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -251,13 +269,15 @@ function ProviderForm({ provider, agents, onBack, onClose, onAdded }: { provider
   async function submit() {
     if (!number.trim()) { toast("Enter the phone number.", "info"); return; }
     setSaving(true);
+    const cfg = { ...creds, numberType, scope: "Global", status };
     const res = await createVoiceNumber({
       number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider, concurrency: 1,
-      config: { ...creds, numberType, scope: "Global", status },
+      config: cfg,
     });
+    if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
+    const vapiMsg = await connectNumberToVapi({ provider, number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
     setSaving(false);
-    if (!res.ok) { toast(res.message, "info"); return; }
-    toast(`${meta.name} number added.`, "success");
+    toast(vapiMsg ?? `${meta.name} number added.`, "success");
     onAdded();
   }
 
@@ -328,12 +348,16 @@ function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBa
   async function submit() {
     if (!number.trim()) { toast("Enter the phone number.", "info"); return; }
     setSaving(true);
+    const cfg = { terminationUri: terminationUri.trim(), e164LeadingPlus: e164, requiresRegistration: requiresReg, registeredPublicIp: publicIp, username: requiresReg ? username : "", password: requiresReg ? password : "", categories, numberType, scope: "Global", status };
     const res = await createVoiceNumber({
       number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider: "sip", concurrency,
-      config: { terminationUri: terminationUri.trim(), e164LeadingPlus: e164, requiresRegistration: requiresReg, registeredPublicIp: publicIp, username: requiresReg ? username : "", password: requiresReg ? password : "", categories, numberType, scope: "Global", status },
+      config: cfg,
     });
+    if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
+    const vapiMsg = await connectNumberToVapi({ provider: "sip", number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
     setSaving(false);
-    if (!res.ok) { toast(res.message, "info"); return; } toast("SIP trunk number created.", "success"); onAdded();
+    toast(vapiMsg ?? "SIP trunk number created.", "success");
+    onAdded();
   }
 
   return (

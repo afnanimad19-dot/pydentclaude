@@ -133,17 +133,20 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 > These let you fill in / save options, but the backend doesn't yet perform the
 > real-world action. **This is the honest "looks done but isn't fully connected" list.**
 
-1. **Phone-number provider forms (Ziwo / Maqsam / Go Auto Dial / Vocalcom)** — the form
-   **saves the credentials/config** to the database, but there is **no live API integration**
-   that actually provisions or routes calls through those providers. Today the live phone
-   handshake is completed in **Vapi** (SIP/BYO). Real Ziwo/Maqsam/etc. provisioning = TODO.
+1. ~~Phone-number provider forms only save config~~ ✅ **Now connects to Vapi automatically.**
+   Saving a number with an assigned agent registers it on Vapi via `/api/vapi/phone-numbers`
+   (Twilio = direct; SIP/Ziwo/Maqsam/Go Auto Dial/Vocalcom = a BYO SIP-trunk credential) and
+   **attaches that specific agent's assistant**, so inbound calls route to the right agent —
+   the clinic never opens Vapi. (The agent must be saved once so it has a Vapi assistant id.)
 2. **Instagram publishing** — the content calendar **saves posts to the DB**, but it does
    **not actually publish to Instagram** on schedule. (Helena can post via the Meta tool once
    the Meta app is Live; scheduled auto-publish is not wired.)
 3. **Google Calendar push** — the Google Calendar connection exists, but **bookings are not
    yet pushed to Google Calendar** (they go to our Calendar + Open Dental only).
-4. **WhatsApp voice-note / audio delivery** — voice notes **play in the dashboard** but are
-   **not delivered to WhatsApp** via Meta's media API.
+4. ~~WhatsApp voice-note delivery~~ ✅ **Now delivered for real.** In the inbox, type a message,
+   "Send as voice note", pick a voice (premade **or your cloned custom voice**) → it's generated
+   with ElevenLabs, uploaded to WhatsApp (`/api/voice/send-wa`) and sent to the patient as an
+   audio message (and still plays in-dashboard). Needs `ELEVENLABS_API_KEY` + WhatsApp connected.
 5. **Workflow "Add to pipeline" action** — currently logs/minimal; it does not yet create a
    full pipeline deal record (message / wait / condition / handoff / set-status DO work).
 6. **Campaign outbound dialer** — campaigns organise + tag calls, but do **not place outbound
