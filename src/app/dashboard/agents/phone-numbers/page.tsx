@@ -9,6 +9,7 @@ import {
   fetchVoiceNumbers,
   createVoiceNumber,
   deleteVoiceNumber,
+  updateVoiceNumber,
   fetchAgents,
   type VoiceNumber,
   type SipCategory,
@@ -60,9 +61,9 @@ const PROVIDER_FIELDS: Record<string, { key: string; label: string; placeholder?
 
 // After saving a number with an assigned agent, register it on Vapi + attach the
 // agent so inbound calls actually route to that agent. Returns a status message.
-async function connectNumberToVapi(opts: { provider: string; number: string; nickname: string; agent?: AiAgent; config: Record<string, unknown> }): Promise<string | null> {
-  if (!opts.agent) return null; // no agent assigned — nothing to route to yet
-  if (!opts.agent.vapiAssistantId) return `Saved. Note: open "${opts.agent.name}" and Save it once so it syncs to Vapi, then re-save this number to connect it.`;
+async function connectNumberToVapi(opts: { provider: string; number: string; nickname: string; agent?: AiAgent; config: Record<string, unknown> }): Promise<{ message: string | null; vapiPhoneNumberId?: string }> {
+  if (!opts.agent) return { message: null }; // no agent assigned — nothing to route to yet
+  if (!opts.agent.vapiAssistantId) return { message: `Saved. Note: open "${opts.agent.name}" and Save it once so it syncs to Vapi, then re-save this number to connect it.` };
   try {
     const res = await fetch("/api/vapi/phone-numbers", {
       method: "POST",
@@ -70,9 +71,9 @@ async function connectNumberToVapi(opts: { provider: string; number: string; nic
       body: JSON.stringify({ provider: opts.provider, number: opts.number, nickname: opts.nickname, assistantId: opts.agent.vapiAssistantId, config: opts.config }),
     });
     const data = await res.json();
-    return data.ok ? data.message : `Saved here. Vapi: ${data.error}`;
+    return data.ok ? { message: data.message, vapiPhoneNumberId: data.vapiPhoneNumberId } : { message: `Saved here. Vapi: ${data.error}` };
   } catch {
-    return "Saved here. Could not reach Vapi to connect the number.";
+    return { message: "Saved here. Could not reach Vapi to connect the number." };
   }
 }
 
@@ -275,9 +276,10 @@ function ProviderForm({ provider, agents, onBack, onClose, onAdded }: { provider
       config: cfg,
     });
     if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
-    const vapiMsg = await connectNumberToVapi({ provider, number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
+    const vapi = await connectNumberToVapi({ provider, number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
+    if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
     setSaving(false);
-    toast(vapiMsg ?? `${meta.name} number added.`, "success");
+    toast(vapi.message ?? `${meta.name} number added.`, "success");
     onAdded();
   }
 
@@ -354,9 +356,10 @@ function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBa
       config: cfg,
     });
     if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
-    const vapiMsg = await connectNumberToVapi({ provider: "sip", number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
+    const vapi = await connectNumberToVapi({ provider: "sip", number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
+    if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
     setSaving(false);
-    toast(vapiMsg ?? "SIP trunk number created.", "success");
+    toast(vapi.message ?? "SIP trunk number created.", "success");
     onAdded();
   }
 

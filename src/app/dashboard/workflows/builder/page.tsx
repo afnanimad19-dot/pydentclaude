@@ -18,7 +18,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { toast } from "@/components/toast";
-import { fetchWorkflow, saveWorkflow, fetchAgents, type WorkflowNode, type AiAgent } from "@/lib/db";
+import { fetchWorkflow, saveWorkflow, fetchAgents, fetchVoiceNumbers, type WorkflowNode, type AiAgent, type VoiceNumber } from "@/lib/db";
 import { WORKFLOW_TEMPLATES } from "@/lib/workflow-templates";
 
 const NODE_META: Record<WorkflowNode["type"], { icon: typeof Zap; label: string; chip: string }> = {
@@ -66,11 +66,17 @@ export default function WorkflowBuilderPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [addAfter, setAddAfter] = useState<number | null>(null);
   const [agents, setAgents] = useState<AiAgent[]>([]);
+  const [voiceAgents, setVoiceAgents] = useState<AiAgent[]>([]);
+  const [voiceNumbers, setVoiceNumbers] = useState<VoiceNumber[]>([]);
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(editId);
 
   useEffect(() => {
-    fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "chat")));
+    fetchAgents().then((r) => {
+      setAgents(r.agents.filter((a) => a.kind === "chat"));
+      setVoiceAgents(r.agents.filter((a) => a.kind === "voice"));
+    });
+    fetchVoiceNumbers().then(setVoiceNumbers);
     if (editId) {
       fetchWorkflow(editId).then((w) => {
         if (!w) return;
@@ -397,6 +403,7 @@ export default function WorkflowBuilderPage() {
                     >
                       <option value="add_to_pipeline">Add the contact to the pipeline</option>
                       <option value="tag">Set the contact&apos;s status</option>
+                      <option value="call">Place a voice call (AI agent)</option>
                       <option value="none">Do nothing (placeholder)</option>
                     </select>
                   </label>
@@ -413,6 +420,44 @@ export default function WorkflowBuilderPage() {
                         <option>Inactive</option>
                       </select>
                     </label>
+                  )}
+                  {selected.config?.action === "add_to_pipeline" && (
+                    <label className="block">
+                      <span className="mb-1.5 block text-sm font-medium text-ink-700">Pipeline stage</span>
+                      <input
+                        value={String(selected.config?.value ?? "")}
+                        onChange={(e) => setCfg({ value: e.target.value })}
+                        placeholder="New Lead"
+                        className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                      />
+                    </label>
+                  )}
+                  {selected.config?.action === "call" && (
+                    <div className="space-y-3">
+                      <label className="block">
+                        <span className="mb-1.5 block text-sm font-medium text-ink-700">Voice agent (answers the call)</span>
+                        <select
+                          value={String(selected.config?.agentId ?? "")}
+                          onChange={(e) => setCfg({ agentId: e.target.value })}
+                          className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                        >
+                          <option value="">Choose a voice agent…</option>
+                          {voiceAgents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="mb-1.5 block text-sm font-medium text-ink-700">Caller number</span>
+                        <select
+                          value={String(selected.config?.numberId ?? "")}
+                          onChange={(e) => setCfg({ numberId: e.target.value })}
+                          className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-sm text-ink-900 outline-none"
+                        >
+                          <option value="">Choose a number…</option>
+                          {voiceNumbers.map((n) => <option key={n.id} value={n.id}>{n.number}{n.nickname ? ` (${n.nickname})` : ""}</option>)}
+                        </select>
+                      </label>
+                      <p className="rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-500">The agent calls the contact&apos;s phone number on this step. The agent must be synced to Vapi and the number registered (assign it in Voice Agent Settings).</p>
+                    </div>
                   )}
                 </div>
               )}

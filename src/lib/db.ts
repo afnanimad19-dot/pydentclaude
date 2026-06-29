@@ -1723,6 +1723,9 @@ export interface VoiceNumber {
   direction: "inbound" | "outbound" | "both";
   provider: "vapi" | "twilio" | "sip" | "ziwo" | "goautodial" | "maqsam" | "vocalcom";
   concurrency: number;
+  // The id Vapi assigns the number once it's registered — lets us PATCH it to
+  // re-route inbound to a different agent without deleting/recreating.
+  vapiPhoneNumberId: string | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config: Record<string, any>;
   createdAt: string;
@@ -1732,21 +1735,43 @@ export async function fetchVoiceNumbers(): Promise<VoiceNumber[]> {
   try {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("voice_numbers").select("*").eq("workspace_id", ws).order("created_at", { ascending: false });
-    return (data ?? []).map((r) => ({ id: r.id, number: r.number, nickname: r.nickname ?? "", agentId: r.agent_id ?? null, direction: r.direction ?? "inbound", provider: r.provider ?? "sip", concurrency: r.concurrency ?? 1, config: r.config ?? {}, createdAt: r.created_at }));
+    return (data ?? []).map((r) => ({ id: r.id, number: r.number, nickname: r.nickname ?? "", agentId: r.agent_id ?? null, direction: r.direction ?? "inbound", provider: r.provider ?? "sip", concurrency: r.concurrency ?? 1, vapiPhoneNumberId: r.vapi_phone_number_id ?? null, config: r.config ?? {}, createdAt: r.created_at }));
   } catch {
     return [];
   }
 }
 
-export async function createVoiceNumber(input: Omit<VoiceNumber, "id" | "createdAt">): Promise<{ ok: boolean; message: string }> {
+export async function createVoiceNumber(input: Omit<VoiceNumber, "id" | "createdAt" | "vapiPhoneNumberId">): Promise<{ ok: boolean; message: string; id?: string }> {
   const ws = await getWorkspaceId();
   if (!ws) return { ok: false, message: "Sign in first." };
-  const { error } = await supabase.from("voice_numbers").insert({
+  const { data, error } = await supabase.from("voice_numbers").insert({
     workspace_id: ws, number: input.number, nickname: input.nickname, agent_id: input.agentId, direction: input.direction,
     provider: input.provider, concurrency: input.concurrency, config: input.config,
-  });
+  }).select("id").single();
   if (error) return { ok: false, message: error.message };
-  return { ok: true, message: "Phone number added." };
+  return { ok: true, message: "Phone number added.", id: data?.id };
+}
+
+// Re-point an existing number to a different agent / direction, and/or store the
+// Vapi phone-number id. Gracefully drops vapi_phone_number_id if the column isn't
+// migrated yet so the rest of the update still lands.
+export async function updateVoiceNumber(
+  id: string,
+  patch: { agentId?: string | null; direction?: VoiceNumber["direction"]; nickname?: string; vapiPhoneNumberId?: string | null }
+): Promise<{ ok: boolean; message: string }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row: Record<string, any> = {};
+  if (patch.agentId !== undefined) row.agent_id = patch.agentId;
+  if (patch.direction !== undefined) row.direction = patch.direction;
+  if (patch.nickname !== undefined) row.nickname = patch.nickname;
+  if (patch.vapiPhoneNumberId !== undefined) row.vapi_phone_number_id = patch.vapiPhoneNumberId;
+  let { error } = await supabase.from("voice_numbers").update(row).eq("id", id);
+  if (error && /vapi_phone_number_id/.test(error.message)) {
+    delete row.vapi_phone_number_id;
+    ({ error } = await supabase.from("voice_numbers").update(row).eq("id", id));
+  }
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Number updated." };
 }
 
 export async function deleteVoiceNumber(id: string): Promise<void> {

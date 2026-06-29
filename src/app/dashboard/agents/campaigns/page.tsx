@@ -91,6 +91,7 @@ export default function CampaignsPage() {
         body: JSON.stringify({
           assistantId: agent.vapiAssistantId,
           fromNumber: number.number,
+          vapiPhoneNumberId: number.vapiPhoneNumberId,
           numbers: contacts.map((p) => p.phone.trim()),
         }),
       });

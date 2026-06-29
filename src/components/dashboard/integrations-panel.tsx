@@ -179,6 +179,20 @@ export function IntegrationsPanel() {
               </ol>
               <p className="text-xs text-ink-400">Brevo runs full email &amp; SMS campaigns from the Email and SMS pages once connected. Mailchimp campaign send is next.</p>
             </div>
+          ) : ["instagram", "facebook", "meta_ads"].includes(setupFor.key) ? (
+            <div className="space-y-3 text-sm text-ink-600">
+              <p><strong>{setupFor.name}</strong> connects with Meta (Facebook). One Meta app powers Instagram, Facebook &amp; Meta Ads. To enable it:</p>
+              <ol className="ml-4 list-decimal space-y-1.5 text-ink-600">
+                <li>At <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 dark:text-brand-300">developers.facebook.com</a>, create a <strong>Business</strong> app and add <strong>Facebook Login</strong> + <strong>Instagram Graph API</strong>.</li>
+                <li>Add the redirect URI <code className="rounded bg-ink-100 px-1">{typeof window !== "undefined" ? window.location.origin : ""}/api/oauth/{setupFor.key}/callback</code>.</li>
+                <li>Put <code className="rounded bg-ink-100 px-1">FACEBOOK_CLIENT_ID</code> + <code className="rounded bg-ink-100 px-1">FACEBOOK_CLIENT_SECRET</code> in Netlify and redeploy.</li>
+                <li>Make sure the clinic&apos;s Instagram is a <strong>Business/Creator</strong> account linked to a Facebook Page they admin.</li>
+              </ol>
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-700">
+                <p className="font-semibold">Seeing &ldquo;this app isn&apos;t safe / unverified&rdquo; when connecting?</p>
+                <p className="mt-1">That means the Meta app needs <strong>Business Verification + App Review</strong> (request Advanced Access for <code>instagram_content_publish</code>, <code>pages_manage_posts</code>…) and to be switched to <strong>Live</strong> mode. To test right now, add the user under <strong>App roles → Roles</strong> as a Tester/Admin, or click <strong>Advanced → Continue (unsafe)</strong>. Full guide: <code>META_INSTAGRAM_SETUP.md</code>.</p>
+              </div>
+            </div>
           ) : (
             <div className="space-y-3 text-sm text-ink-600">
               <p><strong>{setupFor.name}</strong> connects the same way as Google — a one-click popup — once its developer app is registered. To enable it:</p>

@@ -9,10 +9,14 @@
 //  - wait       — pause; config = { amount, unit }
 //  - condition — config.contains: continue only if the last inbound message contains it
 //  - handoff   — assign the conversation to a human (stops AI auto-reply)
-//  - action     — config.action: tag (set patient status) | add_to_pipeline | none
+//  - action     — config.action: tag (set patient status) | add_to_pipeline (set
+//                 lifecycle stage) | call (place an outbound voice call) | none
 //  - agent      — leave it to the channel's AI agent (no-op here)
 
 import { sendByChannel } from "@/lib/wa-send";
+import { sendSms } from "@/lib/sms-send";
+import { sendEmail } from "@/lib/email-send";
+import { resolveVapiPhoneNumberId, placeOutboundCall } from "@/lib/vapi-call";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type DB = any; // a Supabase client (anon shared or service-role admin)
@@ -23,6 +27,7 @@ export interface RunContext {
   channel: string;
   contactPhone: string;
   name?: string;
+  email?: string;
   lastMessage?: string;
 }
 
@@ -72,6 +77,7 @@ export async function startRun(db: DB, ws: string | null, workflow: any, ctx: Ru
     first_name: (ctx.name || "").split(" ")[0] || "there",
     name: ctx.name || "",
     phone: ctx.contactPhone || "",
+    email: ctx.email || "",
     last_message: ctx.lastMessage || "",
   };
   const { data: run } = await db
@@ -92,6 +98,39 @@ export async function startRun(db: DB, ws: string | null, workflow: any, ctx: Ru
   if (run) await advanceRun(db, run, workflow);
 }
 
+// Look up a patient's email for email-channel workflow messages.
+async function patientEmail(db: DB, patientId: string): Promise<string> {
+  try {
+    const { data } = await db.from("patients").select("email").eq("id", patientId).maybeSingle();
+    return data?.email ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// Place an outbound call for a "call" action: resolve the configured voice agent's
+// Vapi assistant id + the chosen number's Vapi id, then dial the run's contact.
+async function placeCall(db: DB, run: any, cfg: any): Promise<{ ok: boolean; message: string }> {
+  if (!run.contact_phone) return { ok: false, message: "no contact number to call" };
+  if (!cfg?.agentId) return { ok: false, message: "no voice agent configured on the call step" };
+  try {
+    const { data: agent } = await db.from("agents").select("vapi_assistant_id, name").eq("id", cfg.agentId).maybeSingle();
+    if (!agent?.vapi_assistant_id) return { ok: false, message: "the call step's agent isn't synced to Vapi yet" };
+    let vapiPhoneNumberId: string | null = null, fromNumber: string | null = null;
+    if (cfg.numberId) {
+      const { data: num } = await db.from("voice_numbers").select("vapi_phone_number_id, number").eq("id", cfg.numberId).maybeSingle();
+      vapiPhoneNumberId = num?.vapi_phone_number_id ?? null;
+      fromNumber = num?.number ?? null;
+    }
+    const phoneNumberId = await resolveVapiPhoneNumberId({ vapiPhoneNumberId, fromNumber });
+    if (!phoneNumberId) return { ok: false, message: "the call step's number isn't registered on Vapi" };
+    const r = await placeOutboundCall({ assistantId: agent.vapi_assistant_id, phoneNumberId, toNumber: run.contact_phone });
+    return r.ok ? { ok: true, message: `calling ${run.contact_phone}` } : { ok: false, message: r.error ?? "call failed" };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "call failed" };
+  }
+}
+
 // Execute nodes from run.node_index until a wait (persist + stop) or the end.
 export async function advanceRun(db: DB, run: any, workflow: any): Promise<void> {
   const nodes: any[] = workflow.nodes ?? [];
@@ -106,11 +145,25 @@ export async function advanceRun(db: DB, run: any, workflow: any): Promise<void>
 
       if (node.type === "message") {
         const text = renderTemplate(node.detail, vars);
-        if (run.contact_phone && text.trim()) {
+        if (!text.trim()) { log.push({ node: node.id, type: "message", skipped: "empty text" }); continue; }
+        // Route to the right transport for the run's channel. SMS → Twilio,
+        // Email → the clinic's email provider (needs a recipient email), and
+        // WhatsApp/Messenger/Instagram → the Meta channels.
+        if (run.channel === "sms") {
+          if (!run.contact_phone) { log.push({ node: node.id, type: "message", skipped: "no phone" }); continue; }
+          const r = await sendSms({ to: run.contact_phone, body: text });
+          log.push({ node: node.id, type: "message", channel: "sms", ok: r.startsWith("SMS sent"), info: r });
+        } else if (run.channel === "email") {
+          const to = vars.email || (run.patient_id ? await patientEmail(db, run.patient_id) : "");
+          if (!to) { log.push({ node: node.id, type: "message", skipped: "no email recipient" }); continue; }
+          const subject = node.config?.subject || node.title || "A message from your clinic";
+          const r = await sendEmail({ to, subject: renderTemplate(String(subject), vars), html: `<div style="font-family:system-ui,Arial,sans-serif;font-size:15px;line-height:1.6">${text.replace(/\n/g, "<br>")}</div>`, ws: run.workspace_id });
+          log.push({ node: node.id, type: "message", channel: "email", ok: r.startsWith("Email sent"), info: r });
+        } else if (run.contact_phone) {
           const sent = await sendByChannel(run.channel, run.contact_phone, text);
           log.push({ node: node.id, type: "message", ok: sent.ok, error: sent.error ?? null });
         } else {
-          log.push({ node: node.id, type: "message", skipped: "no contact or empty text" });
+          log.push({ node: node.id, type: "message", skipped: "no contact" });
         }
         continue;
       }
@@ -141,8 +194,19 @@ export async function advanceRun(db: DB, run: any, workflow: any): Promise<void>
         const action = node.config?.action ?? "none";
         if (action === "tag" && run.patient_id && node.config?.value) {
           await db.from("patients").update({ status: node.config.value }).eq("id", run.patient_id);
+          log.push({ node: node.id, type: "action", action });
+        } else if (action === "add_to_pipeline") {
+          // Set the contact's lifecycle stage (this is what the Pipeline reads).
+          const stage = node.config?.value || "New Lead";
+          if (run.conversation_id) await db.from("wa_conversations").update({ lifecycle: stage }).eq("id", run.conversation_id);
+          log.push({ node: node.id, type: "action", action, stage, applied: !!run.conversation_id });
+        } else if (action === "call") {
+          // Place an outbound voice call to the contact with a chosen voice agent + number.
+          const r = await placeCall(db, run, node.config);
+          log.push({ node: node.id, type: "action", action, ok: r.ok, info: r.message });
+        } else {
+          log.push({ node: node.id, type: "action", action });
         }
-        log.push({ node: node.id, type: "action", action });
         continue;
       }
 
