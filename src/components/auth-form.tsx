@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Sparkles, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { clearWorkspaceCache } from "@/lib/db";
 
 export function AuthForm({ mode }: { mode: "login" | "signup" }) {
   const router = useRouter();
@@ -19,6 +20,9 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
     e.preventDefault();
     setError(null);
     setBusy(true);
+    // Drop any workspace cached from a previous user in this tab, so the new
+    // login resolves its OWN workspace (never sees the prior account's data).
+    clearWorkspaceCache();
     try {
       if (mode === "signup") {
         const { data, error } = await supabase.auth.signUp({
@@ -28,6 +32,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         });
         if (error) throw error;
         if (data.session) {
+          clearWorkspaceCache();
           router.push("/dashboard");
         } else {
           setNotice("Account created! Check your email for a confirmation link, then log in.");
@@ -35,6 +40,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        clearWorkspaceCache();
         router.push("/dashboard");
       }
     } catch (err) {

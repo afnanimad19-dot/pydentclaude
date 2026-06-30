@@ -13,25 +13,50 @@ import {
 
 export type DataSource = "live" | "demo";
 
-// Current clinic's workspace id (multi-tenant). Cached per page load; cleared on
-// auth change. All reads are scoped to this; inserts default to it in the DB.
+// Current clinic's workspace id (multi-tenant). The cache is BOUND TO THE USER ID,
+// so it can never leak across a same-tab login (logging out of account A and into
+// account B re-resolves instead of returning A's workspace). All reads are scoped
+// to this; inserts default to it in the DB.
 let _wsCache: string | null | undefined;
+let _wsCacheUser: string | null | undefined;
 export function clearWorkspaceCache() {
   _wsCache = undefined;
+  _wsCacheUser = undefined;
 }
-export async function getWorkspaceId(): Promise<string | null> {
-  if (_wsCache !== undefined) return _wsCache;
+
+// Provision a workspace for a user whose profile wasn't created by the DB trigger
+// (or who was invited to a clinic). Server-side, via the service role.
+async function bootstrapWorkspace(): Promise<string | null> {
   try {
-    const { data: auth } = await supabase.auth.getUser();
-    if (!auth.user) {
-      _wsCache = null;
-      return null;
-    }
-    const { data } = await supabase.from("profiles").select("workspace_id").eq("user_id", auth.user.id).maybeSingle();
-    _wsCache = data?.workspace_id ?? null;
-    return _wsCache ?? null;
+    const { data: s } = await supabase.auth.getSession();
+    const token = s.session?.access_token;
+    if (!token) return null;
+    const res = await fetch("/api/auth/bootstrap", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    const d = await res.json().catch(() => ({}));
+    return d?.workspaceId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getWorkspaceId(): Promise<string | null> {
+  // Read the current user id from the local session (fast, no network round-trip).
+  const { data: s } = await supabase.auth.getSession();
+  const uid = s.session?.user?.id ?? null;
+  // Reuse the cache ONLY if it belongs to the same signed-in user.
+  if (_wsCache !== undefined && _wsCacheUser === uid) return _wsCache;
+  if (!uid) { _wsCache = null; _wsCacheUser = null; return null; }
+  try {
+    const { data } = await supabase.from("profiles").select("workspace_id").eq("user_id", uid).maybeSingle();
+    let ws = data?.workspace_id ?? null;
+    // No profile yet → provision a fresh, isolated workspace (never fall back to any existing one).
+    if (!ws) ws = await bootstrapWorkspace();
+    _wsCache = ws;
+    _wsCacheUser = uid;
+    return ws;
   } catch {
     _wsCache = null;
+    _wsCacheUser = uid;
     return null;
   }
 }
@@ -1857,10 +1882,15 @@ export async function updateVoiceNumber(
   if (patch.direction !== undefined) row.direction = patch.direction;
   if (patch.nickname !== undefined) row.nickname = patch.nickname;
   if (patch.vapiPhoneNumberId !== undefined) row.vapi_phone_number_id = patch.vapiPhoneNumberId;
-  let { error } = await supabase.from("voice_numbers").update(row).eq("id", id);
+  const { error } = await supabase.from("voice_numbers").update(row).eq("id", id);
   if (error && /vapi_phone_number_id/.test(error.message)) {
+    // The column isn't migrated — save the rest, but surface that the Vapi link
+    // couldn't be stored (so the number doesn't silently look "not on Vapi").
     delete row.vapi_phone_number_id;
-    ({ error } = await supabase.from("voice_numbers").update(row).eq("id", id));
+    const retry = await supabase.from("voice_numbers").update(row).eq("id", id);
+    if (retry.error) return { ok: false, message: retry.error.message };
+    if (patch.vapiPhoneNumberId) return { ok: false, message: "Registered on Vapi, but couldn't save the link — run migration 0043 (vapi_phone_number_id) in Supabase." };
+    return { ok: true, message: "Number updated." };
   }
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Number updated." };

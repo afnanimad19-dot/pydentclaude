@@ -917,6 +917,10 @@ export function AgentModal({
   );
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // The Vapi assistant id, tracked in state so repeated saves in the same open
+  // editor PATCH the same assistant instead of creating duplicates.
+  const [vapiId, setVapiId] = useState<string | null>(initial?.vapiAssistantId ?? null);
+  const [savedAgentId, setSavedAgentId] = useState<string | null>(initial?.id ?? null);
   const [voiceLibOpen, setVoiceLibOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
@@ -1012,14 +1016,21 @@ export function AgentModal({
     };
 
     let res: { ok: boolean; message: string; id?: string };
-    if (initial) {
-      res = await updateAgent(initial.id, payload);
+    // Use the existing row on retry (savedAgentId) so a Vapi failure after a
+    // successful create doesn't insert a duplicate agent on the next attempt.
+    const existingId = initial?.id ?? savedAgentId;
+    if (existingId) {
+      res = await updateAgent(existingId, payload);
+      res = { ...res, id: existingId };
     } else {
       res = await createAgent(payload);
+      if (res.ok && res.id) setSavedAgentId(res.id);
     }
 
     let message = res.message;
+    let vapiOk = true; // non-voice agents don't need Vapi
     if (res.ok && form.kind === "voice") {
+      vapiOk = false;
       try {
         const vapiRes = await fetch("/api/vapi/assistants", {
           method: "POST",
@@ -1037,25 +1048,31 @@ export function AgentModal({
             language: form.language,
             firstMessageMode: form.firstMessageMode,
             voiceSettings: form.voiceSettings,
-            vapiAssistantId: initial?.vapiAssistantId ?? null,
+            vapiAssistantId: vapiId, // tracked id → PATCH the same assistant, never duplicate
             canBook: form.canBook,
             canReschedule: form.canReschedule,
             canCancel: form.canCancel,
           }),
         });
-        const vapiData = await vapiRes.json();
-        const agentId = res.id ?? initial?.id;
-        if (vapiRes.ok && vapiData.id && agentId) await setAgentVapiId(agentId, vapiData.id);
-        message = vapiRes.ok
-          ? `Agent saved${initial ? " and re-synced to Vapi" : " and created in Vapi"}.`
-          : `Agent saved locally. Vapi: ${vapiData.error ?? vapiData.message ?? "not connected yet"}`;
+        const vapiData = await vapiRes.json().catch(() => ({}));
+        const agentId = res.id ?? initial?.id ?? savedAgentId;
+        if (vapiRes.ok && vapiData.id && agentId) {
+          await setAgentVapiId(agentId, vapiData.id);
+          setVapiId(vapiData.id); // so the next save in this session PATCHes it
+          vapiOk = true;
+          message = initial || savedAgentId ? "Agent saved and re-synced to Vapi." : "Agent saved and created in Vapi.";
+        } else {
+          message = `Saved, but NOT synced to Vapi — ${vapiData.error ?? vapiData.message ?? "Vapi isn't connected"}. Fix this and Save again (the agent won't answer calls until it syncs).`;
+        }
       } catch {
-        message = "Agent saved locally. Vapi could not be reached.";
+        message = "Saved, but could not reach Vapi to sync. Save again once Vapi is reachable (the agent won't answer calls until it syncs).";
       }
     }
     setSaving(false);
-    setResult({ ok: res.ok, message });
-    if (res.ok) onSaved();
+    setResult({ ok: res.ok && vapiOk, message });
+    // Only close/refresh when the voice agent actually synced to Vapi; otherwise
+    // keep the editor open so the user can fix the Vapi issue and re-save.
+    if (res.ok && vapiOk) onSaved();
   }
 
   const abilities = ABILITIES_BY_ROLE[form.role] ?? ["canBook", "canReschedule", "canCancel"];

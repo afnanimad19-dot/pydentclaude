@@ -160,44 +160,44 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
     return `Could not save the appointment (${apptErr?.message ?? "database error"}). Tell the patient you'll confirm shortly — do not say it is booked.`;
   }
 
-  let odNote = "";
-  try {
-    const od = await getOdConfig(ws);
-    if (od?.enabled) {
-      const r = await odForward(ws, "/create-appointment", {
-        method: "POST",
-        body: { name: fullName || ctx.name, phone: args.phone || ctx.phone || "", email: args.email || "", doctorId: args.doctor || "", serviceId: treatment, fee, datetime: dt, consent: true },
+  // The appointment is on OUR calendar now — that's the source of truth the agent
+  // confirms to the caller. The external mirrors (Open Dental, Google Calendar) and
+  // workflow triggers run in the BACKGROUND (fire-and-forget) so the voice tool
+  // responds immediately and the agent doesn't keep saying "one moment" while a
+  // slow HTTP push to Open Dental / Google completes.
+  const apptId = appt.id;
+  void (async () => {
+    try {
+      const od = await getOdConfig(ws);
+      if (od?.enabled) {
+        const r = await odForward(ws, "/create-appointment", {
+          method: "POST",
+          body: { name: fullName || ctx.name, phone: args.phone || ctx.phone || "", email: args.email || "", doctorId: args.doctor || "", serviceId: treatment, fee, datetime: dt, consent: true },
+        });
+        const extId = (r.data as any)?.appointmentId;
+        if (r.status === 200 && extId && apptId) await supabase.from("appointments").update({ external_id: String(extId) }).eq("id", apptId);
+      }
+    } catch { /* keep the Calendar booking even if Open Dental is unreachable */ }
+    try {
+      if (ws) {
+        const eventId = await pushToGoogleCalendar(ws, {
+          summary: `${treatment} — ${fullName || ctx.name || "Patient"}`,
+          description: [`Booked via ${ctx.source}`, args.phone || ctx.phone ? `Phone: ${args.phone || ctx.phone}` : "", fee != null ? `Fee: ${fee}` : ""].filter(Boolean).join("\n"),
+          date, time,
+        });
+        if (eventId && apptId) await supabase.from("appointments").update({ google_calendar_event_id: eventId }).eq("id", apptId);
+      }
+    } catch { /* keep the booking even if Google Calendar push fails */ }
+    try {
+      await triggerWorkflows(supabase, ws, "appointment_booked", ctx.source, {
+        patientId, conversationId: null, channel: ctx.source, contactPhone: args.phone || ctx.phone || "", name: fullName || ctx.name, lastMessage: "",
       });
-      const extId = (r.data as any)?.appointmentId;
-      if (r.status === 200 && extId && appt?.id) await supabase.from("appointments").update({ external_id: String(extId) }).eq("id", appt.id);
-      odNote = r.status === 200 ? " (synced to Open Dental)" : " (Open Dental sync pending)";
-    }
-  } catch {
-    /* keep the Calendar booking even if Open Dental is unreachable */
-  }
-
-  // Best-effort: mirror the booking to the clinic's Google Calendar.
-  try {
-    if (ws) {
-      const eventId = await pushToGoogleCalendar(ws, {
-        summary: `${treatment} — ${fullName || ctx.name || "Patient"}`,
-        description: [`Booked via ${ctx.source}`, args.phone || ctx.phone ? `Phone: ${args.phone || ctx.phone}` : "", fee != null ? `Fee: ${fee}` : ""].filter(Boolean).join("\n"),
-        date, time,
-      });
-      if (eventId && appt?.id) await supabase.from("appointments").update({ google_calendar_event_id: eventId }).eq("id", appt.id);
-    }
-  } catch { /* keep the booking even if Google Calendar push fails */ }
-
-  // Fire any "appointment booked" workflows for this clinic (best-effort).
-  try {
-    await triggerWorkflows(supabase, ws, "appointment_booked", ctx.source, {
-      patientId, conversationId: null, channel: ctx.source, contactPhone: args.phone || ctx.phone || "", name: fullName || ctx.name, lastMessage: "",
-    });
-  } catch { /* never block the booking */ }
+    } catch { /* never block the booking */ }
+  })();
 
   const feeNote = fee != null ? ` · fee ${fee}` : "";
-  await ctx.log?.(`📅 Booked ${treatment} on ${date} ${time} for ${fullName || ctx.name}${feeNote} via ${ctx.source}${odNote}.`);
-  return `Appointment booked: ${treatment}${args.doctor ? ` with ${args.doctor}` : ""} on ${date} at ${time}${feeNote}${odNote}.`;
+  await ctx.log?.(`📅 Booked ${treatment} on ${date} ${time} for ${fullName || ctx.name}${feeNote} via ${ctx.source}.`);
+  return `Appointment booked: ${treatment}${args.doctor ? ` with ${args.doctor}` : ""} on ${date} at ${time}${feeNote}.`;
 }
 
 // Reschedule the patient's next appointment.

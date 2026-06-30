@@ -76,16 +76,20 @@ function advancedFromSettings(vs: any): Record<string, any> {
       ? { smartEndpointingPlan: { provider: "livekit" } }
       : {}),
     transcriptionEndpointingPlan: {
-      onPunctuationSeconds: clamp(vs.minSilenceDuration ?? 0.3, 0, 3),
-      onNoPunctuationSeconds: clamp(vs.endOfSpeechTimeout ?? 0.2, 0, 4),
+      onPunctuationSeconds: clamp(vs.minSilenceDuration ?? 0.4, 0.2, 3),
+      // Wait ~1s on a pause without punctuation so the agent doesn't barge in mid-sentence.
+      onNoPunctuationSeconds: clamp(vs.endOfSpeechTimeout ?? 1.0, 0.5, 4),
       onNumberSeconds: 0.5,
     },
   };
-  // Min speech duration maps roughly to how much voice is needed to count as a turn.
+  // How readily the caller can interrupt the agent. numWords:0 treats ANY audio
+  // (a cough, "mm-hm", echo) as an interruption → the agent stops, restarts, and
+  // ends up talking over itself. Require a couple of real words, and back off
+  // longer before resuming so it doesn't immediately restart its sentence.
   out.stopSpeakingPlan = {
-    numWords: 0,
-    voiceSeconds: clamp(vs.minSpeechDuration ?? 0.2, 0, 0.5),
-    backoffSeconds: 1,
+    numWords: clamp(vs.interruptionWords ?? 2, 0, 5),
+    voiceSeconds: clamp(vs.minSpeechDuration ?? 0.2, 0.1, 0.5),
+    backoffSeconds: clamp(vs.backoffSeconds ?? 1.5, 1, 3),
   };
 
   // Answering-machine detection
@@ -144,11 +148,18 @@ function bookingTools(
   serverUrl: string
 ): any[] {
   const server = { url: serverUrl };
+  // Vapi-managed filler so the LLM doesn't keep improvising "one moment" in a loop:
+  // ONE short acknowledgement at the start, and a single delayed nudge after 8s.
+  const msgs = (start: string) => [
+    { type: "request-start", content: start },
+    { type: "request-response-delayed", content: "Still on it — one moment.", timingMilliseconds: 8000 },
+  ];
   const tools: any[] = [];
   if (caps.canBook) {
     tools.push({
       type: "function",
       server,
+      messages: msgs("Let me check that for you."),
       function: {
         name: "get_available_slots",
         description: "Fetch real open appointment times for a treatment on a date BEFORE offering times to the caller.",
@@ -166,6 +177,7 @@ function bookingTools(
     tools.push({
       type: "function",
       server,
+      messages: msgs("Booking that for you now."),
       function: {
         name: "book_appointment",
         description:
@@ -190,6 +202,7 @@ function bookingTools(
     tools.push({
       type: "function",
       server,
+      messages: msgs("Let me update that appointment."),
       function: {
         name: "reschedule_appointment",
         description: "Move the caller's existing appointment to a new date and time.",
@@ -201,6 +214,7 @@ function bookingTools(
     tools.push({
       type: "function",
       server,
+      messages: msgs("One moment while I cancel that."),
       function: {
         name: "cancel_appointment",
         description: "Cancel the caller's existing appointment.",
@@ -214,6 +228,7 @@ function bookingTools(
 function bookingPrompt(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean }): string {
   if (!caps.canBook && !caps.canReschedule && !caps.canCancel) return "";
   return (
+    "SPEAKING STYLE: Finish your sentence before starting a new one — never speak two things at once. While a tool is running, say a brief acknowledgement like 'one moment' AT MOST ONCE, then stay quiet until the result comes back. Do NOT repeat filler phrases. " +
     "BOOKING — read carefully: You can ONLY change the schedule by calling the tools. " +
     "Saying 'booked' in words does NOT book anything. To book: first call get_available_slots to offer real open times, " +
     "then once the caller agrees on a specific date and time, collect their full name, phone number, email, the treatment they want, " +

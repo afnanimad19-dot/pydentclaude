@@ -62,19 +62,20 @@ const PROVIDER_FIELDS: Record<string, { key: string; label: string; placeholder?
 
 // After saving a number with an assigned agent, register it on Vapi + attach the
 // agent so inbound calls actually route to that agent. Returns a status message.
-async function connectNumberToVapi(opts: { provider: string; number: string; nickname: string; agent?: AiAgent; config: Record<string, unknown> }): Promise<{ message: string | null; vapiPhoneNumberId?: string }> {
-  if (!opts.agent) return { message: null }; // no agent assigned — nothing to route to yet
-  if (!opts.agent.vapiAssistantId) return { message: `Saved. Note: open "${opts.agent.name}" and Save it once so it syncs to Vapi, then re-save this number to connect it.` };
+async function connectNumberToVapi(opts: { provider: string; number: string; nickname: string; agent?: AiAgent; config: Record<string, unknown> }): Promise<{ ok: boolean; message: string; vapiPhoneNumberId?: string }> {
+  if (!opts.agent) return { ok: false, message: "Saved — but assign a voice agent so the number can be registered on Vapi and answer calls." };
+  if (!opts.agent.vapiAssistantId) return { ok: false, message: `Saved — but open "${opts.agent.name}" and Save it once so it syncs to Vapi, then Edit this number to connect it.` };
   try {
     const res = await fetch("/api/vapi/phone-numbers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider: opts.provider, number: opts.number, nickname: opts.nickname, assistantId: opts.agent.vapiAssistantId, config: opts.config }),
     });
-    const data = await res.json();
-    return data.ok ? { message: data.message, vapiPhoneNumberId: data.vapiPhoneNumberId } : { message: `Saved here. Vapi: ${data.error}` };
+    const data = await res.json().catch(() => ({}));
+    if (data.ok && data.vapiPhoneNumberId) return { ok: true, message: data.message ?? "Number connected to Vapi.", vapiPhoneNumberId: data.vapiPhoneNumberId };
+    return { ok: false, message: `Saved locally, but NOT registered on Vapi — ${data.error ?? "Vapi error"}. Fix it and use Edit → reassign the agent to retry.` };
   } catch {
-    return { message: "Saved here. Could not reach Vapi to connect the number." };
+    return { ok: false, message: "Saved locally, but couldn't reach Vapi to register the number. Try Edit → reassign the agent to retry." };
   }
 }
 
@@ -325,7 +326,7 @@ function TwilioForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; o
     const vapi = await connectNumberToVapi({ provider: "twilio", number, nickname: label, agent: agents.find((a) => a.id === agentId), config: cfg });
     if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
     setSaving(false);
-    toast(vapi.message ?? "Twilio number imported.", "success");
+    toast(vapi.message, vapi.ok ? "success" : "info");
     onAdded();
   }
 
@@ -410,7 +411,7 @@ function ProviderForm({ provider, agents, onBack, onClose, onAdded }: { provider
     const vapi = await connectNumberToVapi({ provider, number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
     if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
     setSaving(false);
-    toast(vapi.message ?? `${meta.name} number added.`, "success");
+    toast(vapi.message, vapi.ok ? "success" : "info");
     onAdded();
   }
 
@@ -490,7 +491,7 @@ function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBa
     const vapi = await connectNumberToVapi({ provider: "sip", number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
     if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
     setSaving(false);
-    toast(vapi.message ?? "SIP trunk number created.", "success");
+    toast(vapi.message, vapi.ok ? "success" : "info");
     onAdded();
   }
 
