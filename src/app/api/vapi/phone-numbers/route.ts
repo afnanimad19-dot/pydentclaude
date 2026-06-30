@@ -27,7 +27,7 @@ async function buildCreatePayload(opts: { provider: string; number: string; nick
   if (provider === "twilio") {
     const sid = config?.twilioAccountSid, token = config?.twilioAuthToken;
     if (!sid || !token) return { error: "Twilio Account SID + Auth Token are required.", status: 400 };
-    return { payload: { provider: "twilio", number, twilioAccountSid: sid, twilioAuthToken: token, assistantId, name: nickname || number } };
+    return { payload: { provider: "twilio", number, twilioAccountSid: sid, twilioAuthToken: token, assistantId, name: nickname || number, smsEnabled: config?.smsEnabled !== false } };
   }
   // BYO SIP trunk (sip / ziwo / maqsam / goautodial / vocalcom).
   const gateways: { ip: string }[] = [];

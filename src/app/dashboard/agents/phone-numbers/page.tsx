@@ -278,7 +278,89 @@ function AddNumberModal({ agents, onClose, onAdded }: { agents: AiAgent[]; onClo
     );
   }
   if (provider === "sip") return <SipForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
+  if (provider === "twilio") return <TwilioForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
   return <ProviderForm provider={provider} agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
+}
+
+// Country dial codes for the Twilio number picker (mirrors the contacts picker).
+const DIAL_CODES: { flag: string; dial: string; name: string }[] = [
+  { flag: "🇺🇸", dial: "+1", name: "United States" },
+  { flag: "🇦🇪", dial: "+971", name: "UAE" },
+  { flag: "🇬🇧", dial: "+44", name: "United Kingdom" },
+  { flag: "🇸🇦", dial: "+966", name: "Saudi Arabia" },
+  { flag: "🇶🇦", dial: "+974", name: "Qatar" },
+  { flag: "🇰🇼", dial: "+965", name: "Kuwait" },
+  { flag: "🇧🇭", dial: "+973", name: "Bahrain" },
+  { flag: "🇴🇲", dial: "+968", name: "Oman" },
+  { flag: "🇮🇳", dial: "+91", name: "India" },
+  { flag: "🇨🇦", dial: "+1", name: "Canada" },
+  { flag: "🇦🇺", dial: "+61", name: "Australia" },
+  { flag: "🇩🇪", dial: "+49", name: "Germany" },
+];
+
+// Dedicated "Import Twilio number" form — mirrors Vapi's importer: phone (with a
+// country-flag picker), Account SID, Auth Token, Label, SMS toggle, agent. On
+// submit it stores the number and registers it on Vapi with the agent attached,
+// so inbound calls are answered and the number is usable for outbound.
+function TwilioForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
+  const [dial, setDial] = useState("+1");
+  const [local, setLocal] = useState("");
+  const [accountSid, setAccountSid] = useState("");
+  const [authToken, setAuthToken] = useState("");
+  const [label, setLabel] = useState("");
+  const [smsEnabled, setSmsEnabled] = useState(true);
+  const [agentId, setAgentId] = useState("");
+  const [direction, setDirection] = useState("inbound");
+  const [saving, setSaving] = useState(false);
+
+  const number = local.trim() ? `${dial}${local.replace(/[^\d]/g, "").replace(/^0+/, "")}` : "";
+
+  async function submit() {
+    if (!number) { toast("Enter the Twilio phone number.", "info"); return; }
+    if (!accountSid.trim() || !authToken.trim()) { toast("Twilio Account SID and Auth Token are required.", "info"); return; }
+    setSaving(true);
+    const cfg = { twilioAccountSid: accountSid.trim(), twilioAuthToken: authToken.trim(), smsEnabled, numberType: "national", scope: "Global", status: "active" };
+    const res = await createVoiceNumber({ number, nickname: label, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider: "twilio", concurrency: 1, config: cfg });
+    if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
+    const vapi = await connectNumberToVapi({ provider: "twilio", number, nickname: label, agent: agents.find((a) => a.id === agentId), config: cfg });
+    if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
+    setSaving(false);
+    toast(vapi.message ?? "Twilio number imported.", "success");
+    onAdded();
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Import Twilio number" subtitle="Bring your own Twilio number — we register it on Vapi and route it to your agent." wide>
+      <BackBar onBack={onBack} />
+      <div className="space-y-4">
+        <Field label="Twilio Phone Number">
+          <div className="flex gap-2">
+            <select value={dial} onChange={(e) => setDial(e.target.value)} className="w-28 shrink-0 rounded-xl border border-ink-200 bg-surface px-2 py-2.5 text-sm text-ink-800 outline-none focus:border-brand-400">
+              {DIAL_CODES.map((c, i) => <option key={`${c.dial}-${i}`} value={c.dial}>{c.flag} {c.dial}</option>)}
+            </select>
+            <input className={inputCls} placeholder="4156021922" value={local} onChange={(e) => setLocal(e.target.value)} />
+          </div>
+          {number && <p className="mt-1 text-xs text-ink-400">Will import <span className="font-mono">{number}</span></p>}
+        </Field>
+        <Field label="Twilio Account SID"><input className={inputCls} placeholder="ACxxxxxxxxxxxxxxxx" value={accountSid} onChange={(e) => setAccountSid(e.target.value)} /></Field>
+        <Field label="Twilio Auth Token"><input className={inputCls} type="password" placeholder="Your Twilio Auth Token" value={authToken} onChange={(e) => setAuthToken(e.target.value)} /></Field>
+        <Field label="Label"><input className={inputCls} placeholder="Reception line" value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
+
+        <label className="flex items-center justify-between rounded-xl border border-ink-200 px-4 py-3">
+          <span><span className="text-sm font-medium text-ink-800">SMS Enabled</span><span className="block text-xs text-ink-400">Enable SMS messaging for this phone number</span></span>
+          <button type="button" onClick={() => setSmsEnabled((v) => !v)} className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${smsEnabled ? "bg-emerald-500" : "bg-ink-300"}`}>
+            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${smsEnabled ? "left-[22px]" : "left-0.5"}`} />
+          </button>
+        </label>
+
+        <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} />
+        <div className="flex items-start gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-xs text-ink-500">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> We register this number on Vapi using your Twilio SID + token and attach the selected agent, so inbound calls are answered and the number is the caller ID for outbound. (Assign the agent and Save it once so it&apos;s synced to Vapi.)
+        </div>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Importing…" : "Import from Twilio"} onSubmit={submit} />
+    </Modal>
+  );
 }
 
 function BackBar({ onBack }: { onBack: () => void }) {
