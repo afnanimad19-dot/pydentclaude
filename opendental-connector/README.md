@@ -8,11 +8,22 @@ clinic** — this server never returns diagnoses, notes, x-rays, insurance, etc.
 Pydental (cloud) → /api/opendental/* gateway → Cloudflare Tunnel → THIS middleware → Open Dental API → Open Dental DB
 ```
 
-## Setup
+## Test it now — NO Open Dental, NO keys needed (mock mode)
+The connector ships with an in-memory **mock** so you can verify the whole booking chain before any
+clinic is involved:
+```
+npm install
+npm run smoke           # boots in mock mode + checks health→auth→doctors→slots→book→reschedule→cancel
+npm run start:mock      # or run it as a live server in mock mode (CLINIC_API_KEY=test npm run start:mock)
+```
+Mock mode is on when `OPEN_DENTAL_MOCK=1` **or** when the Open Dental keys are unset. Nothing is
+persisted — it's purely for safe end-to-end testing.
+
+## Setup (real clinic)
 1. Install Node.js 18+ on the clinic server.
 2. `cp .env.example .env` and fill in:
-   - `CLINIC_API_KEY` — a long random string (put the SAME value in Pydental → Settings → Open Dental).
-   - `OPEN_DENTAL_BASE_URL`, `OPEN_DENTAL_DEVELOPER_KEY`, `OPEN_DENTAL_CUSTOMER_KEY`.
+   - `CLINIC_API_KEY` — a long random string (put the SAME value in Pydent → Settings → Open Dental).
+   - Set `OPEN_DENTAL_MOCK=0` and fill `OPEN_DENTAL_BASE_URL`, `OPEN_DENTAL_DEVELOPER_KEY`, `OPEN_DENTAL_CUSTOMER_KEY`.
 3. Edit `src/mappings.js` with your real provider numbers, operatory numbers and CDT codes.
 4. `npm install && npm start` → listens on `http://localhost:4000`.
 
@@ -29,6 +40,7 @@ Then in **Pydental → Settings → Open Dental**, set the URL to
 
 ## Endpoints
 ```
+GET  /health                  (no auth) → { ok, mode: "mock"|"live" }
 GET  /doctors
 GET  /services
 POST /available-slots         { doctorId, serviceId, date }
@@ -38,6 +50,9 @@ POST /cancel-appointment      { appointmentId }
 ```
 
 ## Before going live
-- Test against an **Open Dental test database** first.
-- Implement find-or-create patient (by name+phone) in `createAppointment` to get a real PatNum.
-- Verify the Slots/Appointments endpoint paths/params match your Open Dental version.
+- Test against an **Open Dental test database** first (or stay in mock mode until you're ready).
+- ✅ Find-or-create patient (by phone, else create minimal name+phone) is implemented in `opendental.js`.
+- Verify the Slots/Appointments/patient-search paths/params match **your** Open Dental version.
+
+See **`../OPEN_DENTAL_AND_COMPLIANCE.md`** for the UAE health-data residency rules (DHA/DoH/MOHAP) and
+the full deploy guide.

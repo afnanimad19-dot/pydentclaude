@@ -5,7 +5,9 @@
   "description": "Local middleware that runs inside the clinic, next to Open Dental. Exposes ONLY doctor slots + appointment booking to the Pydental gateway. No clinical data leaves the clinic.",
   "type": "module",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "start:mock": "OPEN_DENTAL_MOCK=1 node src/server.js",
+    "smoke": "node src/smoke.js"
   },
   "dependencies": {
     "express": "^4.19.2"
