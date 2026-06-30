@@ -5,9 +5,11 @@ _Last updated: this session. Branch: `claude/vigilant-heisenberg-o5g281`._
 > **What changed most recently:** Voice Agent Settings (assign an existing number to an
 > agent), AI team → Brevo campaigns, **Email + SMS campaigns via Brevo**, **scheduled report
 > workflow**, **Instagram auto-publish**, **durable Meta tokens**, **per-clinic Twilio**,
-> **workflow call/SMS/email/calendar actions**, and an app-wide CRUD pass (edit/delete/
-> import/export everywhere; removed fake "for-show" buttons). Migrations through **0047**.
-> See the new **§10 — what's left from your side (keys/auth/verification)**.
+> **workflow call/SMS/email/calendar actions**, an app-wide CRUD pass (edit/delete/
+> import/export everywhere; removed fake "for-show" buttons), and the **Open Dental connector**
+> is now **built + testable in mock mode** (`npm run smoke` passes — no clinic/API needed).
+> Migrations through **0047**. See **§10 — what's left from your side (keys/auth/verification)**
+> and **§11 — live verification checklist**. Compliance detail: `OPEN_DENTAL_AND_COMPLIANCE.md`.
 
 This is the single source of truth for: **what's built, what works end-to-end, what's
 only UI so far, what's left, the subscriptions/keys you need, where each key goes
@@ -343,7 +345,7 @@ Dental locally. Only appointment scheduling crosses the line; the chart never le
 |---|---|---|
 | **Open Dental** | The dental practice-management software + its MySQL database (most clinics already run this) | ~**$179/mo** support, or perpetual license; **MySQL is free** and bundled |
 | **Open Dental API** | Built into Open Dental — enable it and create a **Developer/Customer API key** (Setup → Advanced → API) | included |
-| **Pydent local connector** | A small app **we will build** (Node service / Windows service) that receives Pydent's scheduling calls and uses the Open Dental API locally. ❌ not built yet | free (we ship it) |
+| **Pydent local connector** | A small Node service that receives Pydent's scheduling calls and uses the Open Dental API locally. ✅ **Built** (in `opendental-connector/`), **mock-testable now** (`npm run smoke`); find-or-create patient done. Remaining: per-clinic mapping + Windows-service packaging + tunnel bundle. | free (we ship it) |
 | **Cloudflare Tunnel** (`cloudflared`) | Free tool that gives the local connector a secure HTTPS URL **without opening any ports** — so Pydent's gateway can reach it safely | **free** |
 
 ### Step-by-step (when you're ready to connect — we said this is last)
@@ -354,33 +356,34 @@ Dental locally. Only appointment scheduling crosses the line; the chart never le
 5. **Test:** book a test appointment from a chat/voice agent → it should appear in Open Dental's schedule, and Open Dental's open slots should show up when the agent offers times.
 6. Clinical data (payments, x-rays, ledger) is intentionally **never** shown in Pydent — only appointments.
 
-> Status today: the Pydent side (gateway routes `/api/opendental/*`, the Settings card, booking
-> forward, external-id mirror) is **code-ready**. The **local connector app is the remaining build.**
+> **Status today:** BOTH halves are built. The Pydent side (gateway routes `/api/opendental/*`, the
+> Settings card with **Test connection**, booking forward, external-id mirror) is wired, AND the
+> **local connector is built and testable in mock mode** — `cd opendental-connector && npm run smoke`
+> runs health → auth → doctors → slots → book → reschedule → cancel and passes, with **no Open Dental
+> and no clinic keys**. What remains is **per-clinic mapping**, **Windows-service packaging**, the
+> **tunnel bundle**, and the **live acceptance test at a real clinic** (the API/verification part —
+> see §10 + §11). Clinical data (payments, x-rays, ledger, documents) is intentionally **never** shown
+> in Pydent — only appointments. See `OPEN_DENTAL_AND_COMPLIANCE.md` for the full guide + UAE rules.
 
-### How WE will build the Open Dental connector (our plan)
-A small **Node.js service** that runs on the clinic's server. We already have the Pydent gateway
-that calls it; the connector is the missing on-prem half. Build steps:
+### Connector — what's BUILT vs what's LEFT
+The connector is a small **Node.js service** in `opendental-connector/`. The Pydent gateway already
+calls it. Status of each part:
 
-1. **Connector app** — a tiny Express service exposing only scheduling endpoints that mirror what
-   the Pydent gateway already calls:
-   - `POST /available-slots` → query Open Dental for open appointment times
-   - `POST /create-appointment` → find-or-create the patient (real PatNum) + book
-   - `POST /reschedule-appointment`, `POST /cancel-appointment`
-   - `GET /doctors` → provider list
-   It talks to Open Dental over the **local network only** (the Open Dental API on `localhost`),
-   using the clinic's Developer + Customer keys.
-2. **Shared-secret auth** — every request from Pydent carries an `x-api-key`; the connector
-   rejects anything else. So only your dashboard can reach it.
-3. **Find-or-create patient** — on booking, look up the caller by phone/name; if new, create a
-   minimal patient in Open Dental and return the **PatNum** (we store only that id, never the chart).
-4. **Packaging** — ship it as a Windows service (via `node-windows` or NSSM) so it auto-starts and
-   stays running, plus a one-page installer/README for the clinic's IT.
-5. **Secure tunnel** — bundle `cloudflared` config so the connector gets a stable HTTPS URL with
-   **no open ports** on the clinic firewall.
-6. **Test harness** — a mock Open Dental mode so we can verify booking end-to-end before touching
-   a live clinic (you asked not to disturb the live clinic — this lets us test safely).
+| Part | Status |
+|---|---|
+| **Connector app** — Express service: `/available-slots`, `/create-appointment`, `/reschedule-appointment`, `/cancel-appointment`, `/doctors`, `/services`, `/health` | ✅ **Built** |
+| **Shared-secret auth** — every request needs the `x-api-key`; everything else is rejected (401) | ✅ **Built** |
+| **Find-or-create patient** — on booking, look up by phone, else create a minimal name+phone patient → real **PatNum** (never the chart) | ✅ **Built** (was the one TODO) |
+| **Mock mode + smoke test** — run the full chain with no Open Dental / no keys (`npm run smoke`) | ✅ **Built & passing** |
+| **Per-clinic mapping** (`src/mappings.js`: real ProvNum / OpNum / CDT codes) | 🟠 **Left** — ~10-min config per clinic (no code) |
+| **Live endpoint alignment** — confirm Slots/patient-search/appointment paths match the clinic's Open Dental version | 🟠 **Left** — needs their install |
+| **Windows-service packaging** (`node-windows`/NSSM auto-start) + installer README | 🟠 **Left** — buildable now |
+| **Tunnel bundle** (`cloudflared` named-tunnel config) | 🟠 **Left** — buildable now |
+| **Live acceptance test** at a real clinic | 🔴 **Left — needs the clinic's Open Dental API + their machine (see §11)** |
 
-Estimated build: the connector itself is small (~1–2 days); most of the time is safe testing.
+> The first four are done and testable **today**. The next four are buildable now **without** the
+> clinic (using mock mode + a Cloudflare quick-tunnel). Only the **live acceptance test** needs the
+> real clinic — that's the API/verification step.
 
 ### Why NO patient data leaks (the privacy guarantee)
 - **Clinical data never leaves the clinic.** The chart, x-rays, ledger, payments, insurance — all
@@ -486,6 +489,7 @@ is in place. Nothing here needs more development.
 | **Meta app** | Instagram **auto-publish** + Helena posting for **all** clinics; the "unsafe app" warning during connect | **Business verification** (Trade Licence) → **Access verification (Tech Provider)** → **App Review** (Advanced Access for `instagram_content_publish`, `pages_manage_posts`, …) → switch app to **Live**. Works now for **App Roles → Testers**. |
 | **Google OAuth** | the "Google hasn't verified this app" screen for everyone | Add **Test users** now (works immediately); for everyone: OAuth consent screen → privacy/terms URLs → **In production** → submit for verification. **Tip:** drop the **Gmail** scope (use Brevo) to avoid Google's CASA security audit. |
 | **WhatsApp** | live broadcasts/inbox on the clinic's own number | Connect the clinic's WhatsApp Business number + token (Meta Business). |
+| **Open Dental (live clinic)** | real bookings into a clinic's chart (mock booking works today) | Enable the Open Dental **API** at the clinic → keys → install the connector on their server → tunnel → connect in Settings (see §8 + §11). |
 
 ### D) Operational (you've done some of this)
 - ✅ **Migrations** through 0047 — applied in Supabase.
@@ -493,14 +497,49 @@ is in place. Nothing here needs more development.
 - **Subscriptions to buy:** Netlify $9, Supabase $25 (at production), Twilio pay-as-you-go (§6).
 
 ### One-line summary of what's "left from your side"
-**Code is done.** What remains is: (1) **Meta business + app verification** (the biggest — unlocks
-Instagram auto-publish + connect-without-warning), (2) **Google OAuth verification** (or just add
-test users for now), (3) add the few **Netlify env keys** above, and (4) each clinic **connects
-their own** Brevo/Twilio/Google/WhatsApp. No further building is required for any of it to work.
+**Code is done** (incl. the Open Dental connector, testable in mock mode). What remains is:
+(1) **Meta business + app verification** (the biggest — unlocks Instagram auto-publish +
+connect-without-warning), (2) **Google OAuth verification** (or just add test users for now),
+(3) add the few **Netlify env keys** above, (4) each clinic **connects their own**
+Brevo/Twilio/Google/WhatsApp, and (5) the **Open Dental live acceptance test** at a real clinic
+(§11). No further building is required for any of it to work.
+
+---
+
+## 11. ✅ Live-verification checklist — what to verify (and how)
+
+Everything below is built; this is the "prove it works once the keys/clinic are in place" list.
+Split into **(A) testable now with no live accounts** and **(B) needs the real key/clinic**.
+
+### A) Verify NOW — no external accounts (mock / our own data)
+- [ ] **Open Dental chain** — `cd opendental-connector && npm run smoke` → all ✓ (health, auth-401,
+      doctors, slots, book, slot-now-taken, reschedule, cancel). Or `npm run start:mock`, tunnel it,
+      paste URL+key in Settings → Open Dental → **Test connection** → book from an agent.
+- [ ] **App CRUD** — Contacts search/edit/delete/import/export; Instagram & Campaign & Template
+      edit-delete; Calendar confirm/reschedule/cancel; pipeline stage-delete guard.
+- [ ] **Voice number ↔ agent** — Voice Agents → Voice Agent Settings → assign a number (needs
+      `VAPI_API_KEY` ✅; PATCHes Vapi).
+- [ ] **Scheduled report** — workflow with "Scheduled" trigger + "Email a report"; hit
+      `/api/cron/run?key=…` → digest report is created (emails if an email provider is connected).
+
+### B) Verify when the key/clinic is in place
+| What to verify | Pre-req (your side) | How to verify |
+|---|---|---|
+| **Inbound voice call answered by the agent** | Vapi ✅ + a registered number (SIP/Twilio) assigned to the agent | Call the number → the agent talks like a receptionist → ask to book → it lands on the Calendar. |
+| **Outbound dialer** | same | Campaign → Start calling → the contact's phone rings, agent speaks. |
+| **WhatsApp/Instagram DMs + broadcasts** | Meta **Live** + clinic WhatsApp/IG connected | Message the clinic → auto-reply; send a broadcast to a folder; IG auto-publish a due post. |
+| **Email / SMS campaigns** | Brevo connected (+ Twilio for single SMS) | Create a Brevo campaign (draft/schedule/send); send a single SMS. |
+| **Google Calendar push** | Google Calendar connected | Book from an agent → event appears on the clinic's Google Calendar (skips silently if not connected). |
+| **Open Dental LIVE** | Open Dental API enabled at the clinic + keys + connector installed on their server + tunnel | (1) `/health` shows `mode: live`. (2) **Test connection** lists their real doctors. (3) Agent offers **their real open slots**. (4) Book → the appointment appears **in Open Dental's schedule** with a real PatNum. (5) Reschedule/cancel from Pydent → reflected in Open Dental. (6) Confirm **no clinical data** (ledger/x-rays/documents) ever appears in Pydent. (7) Toggle Enable off → link cuts, Pydent keeps working on its own calendar. |
+
+> **Open Dental live = the only thing needing a real clinic.** Everything else verifies with either
+> mock mode or a single connected account. Do the live Open Dental test last, against the clinic's
+> **test database** first, then production — per `OPEN_DENTAL_AND_COMPLIANCE.md` §5.
 
 ---
 
 _Questions answered in this doc: what's done, what's recently completed, what's still partial,
 what's not built, subscriptions (Netlify $9 Personal / $20 Pro, Supabase free→$25 Pro,
 pay-as-you-go AI), where each key goes (Netlify vs Pydent), the verification you must complete
-(§10 + `APP_VERIFICATION.md`), and the Open Dental local setup. Update this file as features land._
+(§10 + `APP_VERIFICATION.md`), the live-verification checklist (§11), and the Open Dental local
+setup + UAE compliance (`OPEN_DENTAL_AND_COMPLIANCE.md`). Update this file as features land._
