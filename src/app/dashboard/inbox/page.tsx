@@ -20,12 +20,14 @@ import {
   setWaAssignee,
   fetchTeamMembers,
   fetchCustomVoices,
+  fetchWaTemplates,
   sendWaReply,
   type AiAgent,
   type ChannelDefault,
   type WaConversation,
   type WaMessage,
   type TeamMember,
+  type WaTemplate,
 } from "@/lib/db";
 import { conversations, channelMeta, patients as mockPatients, type Channel, type Message, type Patient } from "@/lib/mock-data";
 
@@ -99,6 +101,8 @@ export default function InboxPage() {
   const [activeId, setActiveId] = useState<string>("");
   const userPicked = useRef(false);
   const [draft, setDraft] = useState("");
+  const [tplOpen, setTplOpen] = useState(false);
+  const [templates, setTemplates] = useState<WaTemplate[]>([]);
   const [sending, setSending] = useState(false);
 
   // demo state
@@ -149,6 +153,7 @@ export default function InboxPage() {
 
   useEffect(() => {
     fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "chat")));
+    fetchWaTemplates().then((r) => setTemplates(r.templates.filter((t) => t.status === "Approved")));
     fetchAssignments().then(setDemoAssignments);
     fetchChannelDefaults().then(setChannelDefaults);
     fetchTeamMembers().then(setTeam);
@@ -646,7 +651,26 @@ export default function InboxPage() {
             <Link href="/dashboard/agents/voice" className="text-xs text-ink-400 hover:text-brand-600">+ Create your own voice</Link>
           </div>
           <div className="flex items-end gap-2">
-            <button onClick={() => toast("Template picker opens here — choose an approved WhatsApp/Email template.", "info")} title="Insert a template" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><FileText className="h-5 w-5" /></button>
+            <div className="relative">
+              <button onClick={() => setTplOpen((v) => !v)} title="Insert a template" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><FileText className="h-5 w-5" /></button>
+              {tplOpen && (
+                <div className="absolute bottom-full left-0 z-20 mb-2 w-72 rounded-xl border border-ink-200 bg-surface p-2 shadow-lg">
+                  <p className="px-2 py-1 text-xs font-semibold text-ink-500">Approved templates</p>
+                  {templates.length === 0 ? (
+                    <p className="px-2 py-3 text-xs text-ink-400">No approved templates. Create one in WhatsApp → Templates.</p>
+                  ) : (
+                    <div className="max-h-64 space-y-1 overflow-y-auto">
+                      {templates.map((t) => (
+                        <button key={t.id} onClick={() => { setDraft((d) => (d ? `${d} ${t.body}` : t.body)); setTplOpen(false); }} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-ink-50">
+                          <span className="block font-mono text-xs font-semibold text-ink-800">{t.name}</span>
+                          <span className="block truncate text-[11px] text-ink-400">{t.body}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             <textarea value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} rows={2} placeholder={`Reply on ${channelMeta[active.channel].label}…`} className="flex-1 resize-none rounded-xl border border-ink-200 bg-surface px-3.5 py-2.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400" />
             <button onClick={aiReply} disabled={aiBusy} title={assignedAgent ? `Let ${assignedAgent.name} reply` : "Let the AI agent reply"} className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-3 py-2.5 text-sm font-medium text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:text-brand-300"><Sparkles className={`h-5 w-5 ${aiBusy ? "animate-pulse" : ""}`} /> {aiBusy ? "Thinking…" : "AI reply"}</button>
             <button onClick={send} disabled={sending} className="rounded-xl bg-brand-600 p-2.5 text-white hover:bg-brand-700 disabled:opacity-50"><Send className="h-5 w-5" /></button>
