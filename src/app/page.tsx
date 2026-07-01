@@ -557,9 +557,24 @@ export default function Home() {
                   <li>Twilio · Retell AI · Stripe</li>
                 </ul>
               </div>
+              <div>
+                <p className="font-semibold text-white">Legal</p>
+                <ul className="mt-3 space-y-2 text-slate-500">
+                  <li><Link href="/privacy" className="hover:text-white">Privacy Policy</Link></li>
+                  <li><Link href="/terms" className="hover:text-white">Terms of Service</Link></li>
+                  <li><Link href="/data-deletion" className="hover:text-white">Data Deletion</Link></li>
+                </ul>
+              </div>
             </div>
           </div>
-          <p className="pb-6 text-xs text-slate-600">© 2026 Pydent. All rights reserved.</p>
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-6">
+            <p className="text-xs text-slate-600">© 2026 Pydent. All rights reserved.</p>
+            <div className="flex gap-4 text-xs text-slate-500">
+              <Link href="/privacy" className="hover:text-white">Privacy</Link>
+              <Link href="/terms" className="hover:text-white">Terms</Link>
+              <Link href="/data-deletion" className="hover:text-white">Data Deletion</Link>
+            </div>
+          </div>
         </div>
         <div
           aria-hidden
