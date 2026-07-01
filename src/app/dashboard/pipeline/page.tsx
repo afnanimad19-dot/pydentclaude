@@ -15,8 +15,13 @@ import {
   setWaLifecycle,
   assignWaAgent,
   setWaStatus,
+  fetchPipelineDeals,
+  createPipelineDeal,
+  updatePipelineDeal,
+  deletePipelineDeal,
   type AiAgent,
   type WaConversation,
+  type PipelineDealRecord,
 } from "@/lib/db";
 import { pipeline as initialPipeline, type PipelineStage, type Deal } from "@/lib/mock-data";
 
@@ -34,10 +39,13 @@ export default function PipelinePage() {
   const [stageAgents, setStageAgents] = useState<Record<string, string>>({});
   // Live WhatsApp leads, placed by their lifecycle stage.
   const [liveLeads, setLiveLeads] = useState<WaConversation[]>([]);
+  // Manually-added deals, now PERSISTED (were session-only before).
+  const [dbDeals, setDbDeals] = useState<PipelineDealRecord[]>([]);
 
   const loadLeads = useCallback(() => { fetchWaConversations().then(setLiveLeads); }, []);
   useEffect(() => {
     loadLeads();
+    fetchPipelineDeals().then(setDbDeals);
     const t = setInterval(loadLeads, 10000);
     return () => clearInterval(t);
   }, [loadLeads]);
@@ -79,9 +87,12 @@ export default function PipelinePage() {
       daysInStage: 0,
     };
   }
-  // Demo deals (local) + live WhatsApp leads matched to this stage by name.
+  function dbDealToDeal(d: PipelineDealRecord): Deal {
+    return { id: d.id, patientName: d.patientName, treatment: d.treatment, value: d.value, source: d.source as Deal["source"], owner: d.owner, daysInStage: 0 };
+  }
+  // Persisted manual deals + live WhatsApp leads, matched to this stage by name.
   function dealsForStage(stage: PipelineStage): Deal[] {
-    return [...liveLeads.filter((l) => l.lifecycle === stage.name).map(liveAsDeal), ...stage.deals];
+    return [...liveLeads.filter((l) => l.lifecycle === stage.name).map(liveAsDeal), ...dbDeals.filter((d) => d.stageName === stage.name).map(dbDealToDeal)];
   }
 
   const allDeals = stages.flatMap((s) => dealsForStage(s));
@@ -99,15 +110,18 @@ export default function PipelinePage() {
     await enrollFollowUp(dealId, followUpAgent.id, patientName);
   }
 
-  function addDeal(deal: Omit<Deal, "id" | "daysInStage">, stageId: string) {
+  async function addDeal(deal: Omit<Deal, "id" | "daysInStage">, stageId: string) {
+    const stage = stages.find((s) => s.id === stageId);
+    if (!stage) return;
     const owner = agentLabel(stageAgents[stageId]) ?? deal.owner;
-    setStages((prev) =>
-      prev.map((s) =>
-        s.id === stageId
-          ? { ...s, deals: [{ ...deal, owner, id: `local-${Date.now()}`, daysInStage: 0 }, ...s.deals] }
-          : s
-      )
-    );
+    const res = await createPipelineDeal({ patientName: deal.patientName, treatment: deal.treatment, value: deal.value ?? 0, source: deal.source, owner, stageName: stage.name });
+    if (res.ok && res.id) setDbDeals((prev) => [{ id: res.id!, patientName: deal.patientName, treatment: deal.treatment, value: deal.value ?? 0, source: deal.source, owner, stageName: stage.name }, ...prev]);
+    else toast(res.message, "info");
+  }
+
+  function deleteDeal(dealId: string) {
+    setDbDeals((prev) => prev.filter((d) => d.id !== dealId));
+    deletePipelineDeal(dealId);
   }
 
   function moveDeal(dealId: string, toStageId: string) {
@@ -127,18 +141,12 @@ export default function PipelinePage() {
       return;
     }
 
-    setStages((prev) => {
-      let moved: Deal | undefined;
-      const without = prev.map((s) => {
-        const found = s.deals.find((d) => d.id === dealId);
-        if (found) moved = found;
-        return { ...s, deals: s.deals.filter((d) => d.id !== dealId) };
-      });
-      if (!moved) return prev;
-      // Entering a stage hands the deal to that stage's agent (if one is set).
-      const owner = agentLabel(stageAgents[toStageId]) ?? moved.owner;
-      return without.map((s) => (s.id === toStageId ? { ...s, deals: [{ ...moved!, owner, daysInStage: 0 }, ...s.deals] } : s));
-    });
+    // Persisted manual deal → move it to the target stage (by name) + persist.
+    if (dbDeals.some((d) => d.id === dealId)) {
+      const owner = agentLabel(stageAgents[toStageId]) ?? dbDeals.find((d) => d.id === dealId)!.owner;
+      setDbDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, stageName: toStage.name, owner } : d)));
+      updatePipelineDeal(dealId, { stageName: toStage.name, owner });
+    }
   }
 
   // Reassign every deal currently in a stage when its agent changes.
@@ -146,14 +154,21 @@ export default function PipelinePage() {
     setStageAgents((prev) => ({ ...prev, [stageId]: agentId }));
     setStageAgentDb(stageId, agentId || null);
     const owner = agentLabel(agentId);
-    if (!owner) return;
-    setStages((prev) =>
-      prev.map((s) => (s.id === stageId ? { ...s, deals: s.deals.map((d) => ({ ...d, owner })) } : s))
-    );
+    const stageName = stages.find((s) => s.id === stageId)?.name;
+    if (!owner || !stageName) return;
+    setDbDeals((prev) => prev.map((d) => (d.stageName === stageName ? { ...d, owner } : d)));
+    dbDeals.filter((d) => d.stageName === stageName).forEach((d) => updatePipelineDeal(d.id, { owner }));
   }
 
   function renameStage(id: string) {
-    setStages((prev) => prev.map((s) => (s.id === id ? { ...s, name: renameText || s.name } : s)));
+    const stage = stages.find((s) => s.id === id);
+    const newName = renameText || stage?.name || "";
+    if (stage && newName && newName !== stage.name) {
+      // Re-point this stage's persisted deals (keyed by stage name) to the new name.
+      setDbDeals((prev) => prev.map((d) => (d.stageName === stage.name ? { ...d, stageName: newName } : d)));
+      dbDeals.filter((d) => d.stageName === stage.name).forEach((d) => updatePipelineDeal(d.id, { stageName: newName }));
+    }
+    setStages((prev) => prev.map((s) => (s.id === id ? { ...s, name: newName || s.name } : s)));
     setRenaming(null);
   }
 
@@ -296,6 +311,9 @@ export default function PipelinePage() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-sm font-semibold text-ink-900">{deal.patientName}</p>
+                      {dbDeals.some((d) => d.id === deal.id) && (
+                        <button onClick={() => deleteDeal(deal.id)} className="rounded p-0.5 text-ink-300 hover:text-rose-500" title="Delete deal"><Trash2 className="h-3.5 w-3.5" /></button>
+                      )}
                     </div>
                     <p className="mt-1 text-xs text-ink-500">{deal.treatment}</p>
                     <div className="mt-3 flex items-center justify-between">

@@ -2218,6 +2218,46 @@ export interface ClinicSettings {
   displayName: string;
 }
 
+// -------------------------------------------------------- pipeline deals (0049)
+export interface PipelineDealRecord {
+  id: string;
+  patientName: string;
+  treatment: string;
+  value: number;
+  source: string;
+  owner: string;
+  stageName: string;
+}
+
+export async function fetchPipelineDeals(): Promise<PipelineDealRecord[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("pipeline_deals").select("*").eq("workspace_id", ws).order("created_at", { ascending: false });
+    return (data ?? []).map((r) => ({ id: r.id, patientName: r.patient_name ?? "", treatment: r.treatment ?? "", value: Number(r.value ?? 0), source: r.source ?? "manual", owner: r.owner ?? "", stageName: r.stage_name ?? "New Lead" }));
+  } catch {
+    return [];
+  }
+}
+
+export async function createPipelineDeal(input: { patientName: string; treatment: string; value: number; source: string; owner: string; stageName: string }): Promise<{ ok: boolean; id?: string; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const { data, error } = await supabase.from("pipeline_deals").insert({ workspace_id: ws, patient_name: input.patientName, treatment: input.treatment, value: input.value, source: input.source, owner: input.owner, stage_name: input.stageName }).select("id").single();
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, id: data?.id, message: "Deal added." };
+}
+
+export async function updatePipelineDeal(id: string, patch: { stageName?: string; owner?: string }): Promise<void> {
+  const row: Record<string, unknown> = {};
+  if (patch.stageName !== undefined) row.stage_name = patch.stageName;
+  if (patch.owner !== undefined) row.owner = patch.owner;
+  try { await supabase.from("pipeline_deals").update(row).eq("id", id); } catch { /* demo */ }
+}
+
+export async function deletePipelineDeal(id: string): Promise<void> {
+  try { await supabase.from("pipeline_deals").delete().eq("id", id); } catch { /* demo */ }
+}
+
 // ------------------------------------------------- native email/SMS broadcasts
 export interface MessageBroadcast {
   id: string;
