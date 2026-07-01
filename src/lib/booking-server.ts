@@ -4,7 +4,7 @@
 // Open Dental when connected, and records the patient's details, the fee, and
 // where the booking came from (which agent / channel).
 
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getOdConfig, odForward } from "@/lib/opendental-gateway";
 import { triggerWorkflows } from "@/lib/workflow-runner";
 import { pushToGoogleCalendar } from "@/lib/google-api";

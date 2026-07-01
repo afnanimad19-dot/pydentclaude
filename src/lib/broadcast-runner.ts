@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getWaCredentialsFull, sendWhatsAppTemplate } from "@/lib/wa-send";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -46,6 +46,7 @@ export async function runBroadcast(broadcastId: string): Promise<{ ok: boolean; 
     else failed++;
     await supabase.from("wa_broadcast_recipients").insert({
       broadcast_id: broadcastId,
+      workspace_id: b.workspace_id ?? null,
       patient_id: p.id,
       phone,
       name: p.name ?? "",

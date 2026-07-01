@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { generateAgentReply, generateAgentReplyWithTools } from "@/lib/agent-reply";
 import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPageId } from "@/lib/wa-send";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
@@ -302,7 +302,7 @@ async function storeInbound(
 
   // Insert the inbound message. If Meta retried (duplicate message id), the unique
   // index rejects it — abort so we don't reply twice.
-  const { error: inboundErr } = await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "inbound", author: name, body, wa_message_id: mid });
+  const { error: inboundErr } = await supabase.from("wa_messages").insert({ workspace_id: ws, conversation_id: conversationId, direction: "inbound", author: name, body, wa_message_id: mid });
   if (inboundErr && mid) {
     await logEvent(`Duplicate inbound from ${name} ignored (Meta retry).`);
     return;
@@ -432,6 +432,7 @@ async function storeInbound(
     return;
   }
   await supabase.from("wa_messages").insert({
+    workspace_id: ws,
     conversation_id: conversationId,
     direction: "outbound",
     author: `${agent.name} (AI)`,

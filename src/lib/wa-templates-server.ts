@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getWaCredentialsFull, graphUrl } from "@/lib/wa-send";
 
 // Maps the friendly language names used in the template builder to Meta's

@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 
 // Server-side gateway to a clinic's LOCAL Open Dental middleware. This never
 // touches Open Dental directly and never stores clinical data — it validates and

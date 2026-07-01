@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { generateAgentReply, generateAgentReplyWithTools } from "@/lib/agent-reply";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
 import { sendSms } from "@/lib/sms-send";
@@ -70,7 +70,7 @@ async function autoReply(ws: string, conversationId: string, from: string, name:
   const sent = await sendSms({ to: from, body: result.reply, ws });
   if (!sent.startsWith("SMS sent")) return; // don't store an undelivered reply
 
-  await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "outbound", author: `${agent.name} (AI)`, body: result.reply });
+  await supabase.from("wa_messages").insert({ workspace_id: ws, conversation_id: conversationId, direction: "outbound", author: `${agent.name} (AI)`, body: result.reply });
   await supabase.from("wa_conversations").update({ last_message: result.reply, last_time: new Date().toISOString() }).eq("id", conversationId);
 }
 
@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
       conversationId = c?.id;
     }
     if (conversationId) {
-      await supabase.from("wa_messages").insert({ conversation_id: conversationId, direction: "inbound", author: from, body, wa_message_id: mid });
+      await supabase.from("wa_messages").insert({ workspace_id: ws, conversation_id: conversationId, direction: "inbound", author: from, body, wa_message_id: mid });
       // Auto-reply with the SMS agent (best-effort — never block the 200 to Twilio).
       if (ws) { try { await autoReply(ws, conversationId, from, from, patientId); } catch { /* ignore */ } }
     }

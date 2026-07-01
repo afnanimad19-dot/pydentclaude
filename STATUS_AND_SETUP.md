@@ -177,13 +177,19 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
   Brevo-list campaigns — it uses YOUR folders, no external list needed.
 - ✅ **Reports** — a date-range Performance card: booked / completed / **production (completed fees)** /
   **no-show rate** for the chosen range (was a fixed today-onward snapshot).
-- ✅ **Inbox** — conversation **search** box (filters the list by name/preview).
+- ✅ **Inbox** — conversation **search** box (filters the list by name/preview) **and a template
+  picker** (insert an Approved WhatsApp template into the reply draft).
 - ✅ **Clinical** — the **Statement** button now prints a real account statement (was a placeholder).
+- ✅ **SMS auto-reply** — inbound Twilio texts now get an AI reply from the SMS agent (bookings,
+  reschedule, cancel included), exactly like WhatsApp. Lands in the Omnichannel Inbox.
+- ✅ **Pipeline persistence** — manually-added deals now save to a `pipeline_deals` table (were
+  session-only and reset on reload). Live WhatsApp leads still show alongside them.
+- ✅ **Strict workspace RLS** — every data table is now scoped by `workspace_id = current_workspace()`
+  (was wide-open `using (true)`). Each clinic only ever reads its own rows. Server webhooks/cron use
+  the service-role client so they still work. **⚠️ Apply order matters — see §5 note below.**
 
 ### Still partial (honest remaining gaps)
-- **Inbox**: the "insert template" picker and archive/delete aren't built yet (search is now done).
-- **Pipeline**: manually-added deals/stages are still **session-only** (live WhatsApp leads persist;
-  manual cards reset on reload). Needs a `pipeline_deals`/`pipeline_stages` table.
+- **Inbox**: **archive/delete** a conversation isn't built yet (search + template picker are done).
 - **Clinical**: ledger/claim **delete** primitives exist in the data layer (`deleteClaim`,
   `deleteLedgerAdjustment`) but the per-row delete buttons aren't wired into the UI yet.
 - **A few advanced voice VAD micro-params** are saved but Vapi only applies the subset it exposes
@@ -196,13 +202,21 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 ## 5. ❌ Not built yet (remaining roadmap)
 
 1. **Open Dental local connector** (the on-prem app) + live test — see §8. _Doing this last on purpose._
-2. **SMS auto-reply** (AI answers inbound texts like it does WhatsApp).
-3. **Inbox template picker / search / archive**, **pipeline persistence**, **richer reports**,
-   **clinical ledger edit-delete** (the §4 "still partial" items).
-4. **Connectors:** X/Twitter (PKCE), Shopify (shop domain), TikTok Ads, Stripe Connect, Notion — catalog cards only.
-5. **Billing / credits / Admin panel / packages-entitlements** (lock features per plan) — _deliberately last._
-6. **Video generation** (MuAPI/Higgsfield).
-7. **Strict RLS hardening** (isolation is app-level today).
+2. **Inbox archive/delete** a conversation, **clinical ledger edit-delete buttons** (the §4 "still
+   partial" items — the data-layer primitives exist, just the buttons remain).
+3. **Connectors:** X/Twitter (PKCE), Shopify (shop domain), TikTok Ads, Stripe Connect, Notion — catalog cards only.
+4. **Billing / credits / Admin panel / packages-entitlements** (lock features per plan) — _deliberately last._
+5. **Video generation** (MuAPI/Higgsfield).
+
+> **⚠️ Strict RLS apply order (migration `0050_workspace_rls.sql`).** This migration tightens every
+> table from open access to `workspace_id = current_workspace()`. Server code (webhooks, cron,
+> broadcast runners, Open Dental gateway, booking) now uses the **service-role** client, which
+> bypasses RLS. That client needs **`SUPABASE_SERVICE_ROLE_KEY`** set in the deployment env — if it
+> isn't, it falls back to the anon key, and once RLS is on, inbound SMS/WhatsApp/voice webhooks (which
+> have no logged-in user, so `current_workspace()` is NULL) would be **blocked**. So the order is:
+> **(1) set `SUPABASE_SERVICE_ROLE_KEY` in Netlify → (2) then run migration `0050`.** The migration
+> also backfills any child rows (messages, broadcast recipients) that had a NULL `workspace_id` from
+> their parent, so existing inbox/broadcast history stays visible.
 
 ---
 

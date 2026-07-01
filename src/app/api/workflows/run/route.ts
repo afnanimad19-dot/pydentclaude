@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { startRun } from "@/lib/workflow-runner";
 
 // Manually start a workflow run (a "test run" from the builder/list). Body:

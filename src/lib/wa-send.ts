@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 
 // Sends a plain-text WhatsApp message via the Meta Cloud API, using the
 // credentials the clinic saved on Settings → WhatsApp config.
