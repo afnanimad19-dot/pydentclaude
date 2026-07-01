@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Users, CalendarClock, UserPlus, CalendarCheck2, Download } from "lucide-react";
+import { Users, CalendarClock, UserPlus, CalendarCheck2, Download, DollarSign, CalendarX } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatCard, StatusBadge } from "@/components/ui";
 import { fetchPatients, fetchAppointments, type DataSource } from "@/lib/db";
 import { patients as mockPatients, appointments as mockAppointments, type Patient, type Appointment } from "@/lib/mock-data";
@@ -29,6 +29,9 @@ export default function ReportsPage() {
     const now = Date.now();
     return { today: new Date(now).toISOString().slice(0, 10), in7: new Date(now + 7 * 86400000).toISOString().slice(0, 10) };
   });
+  // Reporting date range — defaults to the last 30 days.
+  const [from, setFrom] = useState(() => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10));
+  const [to, setTo] = useState(today);
 
   useEffect(() => {
     fetchPatients().then((r) => { setPatients(r.patients); setSource(r.source); });
@@ -41,6 +44,14 @@ export default function ReportsPage() {
   );
   const thisWeek = upcoming.filter((a) => a.date <= in7);
   const newPatients = patients.filter((p) => p.status === "New").length;
+
+  // Range metrics — bookings, production (completed fees), and no-show/broken rate.
+  const broken = new Set(["Broken", "Cancelled", "No-show", "Failed"]);
+  const inRange = useMemo(() => appointments.filter((a) => a.date >= from && a.date <= to), [appointments, from, to]);
+  const completed = inRange.filter((a) => a.status === "Completed");
+  const brokenInRange = inRange.filter((a) => broken.has(String(a.status)));
+  const production = completed.reduce((n, a) => n + Number(a.fee ?? 0), 0);
+  const noShowRate = inRange.length ? Math.round((brokenInRange.length / inRange.length) * 100) : 0;
 
   function exportAppointments() {
     const rows: (string | number)[][] = [["Patient", "Service", "Date", "Time", "Provider", "Status"]];
@@ -85,6 +96,24 @@ export default function ReportsPage() {
         <StatCard icon={CalendarClock} label="Upcoming appointments" value={String(upcoming.length)} hint="today onward" accent="violet" />
         <StatCard icon={CalendarCheck2} label="Coming this week" value={String(thisWeek.length)} hint="next 7 days" accent="amber" />
       </div>
+
+      {/* Date-range analytics */}
+      <Card className="mt-6 p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-semibold text-ink-900">Performance</h2>
+          <div className="flex items-center gap-2 text-sm">
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-ink-700 outline-none" />
+            <span className="text-ink-400">→</span>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-ink-700 outline-none" />
+          </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard icon={CalendarCheck2} label="Booked (range)" value={String(inRange.length)} hint={`${from} → ${to}`} accent="brand" />
+          <StatCard icon={CalendarCheck2} label="Completed" value={String(completed.length)} hint="in range" accent="green" />
+          <StatCard icon={DollarSign} label="Production" value={production.toLocaleString()} hint="completed fees" accent="violet" />
+          <StatCard icon={CalendarX} label="No-show / broken" value={`${noShowRate}%`} hint={`${brokenInRange.length} of ${inRange.length}`} accent="amber" />
+        </div>
+      </Card>
 
       <Card className="mt-6 p-5">
         <h2 className="mb-1 font-semibold text-ink-900">Upcoming appointments</h2>

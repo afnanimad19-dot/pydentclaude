@@ -1095,6 +1095,14 @@ export async function updateClaimStatus(id: string, status: ClaimRecord["status"
   }
 }
 
+export async function deleteClaim(id: string): Promise<void> {
+  try { await supabase.from("insurance_claims").delete().eq("id", id); } catch { /* demo */ }
+}
+
+export async function deleteLedgerAdjustment(id: string): Promise<void> {
+  try { await supabase.from("ledger_adjustments").delete().eq("id", id); } catch { /* demo */ }
+}
+
 export interface PrescriptionRecord {
   id: string;
   drug: string;

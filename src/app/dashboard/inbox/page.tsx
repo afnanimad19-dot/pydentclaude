@@ -92,6 +92,7 @@ function seedDemoLifecycle(): Record<string, string> {
 
 export default function InboxPage() {
   const [channel, setChannel] = useState<Channel | "all">("all");
+  const [query, setQuery] = useState("");
   const [view, setView] = useState<"all" | "mine" | "unassigned">("all");
   const [lifecycleFilter, setLifecycleFilter] = useState<string | null>(null);
   const [unrepliedOnly, setUnrepliedOnly] = useState(false);
@@ -238,12 +239,14 @@ export default function InboxPage() {
     return demoUnreplied(u.id, c.messages);
   };
 
+  const q = query.trim().toLowerCase();
   const list = unified.filter((u) => {
     if (channel !== "all" && u.channel !== channel) return false;
     if (view === "mine" && !isMine(u)) return false;
     if (view === "unassigned" && !isUnassigned(u)) return false;
     if (lifecycleFilter && u.lifecycle !== lifecycleFilter) return false;
     if (unrepliedOnly && !unreplied(u)) return false;
+    if (q && !`${u.name} ${u.preview}`.toLowerCase().includes(q)) return false;
     return true;
   });
 
@@ -500,6 +503,9 @@ export default function InboxPage() {
           {CHANNEL_TABS.map((t) => (
             <button key={t.key} onClick={() => setChannel(t.key)} className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${channel === t.key ? "bg-brand-600 text-white" : "text-ink-500 hover:bg-ink-100"}`}>{t.label}</button>
           ))}
+        </div>
+        <div className="border-b border-ink-100 px-2 py-2">
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search conversations…" className="w-full rounded-lg border border-ink-200 bg-surface px-3 py-1.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400" />
         </div>
         <div className="flex items-center justify-between border-b border-ink-100 px-3 py-2 text-xs text-ink-500">
           <span className="flex items-center gap-1 font-medium">Open, newest <ChevronDown className="h-3 w-3" /></span>

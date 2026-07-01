@@ -271,7 +271,15 @@ export function LedgerCard({ patientName, ledger, balance, onAddAdjustment }: { 
             <button onClick={() => setAdjustModal(true)} className="flex items-center gap-2 rounded-xl border border-ink-200 px-3.5 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50">
               <Plus className="h-4 w-4" /> Adjustment
             </button>
-            <button onClick={() => toast(`Statement for ${patientName} queued — it emails/prints once billing delivery is connected.`, "info")} className="flex items-center gap-2 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+            <button
+              onClick={() => {
+                const rows = ledger.map((r) => `<tr><td>${r.date}</td><td>${r.description}</td><td class="r">${r.charge ? formatMoney(r.charge) : ""}</td><td class="r">${r.credit ? formatMoney(r.credit) : ""}</td><td class="r">${formatMoney(r.balance)}</td></tr>`).join("");
+                const html = `<!doctype html><meta charset="utf-8"><title>Statement — ${patientName}</title><style>body{font-family:system-ui,Arial,sans-serif;padding:32px;color:#111}h1{font-size:20px;margin:0}p{color:#555}table{width:100%;border-collapse:collapse;margin-top:16px;font-size:13px}th,td{border-bottom:1px solid #ddd;padding:8px;text-align:left}.r{text-align:right}.bal{margin-top:16px;font-size:15px;font-weight:700}</style><h1>Account statement</h1><p>${patientName} · ${new Date().toLocaleDateString()}</p><table><thead><tr><th>Date</th><th>Description</th><th class="r">Charge</th><th class="r">Payment</th><th class="r">Balance</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No ledger activity.</td></tr>'}</tbody></table><p class="bal">Balance due: ${formatMoney(balance)}</p><script>window.onload=function(){window.print()}</script>`;
+                const w = window.open("", "_blank", "width=820,height=920");
+                if (w) { w.document.write(html); w.document.close(); } else { toast("Allow pop-ups to print the statement.", "info"); }
+              }}
+              className="flex items-center gap-2 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
               <Receipt className="h-4 w-4" /> Statement
             </button>
           </div>
