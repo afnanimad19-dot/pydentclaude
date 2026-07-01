@@ -148,8 +148,19 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 
 ## 4. Recently completed (was "built but not wired" — now ✅ done)
 
-> Everything in the previous version of this list has been wired. Kept here so you can see
-> what changed.
+> **Session of 2026-07-01 — done today:**
+> - ✅ Fixed 4 reported bugs (new account seeing old data, number "connected" but not on Vapi,
+>   agent edits not syncing to Vapi, voice agent repeating "one moment"/talking over itself).
+> - ✅ Dedicated Twilio "Add Phone Number" form matching Vapi's importer (country picker, Account
+>   SID, Auth Token, Label, SMS toggle) — connects to Vapi + assigns the agent.
+> - ✅ Native Email + SMS broadcasts to your own contact folders (send now or schedule).
+> - ✅ Reports date-range Performance card; Inbox search + template picker; Clinical statement print.
+> - ✅ Pipeline persistence (manual deals now saved to a table, no longer reset on reload).
+> - ✅ SMS auto-reply (AI answers inbound texts like WhatsApp — bookings included).
+> - ✅ **Strict workspace RLS** — every table scoped to `workspace_id = current_workspace()`;
+>   added a server-only service-role client so webhooks/cron keep working. (See §5 apply-order note.)
+>
+> Everything in the list below has been wired. Kept here so you can see what changed.
 
 1. ✅ **Phone-number → Vapi** — saving a number with an agent registers it on Vapi and attaches
    the assistant (Twilio direct; SIP/Ziwo/Maqsam/Go Auto Dial/Vocalcom via BYO SIP trunk). Plus a
