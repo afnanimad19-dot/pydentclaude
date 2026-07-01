@@ -2210,6 +2210,43 @@ export interface ClinicSettings {
   displayName: string;
 }
 
+// ------------------------------------------------- native email/SMS broadcasts
+export interface MessageBroadcast {
+  id: string;
+  name: string;
+  channel: "email" | "sms";
+  folderId: string | null;
+  folderName: string;
+  subject: string;
+  status: "Draft" | "Scheduled" | "Sending" | "Sent" | "Failed";
+  scheduledFor: string | null;
+  recipients: number;
+  sent: number;
+  failed: number;
+  sentAt: string | null;
+  createdAt: string;
+}
+
+export async function fetchMessageBroadcasts(channel: "email" | "sms"): Promise<MessageBroadcast[]> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("message_broadcasts").select("*").eq("workspace_id", ws).eq("channel", channel).order("created_at", { ascending: false }).limit(50);
+    return (data ?? []).map((r) => ({
+      id: r.id, name: r.name ?? "", channel: r.channel, folderId: r.folder_id ?? null, folderName: r.folder_name ?? "",
+      subject: r.subject ?? "", status: r.status, scheduledFor: r.scheduled_for ?? null,
+      recipients: r.recipients ?? 0, sent: r.sent ?? 0, failed: r.failed ?? 0, sentAt: r.sent_at ?? null, createdAt: r.created_at,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function deleteMessageBroadcast(id: string): Promise<{ ok: boolean; message: string }> {
+  const { error } = await supabase.from("message_broadcasts").delete().eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Broadcast deleted." };
+}
+
 // ------------------------------------------------------------------- tags
 export interface ClinicTag { id: string; name: string; color: string }
 

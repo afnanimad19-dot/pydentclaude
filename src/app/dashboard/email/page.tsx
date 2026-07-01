@@ -7,6 +7,7 @@ import { Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { getWorkspaceId } from "@/lib/db";
 import { MarketingCampaigns } from "@/components/dashboard/marketing-campaigns";
+import { NativeBroadcast } from "@/components/dashboard/native-broadcast";
 
 export default function EmailPage() {
   const [ws, setWs] = useState<string | null>(null);
@@ -73,6 +74,9 @@ export default function EmailPage() {
         </Card>
       </div>
 
+      <div className="mt-6">
+        <NativeBroadcast channel="email" ws={ws} />
+      </div>
       <div className="mt-6">
         <MarketingCampaigns type="email" ws={ws} />
       </div>

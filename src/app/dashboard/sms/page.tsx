@@ -7,6 +7,7 @@ import { Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { getWorkspaceId } from "@/lib/db";
 import { MarketingCampaigns } from "@/components/dashboard/marketing-campaigns";
+import { NativeBroadcast } from "@/components/dashboard/native-broadcast";
 
 // Quick-start texts the front desk can drop into the composer.
 const QUICK = [
@@ -80,6 +81,9 @@ export default function SmsPage() {
         </Card>
       </div>
 
+      <div className="mt-6">
+        <NativeBroadcast channel="sms" ws={ws} />
+      </div>
       <div className="mt-6">
         <MarketingCampaigns type="sms" ws={ws} />
       </div>
