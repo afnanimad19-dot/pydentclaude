@@ -170,14 +170,26 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
    Phone Numbers, Templates, Calendar (confirm/reschedule/cancel); removed fake "for-show" buttons
    (WhatsApp demo campaign, fake "Published", dead billing button); profile name + tags persist.
 
+### Recently wired (were "still partial")
+- ✅ **Native Email + SMS broadcasts to your own contact lists** — send an email/SMS to a whole
+  contact folder from the Email/SMS pages (send now or schedule), through the clinic's connected
+  Gmail/Brevo (email) or Twilio (SMS); per-recipient results + overview. This is separate from the
+  Brevo-list campaigns — it uses YOUR folders, no external list needed.
+- ✅ **Reports** — a date-range Performance card: booked / completed / **production (completed fees)** /
+  **no-show rate** for the chosen range (was a fixed today-onward snapshot).
+- ✅ **Inbox** — conversation **search** box (filters the list by name/preview).
+- ✅ **Clinical** — the **Statement** button now prints a real account statement (was a placeholder).
+
 ### Still partial (honest remaining gaps)
-- **Inbox**: the "insert template" picker, conversation search, and archive/delete are not built yet.
+- **Inbox**: the "insert template" picker and archive/delete aren't built yet (search is now done).
 - **Pipeline**: manually-added deals/stages are still **session-only** (live WhatsApp leads persist;
-  manual cards reset on reload).
-- **Reports page**: real patient/appointment numbers, but no custom date-range or revenue/no-show charts.
-- **Clinical**: statement button is a placeholder; ledger/claim rows can't be edited/deleted yet.
-- **A few advanced voice VAD micro-params** are saved but Vapi only applies the subset it exposes.
-- **Mailchimp campaign send** (Brevo covers email + SMS campaigns today).
+  manual cards reset on reload). Needs a `pipeline_deals`/`pipeline_stages` table.
+- **Clinical**: ledger/claim **delete** primitives exist in the data layer (`deleteClaim`,
+  `deleteLedgerAdjustment`) but the per-row delete buttons aren't wired into the UI yet.
+- **A few advanced voice VAD micro-params** are saved but Vapi only applies the subset it exposes
+  (a Vapi product limit, not our code).
+- **Mailchimp campaign send** — Brevo covers email + SMS campaigns, and the **native broadcast**
+  above covers send-to-your-own-list, so Mailchimp is optional; its key is stored but not consumed.
 
 ---
 
