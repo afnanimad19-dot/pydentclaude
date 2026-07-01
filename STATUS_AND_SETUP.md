@@ -159,6 +159,9 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 > - ✅ SMS auto-reply (AI answers inbound texts like WhatsApp — bookings included).
 > - ✅ **Strict workspace RLS** — every table scoped to `workspace_id = current_workspace()`;
 >   added a server-only service-role client so webhooks/cron keep working. (See §5 apply-order note.)
+> - ✅ **Inbox archive/delete** + **clinical claim/adjustment delete buttons** (the last honest gaps).
+> - ✅ **Billing / credits / top-up now functional without Stripe** — plans credit minutes, calls
+>   deduct them, auto-recharge tops up. Stripe is only the future payment step. (See §5 billing box.)
 >
 > Everything in the list below has been wired. Kept here so you can see what changed.
 
@@ -198,11 +201,16 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 - ✅ **Strict workspace RLS** — every data table is now scoped by `workspace_id = current_workspace()`
   (was wide-open `using (true)`). Each clinic only ever reads its own rows. Server webhooks/cron use
   the service-role client so they still work. **⚠️ Apply order matters — see §5 note below.**
+- ✅ **Inbox archive / delete** — each conversation now has an actions menu (⋮) to **Archive** (hides
+  it; a new inbound message brings it back) or **Delete** (removes the conversation and its messages).
+- ✅ **Clinical delete buttons** — per-row **delete** on insurance claims and on manual ledger
+  adjustments (wired to `deleteClaim` / `deleteLedgerAdjustment`; DB-backed on live patients).
+- ✅ **Billing / credits / top-up — WORKS NOW without Stripe.** Choosing a plan or buying minutes
+  actually credits the balance and logs an invoice; voice calls **deduct** minutes as they end, and
+  **auto-recharge** tops the balance back up when it runs low. No card is charged yet — Stripe is the
+  future payment step (see §5 "How billing works without Stripe").
 
 ### Still partial (honest remaining gaps)
-- **Inbox**: **archive/delete** a conversation isn't built yet (search + template picker are done).
-- **Clinical**: ledger/claim **delete** primitives exist in the data layer (`deleteClaim`,
-  `deleteLedgerAdjustment`) but the per-row delete buttons aren't wired into the UI yet.
 - **A few advanced voice VAD micro-params** are saved but Vapi only applies the subset it exposes
   (a Vapi product limit, not our code).
 - **Mailchimp campaign send** — Brevo covers email + SMS campaigns, and the **native broadcast**
@@ -213,11 +221,25 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 ## 5. ❌ Not built yet (remaining roadmap)
 
 1. **Open Dental local connector** (the on-prem app) + live test — see §8. _Doing this last on purpose._
-2. **Inbox archive/delete** a conversation, **clinical ledger edit-delete buttons** (the §4 "still
-   partial" items — the data-layer primitives exist, just the buttons remain).
+2. **Stripe payment step** — the billing/credit/top-up engine works now (see box below); Stripe is
+   the future layer that takes the actual card payment before the same crediting runs.
 3. **Connectors:** X/Twitter (PKCE), Shopify (shop domain), TikTok Ads, Stripe Connect, Notion — catalog cards only.
-4. **Billing / credits / Admin panel / packages-entitlements** (lock features per plan) — _deliberately last._
+4. **Admin panel / packages-entitlements** (lock features per plan) — _deliberately last._
 5. **Video generation** (MuAPI/Higgsfield).
+
+> **💳 How billing works without Stripe (what's live today).** The whole minutes economy runs now,
+> Stripe just isn't the payment rail yet:
+> - **Plans** (Starter / Growth / Clinic) — Settings → Billing → *Change plan*. Activating a plan
+>   credits its included minutes immediately and sets the price / concurrency / next-billing date.
+> - **Top-up** — *Add Minutes* credits the balance right away and records an invoice. A banner makes
+>   clear no card is charged yet.
+> - **Consumption** — every voice call, on its end-of-call report, **deducts** its minutes from the
+>   balance (`billing_settings.minutes_balance`).
+> - **Auto-recharge** — when the balance drops below the threshold, it tops back up to the target
+>   automatically (logged as a `manual` invoice, amount 0 until Stripe bills it).
+> - **When Stripe is added:** set `STRIPE_SECRET_KEY`, collect the card via Stripe Elements, and have
+>   the payment webhook call the *same* `addMinutes(qty, { charged: true })` — no rework of the ledger.
+>   Card numbers are never stored by Pydent (only the Stripe customer id + last4 for display).
 
 > **⚠️ Strict RLS apply order (migration `0050_workspace_rls.sql`).** This migration tightens every
 > table from open access to `workspace_id = current_workspace()`. Server code (webhooks, cron,

@@ -24,6 +24,27 @@ async function upsertCall(vapiCallId: string, row: Record<string, any>) {
   }
 }
 
+// Deduct the call's minutes from the clinic's balance, and auto-recharge if the
+// clinic turned that on. No Stripe needed today — the recharge credits minutes
+// (logged as a "manual" invoice); once Stripe is connected it charges the card
+// first. Best-effort: billing must never block the call report.
+async function consumeMinutes(ws: string | null, durationSec: number) {
+  if (!ws || durationSec <= 0) return;
+  try {
+    const { data: b } = await supabase.from("billing_settings").select("minutes_balance, auto_recharge, recharge_below, recharge_to").eq("workspace_id", ws).maybeSingle();
+    if (!b) return;
+    let balance = Math.max(0, Number(b.minutes_balance ?? 0) - durationSec / 60);
+    if (b.auto_recharge && balance < Number(b.recharge_below ?? 0)) {
+      const target = Number(b.recharge_to ?? 0);
+      if (target > balance) {
+        balance = target;
+        await supabase.from("billing_invoices").insert({ workspace_id: ws, description: "Auto-recharge minutes", amount: 0, status: "manual" });
+      }
+    }
+    await supabase.from("billing_settings").update({ minutes_balance: balance, updated_at: new Date().toISOString() }).eq("workspace_id", ws);
+  } catch { /* billing is best-effort */ }
+}
+
 // Best-effort: which campaign does this call belong to? Match by the agent that
 // took the call (prefer an active campaign).
 async function resolveCampaign(ws: string | null, agentId: string | null): Promise<string | null> {
@@ -210,6 +231,7 @@ export async function POST(req: NextRequest) {
         campaign_id: campaignId,
       };
       await upsertCall(callId, row);
+      await consumeMinutes(ctx.ws, duration);
     }
   } catch (e) {
     console.error("vapi webhook error", e);

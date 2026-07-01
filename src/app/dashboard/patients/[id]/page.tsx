@@ -185,7 +185,7 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
       {tab === "chart" && <ToothChartCard toothState={mods.toothState} onCycle={mods.cycleTooth} />}
 
       {tab === "ledger" && (
-        <LedgerCard patientName={patient.name} ledger={mods.ledger} balance={mods.ledgerBalance} onAddAdjustment={mods.addAdjustment} />
+        <LedgerCard patientName={patient.name} ledger={mods.ledger} balance={mods.ledgerBalance} onAddAdjustment={mods.addAdjustment} onDeleteAdjustment={mods.deleteAdjustment} />
       )}
 
       {tab === "claims" && (
@@ -195,6 +195,7 @@ export default function PatientProfilePage({ params }: { params: Promise<{ id: s
           claims={mods.claims}
           onAdvance={mods.advanceClaim}
           onCreate={mods.createClaim}
+          onDelete={mods.deleteClaim}
         />
       )}
 

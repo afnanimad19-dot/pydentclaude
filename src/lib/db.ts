@@ -1296,6 +1296,17 @@ export async function setWaStatus(conversationId: string, status: string): Promi
   }
 }
 
+// Permanently delete a conversation and its messages (from the inbox actions
+// menu). Messages are removed first so no orphans remain.
+export async function deleteWaConversation(conversationId: string): Promise<void> {
+  try {
+    await supabase.from("wa_messages").delete().eq("conversation_id", conversationId);
+    await supabase.from("wa_conversations").delete().eq("id", conversationId);
+  } catch {
+    /* demo */
+  }
+}
+
 export async function fetchWaMessages(conversationId: string): Promise<WaMessage[]> {
   try {
     const { data } = await supabase
@@ -1701,6 +1712,67 @@ export async function saveAutoRecharge(input: { autoRecharge: boolean; rechargeB
   });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Auto-recharge settings saved." };
+}
+
+// Subscription plans. Stripe is NOT required to activate a plan today — choosing
+// one applies the plan and credits its included minutes right away (recorded as a
+// "manual" invoice). When Stripe is connected the payment step runs first and this
+// same crediting happens on the payment webhook.
+export interface Plan {
+  key: string;
+  name: string;
+  monthlyPrice: number;
+  minutesIncluded: number;
+  concurrencyLimit: number;
+  pricePerMinute: number;
+  blurb: string;
+}
+export const PLANS: Plan[] = [
+  { key: "starter", name: "Starter", monthlyPrice: 49, minutesIncluded: 300, concurrencyLimit: 5, pricePerMinute: 0.15, blurb: "Single clinic getting started" },
+  { key: "growth", name: "Growth", monthlyPrice: 149, minutesIncluded: 1200, concurrencyLimit: 15, pricePerMinute: 0.12, blurb: "Busy practice, multiple agents" },
+  { key: "clinic", name: "Clinic", monthlyPrice: 399, minutesIncluded: 4000, concurrencyLimit: 40, pricePerMinute: 0.1, blurb: "High call volume / multi-site" },
+];
+
+// Manually credit calling minutes to the workspace (a "top-up"). Works WITHOUT
+// Stripe: adds the minutes now and logs an invoice for the record. `charged`
+// marks whether money actually moved (true once Stripe is wired in).
+export async function addMinutes(qty: number, opts?: { charged?: boolean }): Promise<{ ok: boolean; message: string; balance?: number }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  if (!Number.isFinite(qty) || qty <= 0) return { ok: false, message: "Enter how many minutes to add." };
+  const { data: cur } = await supabase.from("billing_settings").select("minutes_balance, minutes_included, price_per_minute").eq("workspace_id", ws).maybeSingle();
+  const ppm = Number(cur?.price_per_minute ?? 0.15);
+  const newBalance = Number(cur?.minutes_balance ?? 0) + qty;
+  // Keep "included" at least as large as the balance so the progress bar reads sensibly.
+  const included = Math.max(Number(cur?.minutes_included ?? 0), newBalance);
+  const { error } = await upsertRow("billing_settings", { workspace_id: ws }, { minutes_balance: newBalance, minutes_included: included, updated_at: new Date().toISOString() });
+  if (error) return { ok: false, message: error.message };
+  await supabase.from("billing_invoices").insert({ workspace_id: ws, description: `${qty} calling minutes added`, amount: Number((qty * ppm).toFixed(2)), status: opts?.charged ? "paid" : "manual" });
+  return {
+    ok: true,
+    balance: newBalance,
+    message: opts?.charged ? `${qty} minutes added.` : `${qty} minutes added — no card charged yet (connect Stripe to bill automatically).`,
+  };
+}
+
+// Activate/switch a plan. Credits the plan's included minutes and sets price,
+// concurrency and the next billing date. No Stripe needed to try it today.
+export async function changePlan(planKey: string): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const plan = PLANS.find((p) => p.key === planKey);
+  if (!plan) return { ok: false, message: "Unknown plan." };
+  const { data: cur } = await supabase.from("billing_settings").select("minutes_balance").eq("workspace_id", ws).maybeSingle();
+  const balance = Number(cur?.minutes_balance ?? 0) + plan.minutesIncluded;
+  const nextBilling = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  const { error } = await upsertRow("billing_settings", { workspace_id: ws }, {
+    plan_name: plan.name, monthly_price: plan.monthlyPrice, minutes_included: Math.max(plan.minutesIncluded, balance),
+    minutes_balance: balance, concurrency_limit: plan.concurrencyLimit, price_per_minute: plan.pricePerMinute,
+    next_billing: nextBilling, updated_at: new Date().toISOString(),
+  });
+  if (error) return { ok: false, message: error.message };
+  await supabase.from("billing_invoices").insert({ workspace_id: ws, description: `${plan.name} plan — ${plan.minutesIncluded} minutes`, amount: plan.monthlyPrice, status: "manual" });
+  return { ok: true, message: `Switched to ${plan.name} — ${plan.minutesIncluded} minutes credited. No card charged yet (connect Stripe to bill automatically).` };
 }
 
 // ----------------------------------------------------------- campaigns (0039)

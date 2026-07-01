@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash, FileText, ChevronDown, RefreshCw, ArrowDown, Mic, CalendarCheck2 } from "lucide-react";
+import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash, FileText, ChevronDown, RefreshCw, ArrowDown, Mic, CalendarCheck2, MoreVertical, Archive, Trash2 } from "lucide-react";
 import { Card, ChannelBadge, Avatar, StatusBadge } from "@/components/ui";
 import { BookingModal } from "@/components/dashboard/booking-modal";
 import { toast } from "@/components/toast";
@@ -22,6 +22,8 @@ import {
   fetchCustomVoices,
   fetchWaTemplates,
   sendWaReply,
+  setWaStatus,
+  deleteWaConversation,
   type AiAgent,
   type ChannelDefault,
   type WaConversation,
@@ -128,6 +130,7 @@ export default function InboxPage() {
   const [voiceId, setVoiceId] = useState<string>("");
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [bookOpen, setBookOpen] = useState(false);
+  const [convoMenu, setConvoMenu] = useState(false);
 
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [channelDefaults, setChannelDefaults] = useState<ChannelDefault[]>([]);
@@ -204,7 +207,9 @@ export default function InboxPage() {
 
   // Build the unified conversation list.
   const unified: UnifiedConvo[] = useMemo(() => {
-    const live: UnifiedConvo[] = liveConvos.map((c) => ({
+    const live: UnifiedConvo[] = liveConvos
+      .filter((c) => (liveStatus[c.id] ?? c.status) !== "archived")
+      .map((c) => ({
       id: c.id,
       live: true,
       channel: (["whatsapp", "instagram", "messenger", "sms", "email", "voice"].includes(c.channel) ? c.channel : "whatsapp") as Channel,
@@ -218,7 +223,7 @@ export default function InboxPage() {
       patientId: c.patientId ?? undefined,
     }));
     return live;
-  }, [liveConvos, liveStage]);
+  }, [liveConvos, liveStage, liveStatus]);
 
   // Open straight on the most recent conversation (live ones come first, newest
   // first) instead of a blank/empty thread. Keeps following the newest until the
@@ -423,6 +428,36 @@ export default function InboxPage() {
     toast(`${active.name} moved to “${stage}”.`);
   }
 
+  // Archive hides the conversation from the inbox (kept in the database; a new
+  // inbound message brings it back). Delete removes it and its messages for good.
+  function archiveActive() {
+    if (!active) return;
+    setConvoMenu(false);
+    if (active.live) {
+      setLiveStatus((prev) => ({ ...prev, [active.id]: "archived" }));
+      setWaStatus(active.id, "archived");
+    } else {
+      setMineSet((prev) => { const n = new Set(prev); n.delete(active.id); return n; });
+    }
+    toast(`${active.name}'s conversation archived.`);
+    userPicked.current = false;
+    setActiveId("");
+  }
+
+  async function deleteActive() {
+    if (!active) return;
+    if (!confirm(`Delete this conversation with ${active.name}? This removes all its messages and can't be undone.`)) return;
+    setConvoMenu(false);
+    const id = active.id;
+    if (active.live) {
+      setLiveConvos((prev) => prev.filter((c) => c.id !== id));
+      await deleteWaConversation(id);
+    }
+    toast("Conversation deleted.");
+    userPicked.current = false;
+    setActiveId("");
+  }
+
   async function aiReply() {
     if (!active) return;
     const agent = assignedAgent;
@@ -588,6 +623,24 @@ export default function InboxPage() {
             >
               <CalendarCheck2 className="h-3.5 w-3.5" /> Book
             </button>
+            <div className="relative self-end">
+              <button onClick={() => setConvoMenu((v) => !v)} title="Conversation actions" className="rounded-lg border border-ink-200 p-1.5 text-ink-500 hover:bg-ink-50">
+                <MoreVertical className="h-4 w-4" />
+              </button>
+              {convoMenu && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setConvoMenu(false)} />
+                  <div className="absolute right-0 z-20 mt-1 w-44 rounded-xl border border-ink-200 bg-surface py-1 shadow-lg">
+                    <button onClick={archiveActive} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-700 hover:bg-ink-50">
+                      <Archive className="h-4 w-4 text-ink-400" /> Archive
+                    </button>
+                    <button onClick={deleteActive} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-500/10">
+                      <Trash2 className="h-4 w-4" /> Delete
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 

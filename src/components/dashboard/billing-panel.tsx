@@ -5,7 +5,7 @@ import { Clock, Plus, Minus, Settings2, Zap, CreditCard, ShieldCheck, Database, 
 import { Card } from "@/components/ui";
 import { Modal, ModalFooter, Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
-import { fetchBilling, saveAutoRecharge, fetchVoiceCalls, type BillingSettings, type BillingInvoice, type VoiceCallRecord } from "@/lib/db";
+import { fetchBilling, saveAutoRecharge, addMinutes, changePlan, PLANS, fetchVoiceCalls, type BillingSettings, type BillingInvoice, type VoiceCallRecord } from "@/lib/db";
 
 function money(n: number) { return `$${n.toFixed(2)}`; }
 function mins(n: number) { const m = Math.floor(n); const s = Math.round((n - m) * 60); return `${m}:${String(s).padStart(2, "0")}`; }
@@ -23,6 +23,7 @@ export function BillingPanel() {
   const [addOpen, setAddOpen] = useState(false);
   const [rechargeOpen, setRechargeOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
   const [histTab, setHistTab] = useState<HistoryTab>("billing");
   const [usagePage, setUsagePage] = useState(1);
 
@@ -38,9 +39,10 @@ export function BillingPanel() {
 
   return (
     <div className="space-y-6">
-      {addOpen && <AddMinutesDrawer settings={s} onClose={() => setAddOpen(false)} />}
+      {addOpen && <AddMinutesDrawer settings={s} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); refresh(); }} />}
       {rechargeOpen && <AutoRechargeModal settings={s} onClose={() => setRechargeOpen(false)} onSaved={() => { setRechargeOpen(false); refresh(); }} />}
       {manageOpen && <ManagePaymentDrawer settings={s} onClose={() => setManageOpen(false)} />}
+      {planOpen && <ChangePlanModal current={s.planName} onClose={() => setPlanOpen(false)} onDone={() => { setPlanOpen(false); refresh(); }} />}
 
       {/* Minutes balance */}
       <Card className="p-6">
@@ -107,7 +109,7 @@ export function BillingPanel() {
             })}
           </div>
           <div className="mt-4 flex justify-end">
-            <button onClick={() => toast("Plan changes are handled in Stripe — add STRIPE_SECRET_KEY to enable.", "info")} className="flex items-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50"><Zap className="h-4 w-4" /> Change plan</button>
+            <button onClick={() => setPlanOpen(true)} className="flex items-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50"><Zap className="h-4 w-4" /> Change plan</button>
           </div>
         </Card>
 
@@ -253,9 +255,17 @@ export function BillingPanel() {
   );
 }
 
-function AddMinutesDrawer({ settings, onClose }: { settings: BillingSettings; onClose: () => void }) {
+function AddMinutesDrawer({ settings, onClose, onDone }: { settings: BillingSettings; onClose: () => void; onDone: () => void }) {
   const [qty, setQty] = useState(60);
+  const [busy, setBusy] = useState(false);
   const total = qty * settings.pricePerMinute;
+  async function purchase() {
+    setBusy(true);
+    const res = await addMinutes(qty);
+    setBusy(false);
+    toast(res.message, res.ok ? "success" : "info");
+    if (res.ok) onDone();
+  }
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
@@ -276,14 +286,19 @@ function AddMinutesDrawer({ settings, onClose }: { settings: BillingSettings; on
         <div className="mt-5 rounded-xl border border-ink-100 p-3 text-sm">
           <p className="flex items-center gap-2 text-ink-600"><CreditCard className="h-4 w-4 text-ink-400" /> {settings.cardLast4 ? `•••• ${settings.cardLast4} · default` : "No card on file"}</p>
         </div>
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>Stripe isn&apos;t connected yet, so <strong>no card is charged</strong> — the minutes are credited to your balance immediately. Once Stripe is added, this same button takes the payment first.</span>
+        </div>
         <div className="mt-auto space-y-2 border-t border-ink-100 pt-4">
           <div className="flex items-center justify-between text-sm text-ink-500"><span>{qty} min × {money(settings.pricePerMinute)}</span><span>{money(total)}</span></div>
           <div className="flex items-center justify-between text-base font-bold text-ink-900"><span>Total</span><span>{money(total)}</span></div>
           <button
-            onClick={() => toast("Purchases run through Stripe — add STRIPE_SECRET_KEY + a card to enable charging.", "info")}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3 text-sm font-semibold text-white hover:bg-brand-700"
+            onClick={purchase}
+            disabled={busy}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
           >
-            <ShieldCheck className="h-4 w-4" /> Purchase Minutes
+            <ShieldCheck className="h-4 w-4" /> {busy ? "Adding…" : "Add Minutes"}
           </button>
         </div>
       </div>
@@ -321,6 +336,43 @@ function AutoRechargeModal({ settings, onClose, onSaved }: { settings: BillingSe
         <div className="flex items-center justify-between rounded-xl border border-ink-100 px-3 py-2.5 text-sm"><span className="text-ink-500">Price per minute</span><span className="font-semibold text-ink-900">{money(settings.pricePerMinute)} USD</span></div>
       </div>
       <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save"} onSubmit={save} />
+    </Modal>
+  );
+}
+
+function ChangePlanModal({ current, onClose, onDone }: { current: string; onClose: () => void; onDone: () => void }) {
+  const [picked, setPicked] = useState<string>(PLANS.find((p) => p.name === current)?.key ?? "starter");
+  const [busy, setBusy] = useState(false);
+  async function apply() {
+    setBusy(true);
+    const res = await changePlan(picked);
+    setBusy(false);
+    toast(res.message, res.ok ? "success" : "info");
+    if (res.ok) onDone();
+  }
+  return (
+    <Modal open onClose={onClose} title="Choose a plan" subtitle="Activating a plan credits its included minutes right away.">
+      <div className="space-y-3">
+        {PLANS.map((p) => {
+          const active = picked === p.key;
+          const isCurrent = p.name === current;
+          return (
+            <button key={p.key} onClick={() => setPicked(p.key)} className={`flex w-full items-center justify-between rounded-xl border p-4 text-left transition-colors ${active ? "border-brand-500 bg-brand-50/60" : "border-ink-200 hover:bg-ink-50"}`}>
+              <div>
+                <p className="flex items-center gap-2 font-semibold text-ink-900">{p.name}{isCurrent && <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold text-ink-500">Current</span>}</p>
+                <p className="text-xs text-ink-400">{p.blurb}</p>
+                <p className="mt-1 text-xs text-ink-500">{p.minutesIncluded.toLocaleString()} min · {p.concurrencyLimit} concurrent · {money(p.pricePerMinute)}/extra min</p>
+              </div>
+              <div className="text-right"><p className="text-lg font-bold text-ink-900">{money(p.monthlyPrice)}</p><p className="text-[11px] text-ink-400">/month</p></div>
+            </button>
+          );
+        })}
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>No card is charged yet — Stripe isn&apos;t connected. Choosing a plan activates it and credits the minutes now; billing turns on when Stripe is added.</span>
+        </div>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={busy ? "Applying…" : "Activate plan"} onSubmit={apply} />
     </Modal>
   );
 }

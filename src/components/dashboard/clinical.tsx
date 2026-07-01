@@ -16,6 +16,8 @@ import {
   fetchClaims,
   createClaim,
   updateClaimStatus,
+  deleteClaim,
+  deleteLedgerAdjustment,
   fetchPrescriptions,
   createPrescription,
   deletePrescription,
@@ -69,6 +71,7 @@ export interface LedgerRow {
   charge: number;
   credit: number;
   balance: number;
+  adjId?: string; // set only for manual adjustment rows (deletable)
 }
 
 // ------------------------------------------------------------------ the hook
@@ -158,6 +161,18 @@ export function useClinicalModules(bundle: PatientBundle | null | "loading") {
     toast(`Claim to ${c.carrier} created for ${formatMoney(c.billed)}.`);
   }
 
+  function deleteClaimRec(id: string) {
+    setClaims((prev) => prev.filter((c) => c.id !== id));
+    if (isLive) deleteClaim(id);
+    toast("Claim removed.");
+  }
+
+  function deleteAdjustment(id: string) {
+    setLedgerAdj((prev) => prev.filter((a) => a.id !== id));
+    if (isLive) deleteLedgerAdjustment(id);
+    toast("Adjustment removed from the account.");
+  }
+
   async function createRx(rx: Omit<PrescriptionRecord, "id">) {
     let id = `rx-${Date.now()}`;
     if (isLive) {
@@ -193,7 +208,7 @@ export function useClinicalModules(bundle: PatientBundle | null | "loading") {
         .forEach((pr) => rows.push({ date: pl.presentedOn || bundle.patient.lastVisit, description: `${pr.code} · ${pr.description}${pr.tooth ? ` (#${pr.tooth})` : ""}`, charge: pr.fee, credit: 0 }))
     );
     bundle.payments.forEach((p2) => rows.push({ date: p2.date, description: `${p2.description || "Payment"} · ${p2.method}`, charge: 0, credit: p2.amount }));
-    ledgerAdj.forEach((a) => rows.push({ date: a.date, description: a.description, charge: a.amount >= 0 ? a.amount : 0, credit: a.amount < 0 ? -a.amount : 0 }));
+    ledgerAdj.forEach((a) => rows.push({ date: a.date, description: a.description, charge: a.amount >= 0 ? a.amount : 0, credit: a.amount < 0 ? -a.amount : 0, adjId: a.id }));
     rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     let bal = 0;
     ledger = rows.map((r) => {
@@ -203,7 +218,7 @@ export function useClinicalModules(bundle: PatientBundle | null | "loading") {
   }
   const ledgerBalance = ledger.length ? ledger[ledger.length - 1].balance : bundle !== "loading" && bundle ? bundle.patient.balance : 0;
 
-  return { toothState, cycleTooth, prescriptions, createRx, deleteRx, claims, advanceClaim, createClaim: createClaimRec, ledger, ledgerBalance, addAdjustment };
+  return { toothState, cycleTooth, prescriptions, createRx, deleteRx, claims, advanceClaim, createClaim: createClaimRec, deleteClaim: deleteClaimRec, ledger, ledgerBalance, addAdjustment, deleteAdjustment };
 }
 
 type Modules = ReturnType<typeof useClinicalModules>;
@@ -252,7 +267,7 @@ export function ToothChartCard({ toothState, onCycle }: { toothState: Modules["t
   );
 }
 
-export function LedgerCard({ patientName, ledger, balance, onAddAdjustment }: { patientName: string; ledger: Modules["ledger"]; balance: number; onAddAdjustment: Modules["addAdjustment"] }) {
+export function LedgerCard({ patientName, ledger, balance, onAddAdjustment, onDeleteAdjustment }: { patientName: string; ledger: Modules["ledger"]; balance: number; onAddAdjustment: Modules["addAdjustment"]; onDeleteAdjustment: Modules["deleteAdjustment"] }) {
   const [adjustModal, setAdjustModal] = useState(false);
   return (
     <>
@@ -293,6 +308,7 @@ export function LedgerCard({ patientName, ledger, balance, onAddAdjustment }: { 
                 <th className="px-4 py-2.5 text-right">Charge</th>
                 <th className="px-4 py-2.5 text-right">Payment</th>
                 <th className="px-4 py-2.5 text-right">Balance</th>
+                <th className="px-4 py-2.5"></th>
               </tr>
             </thead>
             <tbody>
@@ -303,6 +319,13 @@ export function LedgerCard({ patientName, ledger, balance, onAddAdjustment }: { 
                   <td className="px-4 py-3 text-right text-ink-700">{r.charge ? formatMoney(r.charge) : "—"}</td>
                   <td className="px-4 py-3 text-right text-emerald-600">{r.credit ? formatMoney(r.credit) : "—"}</td>
                   <td className={`px-4 py-3 text-right font-medium ${r.balance > 0 ? "text-rose-500" : "text-ink-900"}`}>{formatMoney(r.balance)}</td>
+                  <td className="px-4 py-3 text-right">
+                    {r.adjId && (
+                      <button onClick={() => onDeleteAdjustment(r.adjId!)} className="rounded-lg p-1.5 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500" title="Delete adjustment">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -321,12 +344,14 @@ export function ClaimsCard({
   claims,
   onAdvance,
   onCreate,
+  onDelete,
 }: {
   carriers: string[];
   procedures: { code: string; description: string; fee: number; status: string }[];
   claims: Modules["claims"];
   onAdvance: Modules["advanceClaim"];
   onCreate: Modules["createClaim"];
+  onDelete: Modules["deleteClaim"];
 }) {
   const [claimModal, setClaimModal] = useState(false);
   return (
@@ -368,15 +393,20 @@ export function ClaimsCard({
                   <td className="px-4 py-3 text-right text-ink-700">{formatMoney(c.estInsurance)}</td>
                   <td className="px-4 py-3"><StatusBadge status={c.status} tone={claimTone[c.status]} /></td>
                   <td className="px-4 py-3 text-right">
-                    {c.status !== "Paid" && (
-                      <button
-                        onClick={() => onAdvance(c.id)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"
-                        title={`Mark as ${CLAIM_FLOW[CLAIM_FLOW.indexOf(c.status) + 1]}`}
-                      >
-                        {CLAIM_FLOW[CLAIM_FLOW.indexOf(c.status) + 1]} <ArrowRight className="h-3 w-3" />
+                    <div className="flex items-center justify-end gap-1.5">
+                      {c.status !== "Paid" && (
+                        <button
+                          onClick={() => onAdvance(c.id)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50"
+                          title={`Mark as ${CLAIM_FLOW[CLAIM_FLOW.indexOf(c.status) + 1]}`}
+                        >
+                          {CLAIM_FLOW[CLAIM_FLOW.indexOf(c.status) + 1]} <ArrowRight className="h-3 w-3" />
+                        </button>
+                      )}
+                      <button onClick={() => onDelete(c.id)} className="rounded-lg p-1.5 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500" title="Delete claim">
+                        <Trash2 className="h-4 w-4" />
                       </button>
-                    )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -521,7 +551,7 @@ function ClinicalWorkspaceInner({ module }: { module: keyof typeof MODULE_META }
       ) : (
         <>
           {module === "chart" && <ToothChartCard toothState={mods.toothState} onCycle={mods.cycleTooth} />}
-          {module === "ledger" && <LedgerCard patientName={bundle.patient.name} ledger={mods.ledger} balance={mods.ledgerBalance} onAddAdjustment={mods.addAdjustment} />}
+          {module === "ledger" && <LedgerCard patientName={bundle.patient.name} ledger={mods.ledger} balance={mods.ledgerBalance} onAddAdjustment={mods.addAdjustment} onDeleteAdjustment={mods.deleteAdjustment} />}
           {module === "claims" && (
             <ClaimsCard
               carriers={bundle.insurance.filter((i) => i.carrier && i.carrier !== "—").map((i) => i.carrier)}
@@ -529,6 +559,7 @@ function ClinicalWorkspaceInner({ module }: { module: keyof typeof MODULE_META }
               claims={mods.claims}
               onAdvance={mods.advanceClaim}
               onCreate={mods.createClaim}
+              onDelete={mods.deleteClaim}
             />
           )}
           {module === "rx" && <RxCard patientName={bundle.patient.name} prescriptions={mods.prescriptions} onCreate={mods.createRx} onDelete={mods.deleteRx} />}
