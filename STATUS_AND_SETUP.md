@@ -162,6 +162,12 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 > - ✅ **Inbox archive/delete** + **clinical claim/adjustment delete buttons** (the last honest gaps).
 > - ✅ **Billing / credits / top-up now functional without Stripe** — plans credit minutes, calls
 >   deduct them, auto-recharge tops up. Stripe is only the future payment step. (See §5 billing box.)
+> - ✅ **Legal pages** — public **Privacy Policy** (`/privacy`), **Terms** (`/terms`) and **Data
+>   Deletion** (`/data-deletion`), linked in the footer. Written to pass Meta App Review + Google
+>   OAuth verification (Meta scopes + Google Limited-Use sections included).
+> - ✅ **Meta + Google verification guide** — `META_GOOGLE_VERIFICATION.md`: step-by-step to publish
+>   both apps, tailored to this app's real scopes/redirect URIs (Business Verification, App Review
+>   screencasts, Google OAuth verification, the CASA note for restricted Gmail/Drive scopes).
 >
 > Everything in the list below has been wired. Kept here so you can see what changed.
 
@@ -209,6 +215,10 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
   actually credits the balance and logs an invoice; voice calls **deduct** minutes as they end, and
   **auto-recharge** tops the balance back up when it runs low. No card is charged yet — Stripe is the
   future payment step (see §5 "How billing works without Stripe").
+- ✅ **Legal pages + verification guide** — `/privacy`, `/terms`, `/data-deletion` (footer-linked),
+  written to satisfy Meta App Review and Google OAuth verification, plus a full step-by-step
+  publishing guide in `META_GOOGLE_VERIFICATION.md`. **Remaining action is yours** (deploy, publish
+  the URLs, submit for review) — see §5.
 
 ### Still partial (honest remaining gaps)
 - **A few advanced voice VAD micro-params** are saved but Vapi only applies the subset it exposes
