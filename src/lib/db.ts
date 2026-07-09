@@ -1516,7 +1516,11 @@ export async function fetchOpenDentalConfig(): Promise<OpenDentalConfig> {
 export async function saveOpenDentalConfig(c: OpenDentalConfig): Promise<{ ok: boolean; message: string }> {
   const ws = await getWorkspaceId();
   if (!ws) return { ok: false, message: "Sign in first." };
-  const row = { clinic_api_url: c.clinicApiUrl.trim(), clinic_api_key: c.clinicApiKey.trim(), enabled: c.enabled, updated_at: new Date().toISOString() };
+  // Normalize the middleware URL: strip trailing slashes, add https:// if the
+  // scheme was left off — a missing scheme is an instant "fetch failed".
+  let url = c.clinicApiUrl.trim().replace(/\/+$/, "");
+  if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`;
+  const row = { clinic_api_url: url, clinic_api_key: c.clinicApiKey.trim(), enabled: c.enabled, updated_at: new Date().toISOString() };
   const { data: existing } = await supabase.from("opendental_config").select("workspace_id").eq("workspace_id", ws).maybeSingle();
   const { error } = existing
     ? await supabase.from("opendental_config").update(row).eq("workspace_id", ws)
@@ -1525,15 +1529,16 @@ export async function saveOpenDentalConfig(c: OpenDentalConfig): Promise<{ ok: b
   return { ok: true, message: c.enabled ? "Open Dental connected." : "Saved." };
 }
 
-// Calls the gateway, which forwards to the clinic's local middleware. Returns
-// scheduling data only — never clinical records.
-export async function odTestConnection(): Promise<{ ok: boolean; doctors?: number; error?: string }> {
+// Staged connection test (see /api/opendental/test): checks URL sanity, tunnel
+// reachability (/health, no key) and API-key auth (/doctors) separately, so a
+// failure says exactly which layer broke. Returns scheduling data only.
+export async function odTestConnection(): Promise<{ ok: boolean; doctors?: number; mode?: string; error?: string }> {
   try {
     const ws = await getWorkspaceId();
-    const res = await fetch(`/api/opendental/doctors?ws=${ws ?? ""}`);
+    const res = await fetch(`/api/opendental/test?ws=${ws ?? ""}`);
     const data = await res.json();
-    if (!res.ok) return { ok: false, error: data.error ?? "Connection failed" };
-    return { ok: true, doctors: Array.isArray(data.doctors) ? data.doctors.length : 0 };
+    if (!res.ok || !data.ok) return { ok: false, mode: data.mode, error: data.error ?? "Connection failed" };
+    return { ok: true, doctors: data.doctors ?? 0, mode: data.mode };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Connection failed" };
   }

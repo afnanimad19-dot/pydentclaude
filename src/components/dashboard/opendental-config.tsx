@@ -35,7 +35,12 @@ export function OpenDentalConfigCard() {
     setTesting(true);
     const res = await odTestConnection();
     setTesting(false);
-    toast(res.ok ? `Connected — ${res.doctors ?? 0} doctor(s) found.` : `Connection failed: ${res.error}`, res.ok ? "success" : "info");
+    toast(
+      res.ok
+        ? `Connected in ${res.mode ?? "live"} mode — ${res.doctors ?? 0} doctor(s) found.${res.mode === "mock" ? " (Mock = safe testing; no real Open Dental data is touched.)" : ""}`
+        : `Connection failed: ${res.error}`,
+      res.ok ? "success" : "info"
+    );
   }
 
   return (

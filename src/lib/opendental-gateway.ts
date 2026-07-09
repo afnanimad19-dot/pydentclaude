@@ -17,6 +17,21 @@ export async function getOdConfig(workspaceId: string | null): Promise<{ url: st
   }
 }
 
+// Node's fetch hides the real network failure behind "fetch failed" — the actual
+// reason (DNS, refused, TLS, timeout) lives in error.cause. Surface it so a failed
+// connection test tells the clinic exactly what to fix.
+export function fetchFailureDetail(e: unknown): string {
+  const err = e as { name?: string; message?: string; cause?: { code?: string; hostname?: string; address?: string; message?: string } };
+  if (err?.name === "TimeoutError" || err?.name === "AbortError") return "timed out — the URL is reachable-looking but nothing answered in time";
+  const c = err?.cause;
+  if (c?.code === "ENOTFOUND" || c?.code === "EAI_AGAIN") return `DNS lookup failed for ${c.hostname ?? "the host"} — that domain doesn't resolve (typo in the URL, or the tunnel hostname doesn't exist)`;
+  if (c?.code === "ECONNREFUSED") return `connection refused${c.address ? ` at ${c.address}` : ""} — nothing is listening there (is the connector/tunnel running?)`;
+  if (c?.code === "ECONNRESET") return "connection reset by the remote side";
+  if (String(c?.code ?? "").includes("CERT") || /certificate/i.test(c?.message ?? "")) return "TLS certificate problem on the middleware URL";
+  if (c?.code) return c.code;
+  return err?.message ?? "network error";
+}
+
 export async function odForward(
   workspaceId: string | null,
   path: string,
@@ -36,6 +51,6 @@ export async function odForward(
     const data = await res.json().catch(() => ({}));
     return { status: res.status, data };
   } catch (e) {
-    return { status: 502, data: { error: e instanceof Error ? e.message : "Could not reach the clinic middleware." } };
+    return { status: 502, data: { error: `Could not reach the clinic middleware: ${fetchFailureDetail(e)}` } };
   }
 }
