@@ -1526,7 +1526,9 @@ export async function saveOpenDentalConfig(c: OpenDentalConfig): Promise<{ ok: b
     ? await supabase.from("opendental_config").update(row).eq("workspace_id", ws)
     : await supabase.from("opendental_config").insert({ workspace_id: ws, ...row });
   if (error) return { ok: false, message: error.message };
-  return { ok: true, message: c.enabled ? "Open Dental connected." : "Saved." };
+  // Saving only stores the settings — it does NOT prove the middleware is
+  // reachable. Don't say "connected" here; that's Test connection's job.
+  return { ok: true, message: c.enabled ? "Settings saved — now click Test connection to verify the clinic middleware." : "Saved." };
 }
 
 // Staged connection test (see /api/opendental/test): checks URL sanity, tunnel
