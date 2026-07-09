@@ -1497,17 +1497,25 @@ export async function createBroadcast(payload: {
 export interface OpenDentalConfig {
   clinicApiUrl: string;
   clinicApiKey: string;
+  clinicUsername: string; // HTTP Basic auth, if the middleware provider requires it
+  clinicPassword: string;
   enabled: boolean;
 }
 
-export const emptyOpenDentalConfig: OpenDentalConfig = { clinicApiUrl: "", clinicApiKey: "", enabled: false };
+export const emptyOpenDentalConfig: OpenDentalConfig = { clinicApiUrl: "", clinicApiKey: "", clinicUsername: "", clinicPassword: "", enabled: false };
 
 export async function fetchOpenDentalConfig(): Promise<OpenDentalConfig> {
   try {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("opendental_config").select("*").eq("workspace_id", ws).maybeSingle();
     if (!data) return emptyOpenDentalConfig;
-    return { clinicApiUrl: data.clinic_api_url ?? "", clinicApiKey: data.clinic_api_key ?? "", enabled: !!data.enabled };
+    return {
+      clinicApiUrl: data.clinic_api_url ?? "",
+      clinicApiKey: data.clinic_api_key ?? "",
+      clinicUsername: data.clinic_username ?? "",
+      clinicPassword: data.clinic_password ?? "",
+      enabled: !!data.enabled,
+    };
   } catch {
     return emptyOpenDentalConfig;
   }
@@ -1520,11 +1528,28 @@ export async function saveOpenDentalConfig(c: OpenDentalConfig): Promise<{ ok: b
   // scheme was left off — a missing scheme is an instant "fetch failed".
   let url = c.clinicApiUrl.trim().replace(/\/+$/, "");
   if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`;
-  const row = { clinic_api_url: url, clinic_api_key: c.clinicApiKey.trim(), enabled: c.enabled, updated_at: new Date().toISOString() };
+  const row: Record<string, unknown> = {
+    clinic_api_url: url,
+    clinic_api_key: c.clinicApiKey.trim(),
+    clinic_username: c.clinicUsername.trim(),
+    clinic_password: c.clinicPassword.trim(),
+    enabled: c.enabled,
+    updated_at: new Date().toISOString(),
+  };
   const { data: existing } = await supabase.from("opendental_config").select("workspace_id").eq("workspace_id", ws).maybeSingle();
-  const { error } = existing
-    ? await supabase.from("opendental_config").update(row).eq("workspace_id", ws)
-    : await supabase.from("opendental_config").insert({ workspace_id: ws, ...row });
+  const write = (r: Record<string, unknown>) =>
+    existing
+      ? supabase.from("opendental_config").update(r).eq("workspace_id", ws)
+      : supabase.from("opendental_config").insert({ workspace_id: ws, ...r });
+  let { error } = await write(row);
+  // Username/password columns arrive with migration 0051 — retry without them
+  // so the rest still saves, and say clearly that the migration is needed.
+  if (error && /clinic_username|clinic_password/.test(error.message)) {
+    delete row.clinic_username;
+    delete row.clinic_password;
+    ({ error } = await write(row));
+    if (!error) return { ok: true, message: "Saved — but the username/password were NOT stored: run migration 0051_opendental_credentials.sql in Supabase first, then save again." };
+  }
   if (error) return { ok: false, message: error.message };
   // Saving only stores the settings — it does NOT prove the middleware is
   // reachable. Don't say "connected" here; that's Test connection's job.

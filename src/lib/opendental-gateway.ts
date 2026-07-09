@@ -5,16 +5,42 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 // forwards scheduling requests to the clinic's own middleware (reachable via the
 // Cloudflare Tunnel URL the clinic configured). See OPEN_DENTAL.md.
 
-export async function getOdConfig(workspaceId: string | null): Promise<{ url: string; key: string; enabled: boolean } | null> {
+export interface OdGatewayConfig {
+  url: string;
+  key: string;
+  username: string;
+  password: string;
+  enabled: boolean;
+}
+
+export async function getOdConfig(workspaceId: string | null): Promise<OdGatewayConfig | null> {
   try {
-    let q = supabase.from("opendental_config").select("clinic_api_url, clinic_api_key, enabled");
+    // select("*") so this keeps working whether or not the username/password
+    // columns (migration 0051) exist yet.
+    let q = supabase.from("opendental_config").select("*");
     q = workspaceId ? q.eq("workspace_id", workspaceId) : q.limit(1);
     const { data } = await q.maybeSingle();
     if (!data?.clinic_api_url) return null;
-    return { url: String(data.clinic_api_url).replace(/\/$/, ""), key: data.clinic_api_key ?? "", enabled: !!data.enabled };
+    return {
+      url: String(data.clinic_api_url).replace(/\/$/, ""),
+      key: data.clinic_api_key ?? "",
+      username: data.clinic_username ?? "",
+      password: data.clinic_password ?? "",
+      enabled: !!data.enabled,
+    };
   } catch {
     return null;
   }
+}
+
+// Headers for every middleware call: the shared-secret x-api-key, plus HTTP
+// Basic auth when the clinic's middleware is protected by a username/password.
+export function odHeaders(cfg: OdGatewayConfig): Record<string, string> {
+  const h: Record<string, string> = { "Content-Type": "application/json", "x-api-key": cfg.key };
+  if (cfg.username || cfg.password) {
+    h.Authorization = `Basic ${Buffer.from(`${cfg.username}:${cfg.password}`).toString("base64")}`;
+  }
+  return h;
 }
 
 // Node's fetch hides the real network failure behind "fetch failed" — the actual
@@ -44,7 +70,7 @@ export async function odForward(
   try {
     const res = await fetch(`${cfg.url}${path}`, {
       method: init.method,
-      headers: { "Content-Type": "application/json", "x-api-key": cfg.key },
+      headers: odHeaders(cfg),
       body: init.body ? JSON.stringify(init.body) : undefined,
       signal: AbortSignal.timeout(15000),
     });

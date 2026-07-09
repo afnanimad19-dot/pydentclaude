@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOdConfig, fetchFailureDetail } from "@/lib/opendental-gateway";
+import { getOdConfig, odHeaders, fetchFailureDetail } from "@/lib/opendental-gateway";
 
 // Staged connection test for the Open Dental middleware. Instead of one opaque
 // "fetch failed", it checks each layer and reports exactly which one broke:
@@ -32,13 +32,29 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // 2 — reachability: /health needs no key, so a failure here is the tunnel/URL.
+  // Send everything the clinic configured on BOTH probes: the x-api-key shared
+  // secret plus HTTP Basic auth (username/password) when the middleware needs it.
+  const headers = odHeaders(cfg);
+  const hasBasicAuth = !!(cfg.username || cfg.password);
+
+  // 2 — reachability: a failure here is the tunnel/URL (or Basic auth on 401).
   let mode = "unknown";
   try {
-    const r = await fetch(`${cfg.url}/health`, { signal: AbortSignal.timeout(10000), cache: "no-store" });
+    const r = await fetch(`${cfg.url}/health`, { headers, signal: AbortSignal.timeout(10000), cache: "no-store" });
+    if (r.status === 401 || r.status === 403) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: hasBasicAuth
+            ? `Reached ${base.hostname}, but it rejected the username/password (HTTP ${r.status}) — re-check the middleware username and password with your provider.`
+            : `Reached ${base.hostname}, but it requires a username/password (HTTP ${r.status}) — fill in the Middleware username + password fields and save.`,
+        },
+        { status: 401 }
+      );
+    }
     if (!r.ok) {
       return NextResponse.json(
-        { ok: false, error: `Reached ${base.hostname}, but /health returned HTTP ${r.status} — something answered that isn't the Pydent Connector. Check the tunnel points at the connector's port (default 4000).` },
+        { ok: false, error: `Reached ${base.hostname}, but /health returned HTTP ${r.status} — something answered that isn't the middleware. Check with your provider that the URL points at the connector.` },
         { status: 502 }
       );
     }
@@ -46,17 +62,17 @@ export async function GET(req: NextRequest) {
     mode = h?.mode ?? "unknown";
   } catch (e) {
     return NextResponse.json(
-      { ok: false, error: `Can't reach ${base.hostname}: ${fetchFailureDetail(e)}. Check that the Cloudflare Tunnel AND the connector are running on the clinic server, and that this exact URL opens /health in a browser.` },
+      { ok: false, error: `Can't reach ${base.hostname}: ${fetchFailureDetail(e)}. Check that the tunnel AND the middleware are running on the clinic server, and that this exact URL opens /health in a browser.` },
       { status: 502 }
     );
   }
 
   // 3 — auth + data: /doctors requires the shared secret.
   try {
-    const r = await fetch(`${cfg.url}/doctors`, { headers: { "x-api-key": cfg.key }, signal: AbortSignal.timeout(10000), cache: "no-store" });
-    if (r.status === 401) {
+    const r = await fetch(`${cfg.url}/doctors`, { headers, signal: AbortSignal.timeout(10000), cache: "no-store" });
+    if (r.status === 401 || r.status === 403) {
       return NextResponse.json(
-        { ok: false, mode, error: `Middleware reached (${mode} mode) but it REJECTED the API key — the key saved in Pydent must exactly match the connector's CLINIC_API_KEY.` },
+        { ok: false, mode, error: `Middleware reached (${mode} mode) but it REJECTED the credentials (HTTP ${r.status}) — the API key must match the middleware's key${hasBasicAuth ? ", and the username/password must be correct" : ""}.` },
         { status: 401 }
       );
     }

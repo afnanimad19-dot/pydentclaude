@@ -66,6 +66,18 @@ export function OpenDentalConfigCard() {
           <Field label="Middleware API key (shared secret)">
             <input className={inputCls} type="password" placeholder="your private clinic API key" value={cfg.clinicApiKey} onChange={(e) => set("clinicApiKey", e.target.value)} />
           </Field>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Middleware username (if your provider gave one)">
+              <input className={inputCls} autoComplete="off" placeholder="username from your middleware provider" value={cfg.clinicUsername} onChange={(e) => set("clinicUsername", e.target.value)} />
+            </Field>
+            <Field label="Middleware password">
+              <input className={inputCls} type="password" autoComplete="new-password" placeholder="password from your middleware provider" value={cfg.clinicPassword} onChange={(e) => set("clinicPassword", e.target.value)} />
+            </Field>
+          </div>
+          <p className="-mt-2 text-xs text-ink-400">
+            Only needed when the middleware is protected with a username + password (HTTP Basic auth) — leave blank otherwise.
+            These are sent with every request alongside the API key.
+          </p>
           <label className="flex items-center gap-2 text-sm text-ink-700">
             <input type="checkbox" checked={cfg.enabled} onChange={(e) => set("enabled", e.target.checked)} className="h-4 w-4 accent-brand-600" />
             Enable Open Dental booking for this clinic
