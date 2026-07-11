@@ -31,7 +31,7 @@ import { Avatar } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme";
 import { Toaster } from "@/components/toast";
 import { supabase } from "@/lib/supabase";
-import { clearWorkspaceCache } from "@/lib/db";
+import { clearWorkspaceCache, fetchWorkspaceName } from "@/lib/db";
 import { CLINICAL_MODULES_ENABLED } from "@/lib/features";
 
 interface NavItem {
@@ -44,7 +44,7 @@ interface NavItem {
 const nav: NavItem[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/inbox", label: "Omnichannel Inbox", icon: Inbox },
-  { href: "/dashboard/team-ai", label: "AI Team", icon: Sparkles },
+  { href: "/dashboard/team-ai", label: "AI Marketing", icon: Sparkles },
   {
     href: "/dashboard/agents/chat",
     label: "Chat Agents",
@@ -80,14 +80,24 @@ const nav: NavItem[] = [
     ],
   },
   {
-    href: "/dashboard/instagram",
-    label: "Instagram",
+    href: "/dashboard/social",
+    label: "Social Media",
     icon: Camera,
     children: [
+      { href: "/dashboard/social", label: "Overview" },
       { href: "/dashboard/instagram", label: "Content calendar" },
     ],
   },
-  { href: "/dashboard/meta", label: "Meta Ads", icon: Megaphone },
+  {
+    href: "/dashboard/meta",
+    label: "Ads",
+    icon: Megaphone,
+    children: [
+      { href: "/dashboard/meta", label: "Meta Ads" },
+      { href: "/dashboard/ads/google", label: "Google Ads" },
+      { href: "/dashboard/ads/tiktok", label: "TikTok Ads" },
+    ],
+  },
   {
     href: "/dashboard/sms",
     label: "SMS",
@@ -167,6 +177,7 @@ const nav: NavItem[] = [
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [clinicName, setClinicName] = useState("");
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -183,6 +194,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
         setUserEmail(data.session.user.email ?? null);
+        fetchWorkspaceName().then(setClinicName);
         return;
       }
       router.replace("/login");
@@ -209,7 +221,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           {open && (
             <div className="leading-tight">
               <span className="block text-base font-semibold tracking-tight text-ink-900">Pydent</span>
-              <span className="block text-[11px] font-medium text-ink-400">Bright Smile Dental</span>
+              <span className="block max-w-[150px] truncate text-[11px] font-medium text-ink-400">{clinicName || "Your clinic"}</span>
             </div>
           )}
         </Link>

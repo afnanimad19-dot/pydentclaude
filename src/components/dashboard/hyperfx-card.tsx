@@ -61,7 +61,7 @@ export function HyperfxCard() {
     <Card className="p-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 font-semibold text-ink-900">
-          <Zap className="h-5 w-5 text-brand-500" /> Hyperfx backend (ads · SEO · connectors)
+          <Zap className="h-5 w-5 text-brand-500" /> Marketing engine (ads · SEO · apps)
         </h2>
         {loading ? (
           <StatusBadge status="Checking…" tone="gray" />
@@ -74,22 +74,22 @@ export function HyperfxCard() {
         )}
       </div>
       <p className="mt-1 max-w-2xl text-sm text-ink-500">
-        Hyperfx powers Pydent&apos;s marketing intelligence: Meta &amp; Google Ads, Google Calendar, TikTok, SEO and
-        AI-search visibility, social scraping. Connect a platform once on hyperfx.ai and it works here instantly —
-        the <strong>Meta Ads</strong> tab reads through it.
+        Powers Pydent&apos;s marketing intelligence: Meta &amp; Google &amp; TikTok Ads, SEO and AI-search visibility,
+        social scraping and 70+ connectable apps. Connect a platform once and it works everywhere in Pydent —
+        the <strong>Ads</strong> tabs and the <strong>AI Marketing</strong> team read through it.
       </p>
 
       <div className="mt-4 grid gap-4 md:grid-cols-2">
-        <Field label="This clinic's Hyperfx MCP URL (optional)">
+        <Field label="This clinic's engine MCP URL (optional)">
           <input className={inputCls} placeholder="https://mcp.hyperfx.ai/…  (blank = app default)" value={cfg.mcpUrl} onChange={(e) => setCfg((c) => ({ ...c, mcpUrl: e.target.value }))} />
         </Field>
-        <Field label="This clinic's Hyperfx API key">
+        <Field label="This clinic's engine API key">
           <input className={inputCls} type="password" autoComplete="new-password" placeholder="hfx_…  (blank = app default)" value={cfg.apiKey} onChange={(e) => setCfg((c) => ({ ...c, apiKey: e.target.value }))} />
         </Field>
       </div>
       <p className="mt-1.5 text-xs text-ink-400">
-        With a Hyperfx enterprise plan, each clinic gets its own sub-account — paste that clinic&apos;s MCP URL + key here
-        so its connected ad accounts stay separate from every other clinic&apos;s. Leave blank to use the app-level default.
+        Each clinic gets its own engine account — paste that clinic&apos;s MCP URL + key here so its connected ad accounts
+        stay separate from every other clinic&apos;s. Leave blank to use the app-level default.
       </p>
 
       {!loading && s && (
@@ -101,7 +101,7 @@ export function HyperfxCard() {
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-ink-400">Live platforms:</span>
               {(s.platforms?.length ?? 0) === 0 ? (
-                <span className="text-sm text-ink-500">none enabled yet — connect them on hyperfx.ai</span>
+                <span className="text-sm text-ink-500">none enabled yet — connect them in Apps below</span>
               ) : (
                 s.platforms!.map((p) => (
                   <span key={p} className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-600">
@@ -123,7 +123,7 @@ export function HyperfxCard() {
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Re-check
         </button>
         <a href="https://hyperfx.ai" target="_blank" rel="noreferrer" className="ml-auto flex items-center gap-1.5 text-sm font-medium text-brand-600 dark:text-brand-300">
-          Manage connections on hyperfx.ai <ExternalLink className="h-3.5 w-3.5" />
+          Open the connection portal <ExternalLink className="h-3.5 w-3.5" />
         </a>
       </div>
     </Card>

@@ -8,8 +8,6 @@ import {
   MessageCircle,
   MessageSquareText,
   Mail,
-  PhoneCall,
-  Bot,
   Camera,
   MessageSquare,
   Globe,
@@ -29,12 +27,13 @@ import { Field, inputCls } from "@/components/modal";
 import { WhatsAppConfigForm } from "@/components/dashboard/whatsapp-config";
 import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
 import { HyperfxCard } from "@/components/dashboard/hyperfx-card";
+import { AppsMarketplace } from "@/components/dashboard/apps-marketplace";
 import { WebsiteConfigCard } from "@/components/dashboard/website-config";
 import { IntegrationsPanel } from "@/components/dashboard/integrations-panel";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
 import { BillingPanel } from "@/components/dashboard/billing-panel";
 import { ThemeToggle } from "@/components/theme";
-import { fetchPatients, fetchClinicSettings, saveClinicSettings, getWorkspaceId, fetchTags, addTag as addTagDb, deleteTag as deleteTagDb, type ClinicTag } from "@/lib/db";
+import { fetchClinicSettings, saveClinicSettings, fetchWorkspaceName, saveWorkspaceName, getWorkspaceId, fetchTags, addTag as addTagDb, deleteTag as deleteTagDb, type ClinicTag } from "@/lib/db";
 
 const TIMEZONES = [
   "Asia/Dubai", "Asia/Riyadh", "Asia/Qatar", "Asia/Kuwait", "Asia/Bahrain", "Asia/Muscat",
@@ -105,10 +104,9 @@ export default function SettingsPage() {
   const tab: TabKey = (TABS.find((t) => t.key === urlTab)?.key ?? "profile") as TabKey;
   const setTab = (t: TabKey) => router.replace(`/dashboard/settings?tab=${t}`, { scroll: false });
 
-  const [dbLive, setDbLive] = useState<boolean | null>(null);
-  const [health, setHealth] = useState<{ openrouter: boolean; vapi: boolean; google: boolean } | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
+  const [clinicName, setClinicName] = useState("");
   const [timezone, setTimezone] = useState("Asia/Dubai");
   const [tags, setTags] = useState<ClinicTag[]>([]);
   const [newTag, setNewTag] = useState("");
@@ -117,9 +115,8 @@ export default function SettingsPage() {
   useEffect(() => {
     getWorkspaceId().then(setWs);
     fetchTags().then(setTags);
-    fetchPatients().then((r) => setDbLive(r.source === "live"));
     fetchClinicSettings().then((s) => { setTimezone(s.timezone); setDisplayName(s.displayName); });
-    fetch("/api/health").then((r) => r.json()).then(setHealth).catch(() => setHealth({ openrouter: false, vapi: false, google: false }));
+    fetchWorkspaceName().then(setClinicName);
     supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
   }, []);
 
@@ -175,6 +172,9 @@ export default function SettingsPage() {
           <Card className="p-6">
             <h2 className="flex items-center gap-2 font-semibold text-ink-900"><User className="h-5 w-5 text-brand-500" /> Account</h2>
             <div className="mt-5 grid gap-4">
+              <Field label="Clinic / workspace name (shown across the app)">
+                <input className={inputCls} placeholder="Bright Smile Dental" value={clinicName} onChange={(e) => setClinicName(e.target.value)} />
+              </Field>
               <Field label="Display name">
                 <input className={inputCls} placeholder="Your name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
               </Field>
@@ -187,7 +187,7 @@ export default function SettingsPage() {
                 </select>
               </Field>
               <div className="flex items-center gap-3 border-t border-ink-100 pt-4">
-                <button onClick={async () => { const r = await saveClinicSettings({ timezone, displayName }); toast(r.ok ? "Profile saved." : r.message, r.ok ? "success" : "info"); }} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Save profile</button>
+                <button onClick={async () => { const r = await saveClinicSettings({ timezone, displayName }); const w = await saveWorkspaceName(clinicName); toast(r.ok && w.ok ? "Profile saved." : (w.ok ? r.message : w.message), r.ok && w.ok ? "success" : "info"); }} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Save profile</button>
                 <button onClick={signOut} className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
                   <LogOut className="h-4 w-4" /> Sign out
                 </button>
@@ -206,25 +206,8 @@ export default function SettingsPage() {
 
       {tab === "connections" && (
         <div className="space-y-4">
-          <ConnCard
-            icon={Database}
-            name="Database (Supabase)"
-            detail="Patients, appointments, treatment plans, documents, insurance, payments and AI agents — your clinic's own practice database."
-            badge={dbLive === null ? <StatusBadge status="Checking…" tone="gray" /> : dbLive ? <StatusBadge status="Connected" tone="green" /> : <StatusBadge status="Schema missing" tone="amber" />}
-          />
-          <ConnCard
-            icon={Bot}
-            name="AI Brain (chat agents)"
-            detail="Powers every chat agent's replies — choose the model per agent (GPT-4o, Claude, Gemini, Llama)."
-            badge={health === null ? <StatusBadge status="Checking…" tone="gray" /> : health.openrouter ? <StatusBadge status="Connected" tone="green" /> : <StatusBadge status="Add OPENROUTER_API_KEY" tone="amber" />}
-          />
-          <ConnCard
-            icon={PhoneCall}
-            name="Voice Agents (Vapi)"
-            detail="Runs your phone agents — calls, transcription and voices come from Vapi; you adjust everything here."
-            badge={health === null ? <StatusBadge status="Checking…" tone="gray" /> : health.vapi ? <StatusBadge status="Key configured" tone="green" /> : <StatusBadge status="Add VAPI_API_KEY (private key)" tone="amber" />}
-          />
           <HyperfxCard />
+          <AppsMarketplace />
           <IntegrationsPanel />
           <OpenDentalConfigCard />
           <WebsiteConfigCard />

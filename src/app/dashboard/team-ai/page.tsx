@@ -156,8 +156,8 @@ export default function TeamAiPage() {
   return (
     <>
       <PageHeader
-        title="AI Team"
-        subtitle="Pre-built AI specialists for your clinic — they know your brand and do the marketing work. Chat with them like a teammate."
+        title="AI Marketing"
+        subtitle="Your AI marketing department — four specialists who know your brand, powered by the marketing engine: ads, SEO & AI-search, reputation, campaigns. Chat with them like teammates."
       />
       <div className="grid gap-5 md:grid-cols-2">
         {AGENTS.map((a) => {
@@ -329,7 +329,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
         </div>
       )}
       <button onClick={onBack} className="mb-4 flex items-center gap-1.5 text-sm font-medium text-ink-500 hover:text-ink-800">
-        <ArrowLeft className="h-4 w-4" /> Back to AI Team
+        <ArrowLeft className="h-4 w-4" /> Back to AI Marketing
       </button>
       <div className="grid gap-5 lg:grid-cols-[340px_1fr]">
         {/* Left: identity + capabilities + channels + brand */}

@@ -1492,6 +1492,43 @@ export async function createBroadcast(payload: {
   }
 }
 
+// -------------------------------------------------------- workspace (clinic) name
+
+// The clinic's workspace name — set at signup, editable in Settings → Profile.
+export async function fetchWorkspaceName(): Promise<string> {
+  try {
+    const ws = await getWorkspaceId();
+    if (!ws) return "";
+    const { data } = await supabase.from("workspaces").select("name").eq("id", ws).maybeSingle();
+    return data?.name ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// RLS only allows SELECT on workspaces for members, so the rename goes through a
+// server route (service role) that verifies the caller belongs to the workspace.
+export async function saveWorkspaceName(name: string): Promise<{ ok: boolean; message: string }> {
+  const trimmed = name.trim();
+  if (!trimmed) return { ok: true, message: "" }; // nothing to change
+  try {
+    const ws = await getWorkspaceId();
+    if (!ws) return { ok: false, message: "Sign in first." };
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess.session?.access_token;
+    const res = await fetch("/api/workspace/name", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, message: data.error ?? "Could not rename the clinic." };
+    return { ok: true, message: "Clinic name updated." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not rename the clinic." };
+  }
+}
+
 // ---------------------------------------------------------- hyperfx (per-clinic)
 
 // Each clinic can have its OWN Hyperfx account/sub-account, so its connected
