@@ -1492,6 +1492,44 @@ export async function createBroadcast(payload: {
   }
 }
 
+// ---------------------------------------------------------- hyperfx (per-clinic)
+
+// Each clinic can have its OWN Hyperfx account/sub-account, so its connected
+// ad/SEO/calendar platforms are isolated from other clinics. Falls back to the
+// global env credentials when unset (single-account mode).
+export interface HyperfxConfig {
+  mcpUrl: string;
+  apiKey: string;
+  enabled: boolean;
+}
+
+export const emptyHyperfxConfig: HyperfxConfig = { mcpUrl: "", apiKey: "", enabled: true };
+
+export async function fetchHyperfxConfig(): Promise<HyperfxConfig> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("hyperfx_config").select("*").eq("workspace_id", ws).maybeSingle();
+    if (!data) return emptyHyperfxConfig;
+    return { mcpUrl: data.mcp_url ?? "", apiKey: data.api_key ?? "", enabled: data.enabled !== false };
+  } catch {
+    return emptyHyperfxConfig;
+  }
+}
+
+export async function saveHyperfxConfig(c: HyperfxConfig): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  const row = { mcp_url: c.mcpUrl.trim(), api_key: c.apiKey.trim(), enabled: c.enabled, updated_at: new Date().toISOString() };
+  const { error } = await upsertRow("hyperfx_config", { workspace_id: ws }, row);
+  if (error) {
+    if (/hyperfx_config/.test(error.message) && /not (exist|found)|schema cache/i.test(error.message)) {
+      return { ok: false, message: "Run migration 0052_hyperfx_config.sql in Supabase first, then save again." };
+    }
+    return { ok: false, message: error.message };
+  }
+  return { ok: true, message: "Hyperfx credentials saved for this clinic." };
+}
+
 // ------------------------------------------------------- open dental (gateway)
 
 export interface OpenDentalConfig {

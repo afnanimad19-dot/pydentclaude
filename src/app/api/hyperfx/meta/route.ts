@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { hfxCall, hfxConfigured } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
 
 // The Meta Ads tab's data: ad accounts, the chosen account's campaigns, and its
 // last-30-days performance — all through the Hyperfx meta_business toolkit
@@ -14,11 +14,12 @@ const num = (v: unknown): number => {
 };
 
 export async function GET(req: NextRequest) {
-  if (!hfxConfigured()) {
-    return NextResponse.json({ configured: false, error: "Set HYPERFX_MCP_URL and HYPERFX_API_KEY in Netlify first." }, { status: 400 });
+  const creds = await getHfxCreds(req.nextUrl.searchParams.get("ws"));
+  if (!hfxConfigured(creds)) {
+    return NextResponse.json({ configured: false, error: "Save this clinic's Hyperfx credentials in Settings → Connections, or set HYPERFX_MCP_URL / HYPERFX_API_KEY in Netlify." }, { status: 400 });
   }
 
-  const accountsRes = await hfxCall("meta_business_list_ad_accounts", { detail: "summary" });
+  const accountsRes = await hfxCall("meta_business_list_ad_accounts", { detail: "summary" }, creds);
   if (!accountsRes.ok) {
     const notConnected = /auth|connect|permission|token|credential|unknown tool|not found/i.test(accountsRes.error ?? "");
     return NextResponse.json({ configured: true, connected: !notConnected, error: accountsRes.error }, { status: 502 });
@@ -41,8 +42,8 @@ export async function GET(req: NextRequest) {
   const actId = account.id.startsWith("act_") ? account.id : `act_${account.id}`;
 
   const [campaignsRes, insightsRes] = await Promise.all([
-    hfxCall("meta_business_search_campaigns", { account_id: account.id, detail: "summary", limit: 50 }),
-    hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", date_preset: "last_30d", include_actions: false, include_video_metrics: false }),
+    hfxCall("meta_business_search_campaigns", { account_id: account.id, detail: "summary", limit: 50 }, creds),
+    hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", date_preset: "last_30d", include_actions: false, include_video_metrics: false }, creds),
   ]);
 
   const campaigns = campaignsRes.ok

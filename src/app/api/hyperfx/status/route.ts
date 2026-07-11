@@ -1,5 +1,5 @@
-import { NextResponse } from "next/server";
-import { hfxConfigured, hfxListTools } from "@/lib/hyperfx";
+import { NextRequest, NextResponse } from "next/server";
+import { getHfxCreds, hfxConfigured, hfxListTools } from "@/lib/hyperfx";
 
 // Reports whether the Hyperfx backend is configured and reachable, and which
 // platform toolkits are live on the connected MCP (by tool-name prefix), so the
@@ -17,11 +17,12 @@ const PLATFORM_PREFIXES: Record<string, string> = {
   google_sheets_: "Google Sheets",
 };
 
-export async function GET() {
-  if (!hfxConfigured()) {
-    return NextResponse.json({ configured: false, ok: false, error: "HYPERFX_MCP_URL / HYPERFX_API_KEY are not set in Netlify." });
+export async function GET(req: NextRequest) {
+  const creds = await getHfxCreds(req.nextUrl.searchParams.get("ws"));
+  if (!hfxConfigured(creds)) {
+    return NextResponse.json({ configured: false, ok: false, error: "No Hyperfx credentials — save this clinic's MCP URL + API key below, or set HYPERFX_MCP_URL / HYPERFX_API_KEY in Netlify." });
   }
-  const r = await hfxListTools();
+  const r = await hfxListTools(creds);
   if (!r.ok) return NextResponse.json({ configured: true, ok: false, error: r.error });
   const platforms = new Set<string>();
   for (const t of r.tools ?? []) {

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Megaphone, RefreshCw, ExternalLink, Plug, DollarSign, Eye, MousePointerClick, Percent } from "lucide-react";
 import { Card, StatusBadge } from "@/components/ui";
+import { getWorkspaceId } from "@/lib/db";
 
 // Meta Ads — live view of the clinic's real Meta ad accounts and campaigns,
 // served through the Hyperfx backend (meta_business toolkit). The Meta account
@@ -34,7 +35,8 @@ export default function MetaAdsPage() {
   const [account, setAccount] = useState<string>("");
 
   const fetchData = useCallback((acct?: string) => {
-    fetch(`/api/hyperfx/meta${acct ? `?account=${encodeURIComponent(acct)}` : ""}`)
+    getWorkspaceId()
+      .then((ws) => fetch(`/api/hyperfx/meta?ws=${ws ?? ""}${acct ? `&account=${encodeURIComponent(acct)}` : ""}`))
       .then((r) => r.json())
       .then((d) => { setData(d); if (d.account) setAccount(d.account); })
       .catch((e) => setData({ configured: true, connected: false, error: e instanceof Error ? e.message : "Request failed" }))
