@@ -288,6 +288,7 @@ Each agent now **stays in its lane** (declines out-of-area asks and names the ri
 | **Google Cloud** | Google + Gmail OAuth (Calendar, Analytics, Gmail send) | free within quota | **HAVE ✅** |
 | **OpenAI** | Image gen at higher quality (DALL·E 3). Without it, OpenRouter makes the images. | pay per image (~$0.04 each) | **ADDING (optional)** |
 | **Firecrawl** | Whole-site crawling for KB import / research | pay-as-you-go | **ADDING (optional)** |
+| **Hyperfx.ai** | The marketing-intelligence backend: Meta/Google/TikTok/LinkedIn Ads, Google Calendar, SEO + AI-search visibility, ads-library + social scraping. Connect a platform once on hyperfx.ai → usable from Pydent instantly (the **Meta Ads** tab reads through it). Set `HYPERFX_MCP_URL` + `HYPERFX_API_KEY` in Netlify. | your Hyperfx plan | **HAVE ✅ — add the 2 env vars** |
 | **Brevo** | **Email + SMS campaigns** (the clinic connects their own key; drives the Email/SMS campaign tabs + AI-drafted campaigns). Gmail still covers single-email send. | Free 300 emails/day; paid for volume/SMS | **RECOMMENDED (per clinic)** |
 | **DataForSEO** | Full SEO data for Sam — free fallback works without it | pay-as-you-go | **SKIP (optional)** |
 | **Google Ads developer token** | Pull Google **Ads** spend into reports | free but needs Ads MCC approval (1–2 days) | **SKIP for now** |

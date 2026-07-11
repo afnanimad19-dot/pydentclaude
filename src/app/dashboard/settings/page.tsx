@@ -28,6 +28,7 @@ import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { WhatsAppConfigForm } from "@/components/dashboard/whatsapp-config";
 import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
+import { HyperfxCard } from "@/components/dashboard/hyperfx-card";
 import { WebsiteConfigCard } from "@/components/dashboard/website-config";
 import { IntegrationsPanel } from "@/components/dashboard/integrations-panel";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
@@ -223,6 +224,7 @@ export default function SettingsPage() {
             detail="Runs your phone agents — calls, transcription and voices come from Vapi; you adjust everything here."
             badge={health === null ? <StatusBadge status="Checking…" tone="gray" /> : health.vapi ? <StatusBadge status="Key configured" tone="green" /> : <StatusBadge status="Add VAPI_API_KEY (private key)" tone="amber" />}
           />
+          <HyperfxCard />
           <IntegrationsPanel />
           <OpenDentalConfigCard />
           <WebsiteConfigCard />

@@ -12,6 +12,7 @@ import {
   Mail,
   PhoneCall,
   Camera,
+  Megaphone,
   KanbanSquare,
   Workflow,
   CalendarDays,
@@ -86,6 +87,7 @@ const nav: NavItem[] = [
       { href: "/dashboard/instagram", label: "Content calendar" },
     ],
   },
+  { href: "/dashboard/meta", label: "Meta Ads", icon: Megaphone },
   {
     href: "/dashboard/sms",
     label: "SMS",
