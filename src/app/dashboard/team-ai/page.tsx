@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, FileText, Activity, Clock, Play, Pause } from "lucide-react";
+import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, FileText, Activity, Clock, Play, Pause, LayoutGrid, Paperclip, Mic, X } from "lucide-react";
 import Link from "next/link";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
+import { templatesFor, type AgentTemplate } from "@/lib/agent-templates";
 import { toast } from "@/components/toast";
 import {
   fetchClinicSettings,
@@ -33,6 +34,35 @@ import {
   type ScheduledTask,
   type BrandDocument,
 } from "@/lib/db";
+
+// A chat message can be plain text or multimodal (text + attached photos) —
+// the same shape OpenRouter accepts, so attachments flow straight through.
+type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type ChatContent = string | ContentPart[];
+
+// Downscale photos client-side so a phone photo doesn't blow past body limits.
+async function downscaleImage(file: File): Promise<string> {
+  const dataUrl: string = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result));
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+  try {
+    const img = document.createElement("img");
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = dataUrl; });
+    const max = 1280;
+    const scale = Math.min(1, max / Math.max(img.width, img.height));
+    if (scale >= 1 && file.size < 900_000) return dataUrl;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.85);
+  } catch {
+    return dataUrl;
+  }
+}
 
 // Four DENTAL-specific pre-built marketing specialists (enrichlabs-style, tuned for
 // a clinic). Each lists what it can do and which connected channels it uses. Access
@@ -194,7 +224,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   const [connected, setConnected] = useState<Set<string>>(new Set());
   const [website, setWebsite] = useState("");
   const [ws, setWs] = useState<string | null>(null);
-  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: ChatContent }[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -212,6 +242,75 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [schedOpen, setSchedOpen] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
+  const templates = templatesFor(agent.key);
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
+  const [pendingDocs, setPendingDocs] = useState<{ name: string; text: string }[]>([]);
+  const [attaching, setAttaching] = useState(false);
+  const attachRef = useRef<HTMLInputElement>(null);
+  const [listening, setListening] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recRef = useRef<any>(null);
+
+  // Attach photos (sent to the agent as images) and documents (text extracted
+  // and included with the message) — PDFs/Word go through /api/kb/extract.
+  async function onAttach(list: FileList | null) {
+    if (!list || list.length === 0) return;
+    setAttaching(true);
+    try {
+      for (const file of Array.from(list)) {
+        if (/^image\//.test(file.type)) {
+          const url = await downscaleImage(file);
+          setPendingImages((p) => [...p, url]);
+        } else if (/\.(txt|md|csv|json|html)$/i.test(file.name)) {
+          const text = await file.text();
+          setPendingDocs((p) => [...p, { name: file.name, text }]);
+        } else if (/\.(pdf|docx|doc)$/i.test(file.name)) {
+          const fd = new FormData();
+          fd.append("file", file, file.name);
+          fd.append("name", file.name);
+          const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+          const data = await res.json().catch(() => ({}));
+          setPendingDocs((p) => [...p, { name: file.name, text: res.ok ? String(data.text ?? "") : `[Could not read ${file.name}]` }]);
+        } else {
+          toast(`"${file.name}" isn't supported — attach photos, PDF, Word or text files.`, "info");
+        }
+      }
+    } finally {
+      setAttaching(false);
+      if (attachRef.current) attachRef.current.value = "";
+    }
+  }
+
+  // Voice dictation (browser speech-to-text) — click to talk, click to stop;
+  // the transcript lands in the input box and is sent manually.
+  function toggleVoice() {
+    if (listening) {
+      try { recRef.current?.stop(); } catch { /* ignore */ }
+      setListening(false);
+      return;
+    }
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const w = window as any;
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SR) { toast("Voice input isn't supported in this browser — try Chrome or Edge.", "info"); return; }
+    const rec = new SR();
+    rec.lang = navigator.language || "en-US";
+    rec.interimResults = true;
+    rec.continuous = true;
+    const base = draft ? draft.replace(/\s+$/, "") + " " : "";
+    rec.onresult = (e: any) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      setDraft(base + t);
+    };
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    recRef.current = rec;
+    setListening(true);
+    rec.start();
+  }
 
   function refreshChats() { listTeamChats(agent.key).then(setChats); }
   function refreshWork() { fetchReports(agent.key).then(setReports); fetchAgentActivity(agent.key).then(setActivity); }
@@ -248,17 +347,33 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
 
   async function send() {
     const text = draft.trim();
-    if (!text || busy) return;
+    const imagesNow = pendingImages;
+    const docsNow = pendingDocs;
+    if ((!text && imagesNow.length === 0 && docsNow.length === 0) || busy) return;
+    if (listening) { try { recRef.current?.stop(); } catch { /* ignore */ } }
     setDraft("");
     setError(null);
-    const next = [...messages, { role: "user" as const, content: text }];
+    setPendingImages([]);
+    setPendingDocs([]);
+
+    // Fold attached documents' text into the message; photos ride along as images.
+    let fullText = text;
+    if (docsNow.length) {
+      fullText = [text, ...docsNow.map((d) => `--- Attached file: ${d.name} ---\n${d.text.slice(0, 8000)}`)].filter(Boolean).join("\n\n");
+    }
+    if (!fullText) fullText = "Please look at the attached image(s).";
+    const content: ChatContent = imagesNow.length
+      ? [{ type: "text", text: fullText }, ...imagesNow.map((url) => ({ type: "image_url" as const, image_url: { url } }))]
+      : fullText;
+
+    const next = [...messages, { role: "user" as const, content }];
     setMessages(next);
     setBusy(true);
 
     // Persist the conversation (create a session on the first message).
     let cid = chatId;
-    if (!cid) { cid = await createTeamChat(agent.key, text); setChatId(cid); refreshChats(); }
-    if (cid) appendTeamChatMessage(cid, "user", text);
+    if (!cid) { cid = await createTeamChat(agent.key, text || docsNow[0]?.name || "Attachment"); setChatId(cid); refreshChats(); }
+    if (cid) appendTeamChatMessage(cid, "user", fullText + (imagesNow.length ? `\n[${imagesNow.length} photo(s) attached]` : ""));
 
     try {
       const TOOL_ROUTES: Record<string, string> = { helena: "/api/team/helena", sam: "/api/team/sam", kai: "/api/team/kai", angela: "/api/team/angela" };
@@ -294,6 +409,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
     <>
       {brandOpen && <BrandModal brand={brand} onClose={() => setBrandOpen(false)} onSaved={(b) => { setBrand(b); setBrandOpen(false); }} onDocsChanged={() => fetchBrandDocuments().then(setBrandDocs)} />}
       {schedOpen && <ScheduleModal agentKey={agent.key} agentName={agent.name} onClose={() => setSchedOpen(false)} onSaved={() => { setSchedOpen(false); refreshTasks(); }} />}
+      {tplOpen && <TemplatesModal agentName={agent.name} templates={templates} onUse={(t) => { setDraft(t.prompt); setTplOpen(false); }} onClose={() => setTplOpen(false)} />}
       {docsOpen && (
         <div className="fixed inset-0 z-[60] flex">
           <div className="flex-1 bg-black/40" onClick={() => setDocsOpen(false)} />
@@ -391,6 +507,9 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
           <div className="flex items-center justify-between gap-2 border-b border-ink-200 px-5 py-2.5">
             <span className="flex items-center gap-2 text-sm font-medium text-ink-600"><Bot className="h-4 w-4 text-brand-500" /> {agent.name}</span>
             <div className="relative flex items-center gap-1.5">
+              <button onClick={() => setTplOpen(true)} className="flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+                <LayoutGrid className="h-3.5 w-3.5" /> Templates
+              </button>
               <button onClick={() => setShowHistory((v) => !v)} className="flex items-center gap-1 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
                 <History className="h-3.5 w-3.5" /> History{chats.length ? ` (${chats.length})` : ""}
               </button>
@@ -420,20 +539,68 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
             {messages.length === 0 && (
               <div className="m-auto max-w-md pt-10 text-center">
                 <p className="text-sm font-medium text-ink-700">Hi! I&apos;m {agent.name}, your {agent.role}.</p>
-                <p className="mt-1 text-sm text-ink-400">Try: “Plan next month&apos;s posts”, “Write a blog about teeth whitening”, or “Draft a recall message”.</p>
+                <p className="mt-1 text-sm text-ink-400">Pick a ready-made template, or just tell me what you need.</p>
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  {templates.slice(0, 3).map((t) => (
+                    <button key={t.id} onClick={() => setDraft(t.prompt)} className="rounded-full border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-600 hover:border-brand-400 hover:text-brand-600">{t.title}</button>
+                  ))}
+                  <button onClick={() => setTplOpen(true)} className="rounded-full bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700">All templates</button>
+                </div>
               </div>
             )}
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>{linkify(m.content)}</div>
+                <div className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>
+                  {typeof m.content === "string" ? (
+                    linkify(m.content)
+                  ) : (
+                    <>
+                      {m.content.filter((pt) => pt.type === "image_url").map((pt, j) => (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img key={j} src={(pt as { image_url: { url: string } }).image_url.url} alt="attachment" className="mb-2 max-h-56 rounded-xl" />
+                      ))}
+                      {linkify(m.content.filter((pt) => pt.type === "text").map((pt) => (pt as { text: string }).text).join("\n"))}
+                    </>
+                  )}
+                </div>
               </div>
             ))}
             {busy && <div className="flex justify-start"><div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-ink-200 bg-surface px-3.5 py-2 text-sm text-ink-400"><Bot className="h-4 w-4 animate-pulse" /> {agent.name} is thinking…</div></div>}
           </div>
           {error && <p className="px-5 pt-2 text-sm text-amber-600">{error}</p>}
-          <div className="flex gap-2 border-t border-ink-200 p-4">
-            <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={`Message ${agent.name}…`} className={inputCls} />
-            <button onClick={send} disabled={busy} className="rounded-xl bg-brand-600 px-4 text-white hover:bg-brand-700 disabled:opacity-50"><Send className="h-5 w-5" /></button>
+          <div className="border-t border-ink-200 p-4">
+            {(pendingImages.length > 0 || pendingDocs.length > 0 || attaching) && (
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                {pendingImages.map((url, i) => (
+                  <span key={i} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={url} alt="attachment" className="h-14 w-14 rounded-lg border border-ink-200 object-cover" />
+                    <button onClick={() => setPendingImages((p) => p.filter((_, j) => j !== i))} className="absolute -right-1.5 -top-1.5 rounded-full bg-ink-900/80 p-0.5 text-white" title="Remove"><X className="h-3 w-3" /></button>
+                  </span>
+                ))}
+                {pendingDocs.map((d, i) => (
+                  <span key={`${d.name}-${i}`} className="flex items-center gap-1.5 rounded-lg border border-ink-200 bg-ink-50 px-2.5 py-1.5 text-xs text-ink-700">
+                    <FileText className="h-3.5 w-3.5 text-brand-500" /> {d.name}
+                    <button onClick={() => setPendingDocs((p) => p.filter((_, j) => j !== i))} className="text-ink-400 hover:text-rose-500" title="Remove"><X className="h-3 w-3" /></button>
+                  </span>
+                ))}
+                {attaching && <span className="text-xs text-brand-600">Reading attachment…</span>}
+              </div>
+            )}
+            <div className="flex items-end gap-2">
+              <input ref={attachRef} type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.md,.csv,.json,.html" className="hidden" onChange={(e) => onAttach(e.target.files)} />
+              <button onClick={() => attachRef.current?.click()} title="Attach a photo or document" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><Paperclip className="h-5 w-5" /></button>
+              <button onClick={toggleVoice} title={listening ? "Stop dictating" : "Dictate your message (speech-to-text)"} className={`rounded-xl border p-2.5 ${listening ? "border-rose-400 bg-rose-500/10 text-rose-500" : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}><Mic className={`h-5 w-5 ${listening ? "animate-pulse" : ""}`} /></button>
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                rows={Math.min(6, Math.max(1, draft.split("\n").length))}
+                placeholder={listening ? "Listening… speak now" : `Message ${agent.name}…  (Shift+Enter for a new line)`}
+                className={`${inputCls} resize-none`}
+              />
+              <button onClick={send} disabled={busy} className="rounded-xl bg-brand-600 px-4 py-2.5 text-white hover:bg-brand-700 disabled:opacity-50"><Send className="h-5 w-5" /></button>
+            </div>
           </div>
         </Card>
         <div className="grid gap-4 lg:grid-cols-3">
@@ -651,6 +818,52 @@ function ScheduleModal({ agentKey, agentName, onClose, onSaved }: { agentKey: st
         <p className="text-xs text-ink-400">Runs need the autopilot scheduler enabled (point a cron at /api/cron/run — see AI_TEAM.md). Until then, scheduled tasks are saved but won&apos;t fire.</p>
       </div>
       <ModalFooter onClose={onClose} submitLabel={saving ? "Scheduling…" : "Schedule"} onSubmit={submit} />
+    </Modal>
+  );
+}
+
+// Hyperfx-style template gallery: boxes → click for a full-prompt preview →
+// "Use this template" puts the prompt in the chat input (never auto-sends).
+function TemplatesModal({ agentName, templates, onUse, onClose }: { agentName: string; templates: AgentTemplate[]; onUse: (t: AgentTemplate) => void; onClose: () => void }) {
+  const [preview, setPreview] = useState<AgentTemplate | null>(null);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={preview ? preview.title : `${agentName}'s templates`}
+      subtitle={preview ? preview.description : "Ready-made tasks — preview one, then use it. The prompt lands in the chat box for you to review and send."}
+      wide
+    >
+      {preview ? (
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-1.5">
+            {preview.apps.map((a) => (
+              <span key={a} className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-600 dark:text-brand-300">{a}</span>
+            ))}
+          </div>
+          <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-xl border border-ink-200 bg-ink-50 p-4 font-sans text-sm leading-relaxed text-ink-800">{preview.prompt}</pre>
+          <div className="flex items-center justify-between">
+            <button onClick={() => setPreview(null)} className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
+              <ArrowLeft className="h-4 w-4" /> All templates
+            </button>
+            <button onClick={() => onUse(preview)} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Use this template</button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {templates.map((t) => (
+            <button key={t.id} onClick={() => setPreview(t)} className="rounded-xl border border-ink-200 p-4 text-left transition-colors hover:border-brand-400 hover:bg-brand-50/40">
+              <p className="text-sm font-semibold text-ink-900">{t.title}</p>
+              <p className="mt-1 text-xs text-ink-500">{t.description}</p>
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {t.apps.map((a) => (
+                  <span key={a} className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-medium text-ink-500">{a}</span>
+                ))}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
     </Modal>
   );
 }
