@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { HFX_TEAM_TOOLS, execHyperfxTool, hyperfxSystemNote } from "@/lib/hyperfx-team-tools";
 import { wpPublishPost, wpUploadMedia } from "@/lib/wp-publish";
 import { generateImage } from "@/lib/image-gen";
 import { runAnalyticsReport, runSearchConsoleReport, getGoogleAdsPerformance } from "@/lib/google-api";
@@ -140,12 +141,15 @@ export async function POST(req: NextRequest) {
     "If they want a featured image (or it would help), call generate_featured_image FIRST, then pass its media id as featured_media_id to publish_blog_post.",
     "You can also: pull Google Analytics (get_analytics_report) and Search Console (get_search_console_report); post to Facebook (post_to_facebook) and Instagram (post_to_instagram, which generates the photo). Only post to a channel when the user clearly asks; for social posts, draft the caption and confirm before posting unless they say go ahead.",
     "Keep dental claims compliant: no guarantees, no medical advice, no diagnosis. After a tool runs, tell the user plainly what happened and share the link/result.",
+    hyperfxSystemNote("helena"),
   ].filter(Boolean).join("\n\n");
 
   const origin = req.nextUrl.origin;
   const msgs: any[] = [{ role: "system", content: system }, ...(messages ?? []).slice(-16)];
 
   async function exec(name: string, args: any): Promise<string> {
+    const hfx = await execHyperfxTool(workspaceId, "helena", name, args);
+    if (hfx !== null) return hfx;
     if (name === "create_report") {
       const id = await saveReport(workspaceId, "helena", String(args.title || "Report"), String(args.content_markdown || ""));
       if (!id) return "Could not save the report (server storage not configured).";
@@ -196,7 +200,7 @@ export async function POST(req: NextRequest) {
 
   try {
     for (let round = 0; round < 5; round++) {
-      const data = await call(apiKey, { messages: msgs, tools: TOOLS, tool_choice: "auto" });
+      const data = await call(apiKey, { messages: msgs, tools: [...TOOLS, ...HFX_TEAM_TOOLS], tool_choice: "auto" });
       const msg = data.choices?.[0]?.message;
       if (!msg?.tool_calls?.length) return NextResponse.json({ reply: msg?.content ?? "" });
       msgs.push(msg);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { HFX_TEAM_TOOLS, execHyperfxTool, hyperfxSystemNote } from "@/lib/hyperfx-team-tools";
 import { getGoogleReviews, replyToGoogleReview } from "@/lib/google-api";
 import { getFacebookReviews } from "@/lib/meta-api";
 import { logActivity } from "@/lib/activity";
@@ -63,11 +64,14 @@ export async function POST(req: NextRequest) {
     website ? `The clinic's website is ${website}.` : "",
     "When asked about reviews/reputation, call get_google_reviews and/or get_facebook_reviews first, then summarise sentiment, highlight any negative or urgent ones at the top, and offer draft replies.",
     "Only call reply_to_google_review when the user clearly approves a specific reply; show them the draft first. Replies must be empathetic, never argue, never share private health details, and invite the patient to contact the clinic to make it right.",
+    hyperfxSystemNote("kai"),
   ].filter(Boolean).join("\n\n");
 
   const msgs: any[] = [{ role: "system", content: system }, ...(messages ?? []).slice(-16)];
 
   async function exec(name: string, args: any): Promise<string> {
+    const hfx = await execHyperfxTool(workspaceId, "kai", name, args);
+    if (hfx !== null) return hfx;
     if (name === "get_google_reviews") return getGoogleReviews(workspaceId, Number(args.max) || 10);
     if (name === "get_facebook_reviews") return getFacebookReviews(workspaceId);
     if (name === "reply_to_google_review") {
@@ -80,7 +84,7 @@ export async function POST(req: NextRequest) {
 
   try {
     for (let round = 0; round < 5; round++) {
-      const data = await call(apiKey, { messages: msgs, tools: TOOLS, tool_choice: "auto" });
+      const data = await call(apiKey, { messages: msgs, tools: [...TOOLS, ...HFX_TEAM_TOOLS], tool_choice: "auto" });
       const msg = data.choices?.[0]?.message;
       if (!msg?.tool_calls?.length) return NextResponse.json({ reply: msg?.content ?? "" });
       msgs.push(msg);

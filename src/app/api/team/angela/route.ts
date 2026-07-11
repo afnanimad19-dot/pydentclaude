@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { HFX_TEAM_TOOLS, execHyperfxTool, hyperfxSystemNote } from "@/lib/hyperfx-team-tools";
 import { getRecallPatients, listTemplates, scheduleBroadcast } from "@/lib/angela-data";
 import { logActivity } from "@/lib/activity";
 import { sendEmail } from "@/lib/email-send";
@@ -113,11 +114,14 @@ export async function POST(req: NextRequest) {
     "You can send a SINGLE email via send_email (uses the clinic's connected Gmail, or Brevo if configured) — good for a test or a one-off. Only send when the user clearly approves the recipient + content.",
     "For a BULK email or SMS campaign to many patients, use Brevo: call list_brevo_lists to see the clinic's contact lists, then write the copy and call create_brevo_campaign to put it into Brevo. DEFAULT to a DRAFT (send_now false, no scheduled_at) so the clinic reviews and sends it themselves — only set send_now or scheduled_at when the user explicitly approves. SMS campaigns need an sms_sender (max 11 letters/numbers). This is the 'I write it here → it lands in Brevo ready to send' flow.",
     "Keep it compliant: no medical advice/guarantees, include an easy opt-out for email, and keep WhatsApp copy within template rules.",
+    hyperfxSystemNote("angela"),
   ].filter(Boolean).join("\n\n");
 
   const msgs: any[] = [{ role: "system", content: system }, ...(messages ?? []).slice(-16)];
 
   async function exec(name: string, args: any): Promise<string> {
+    const hfx = await execHyperfxTool(workspaceId, "angela", name, args);
+    if (hfx !== null) return hfx;
     if (name === "find_recall_patients") return getRecallPatients(workspaceId, Number(args.months) || 6);
     if (name === "list_whatsapp_templates") return listTemplates(workspaceId);
     if (name === "schedule_whatsapp_broadcast") {
@@ -155,7 +159,7 @@ export async function POST(req: NextRequest) {
 
   try {
     for (let round = 0; round < 5; round++) {
-      const data = await call(apiKey, { messages: msgs, tools: TOOLS, tool_choice: "auto" });
+      const data = await call(apiKey, { messages: msgs, tools: [...TOOLS, ...HFX_TEAM_TOOLS], tool_choice: "auto" });
       const msg = data.choices?.[0]?.message;
       if (!msg?.tool_calls?.length) return NextResponse.json({ reply: msg?.content ?? "" });
       msgs.push(msg);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { HFX_TEAM_TOOLS, execHyperfxTool, hyperfxSystemNote } from "@/lib/hyperfx-team-tools";
 import { runSearchConsoleReport, runSearchConsolePages, postToGoogleBusiness } from "@/lib/google-api";
 import { auditPageSeo } from "@/lib/seo-audit";
 import { keywordResearch, findCompetitors, rankedKeywords, backlinksSummary, serpCheck } from "@/lib/dataforseo";
@@ -129,12 +130,15 @@ export async function POST(req: NextRequest) {
     website ? `The clinic's website is ${website}.` : "",
     "Ground every recommendation in real data. Use get_top_queries / get_top_pages for the clinic's own Search Console; use keyword_research for volumes/competition, find_competitors + ranked_keywords for competitor gaps, backlinks_summary for authority, and serp_check to see who currently ranks. Use audit_page_seo for on-page fixes. Only call post_to_google_business when the user clearly asks to post; confirm the wording first.",
     "Default DataForSEO location is 2840 (US); if the clinic is elsewhere, ask for the country or pass the right location code. Give specific, dental-relevant recommendations with the real numbers. Keep claims compliant (no guarantees, no medical advice).",
+    hyperfxSystemNote("sam"),
   ].filter(Boolean).join("\n\n");
 
   const origin = req.nextUrl.origin;
   const msgs: any[] = [{ role: "system", content: system }, ...(messages ?? []).slice(-16)];
 
   async function exec(name: string, args: any): Promise<string> {
+    const hfx = await execHyperfxTool(workspaceId, "sam", name, args);
+    if (hfx !== null) return hfx;
     if (name === "create_report") {
       const id = await saveReport(workspaceId, "sam", String(args.title || "SEO Report"), String(args.content_markdown || ""));
       if (!id) return "Could not save the report (server storage not configured).";
@@ -160,7 +164,7 @@ export async function POST(req: NextRequest) {
 
   try {
     for (let round = 0; round < 5; round++) {
-      const data = await call(apiKey, { messages: msgs, tools: TOOLS, tool_choice: "auto" });
+      const data = await call(apiKey, { messages: msgs, tools: [...TOOLS, ...HFX_TEAM_TOOLS], tool_choice: "auto" });
       const msg = data.choices?.[0]?.message;
       if (!msg?.tool_calls?.length) return NextResponse.json({ reply: msg?.content ?? "" });
       msgs.push(msg);

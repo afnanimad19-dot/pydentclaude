@@ -155,18 +155,24 @@ export async function hfxCall(
   return { ok: false, error: "Hyperfx call failed" };
 }
 
+export interface HfxTool {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+}
+
 export async function hfxListTools(
   creds: HfxCreds = ENV_CREDS
-): Promise<{ ok: boolean; tools?: { name: string; description?: string }[]; error?: string }> {
+): Promise<{ ok: boolean; tools?: HfxTool[]; error?: string }> {
   if (!creds.url) return { ok: false, error: NOT_CONFIGURED };
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       if (!session(creds).initialized) await initialize(creds);
-      const tools: { name: string; description?: string }[] = [];
+      const tools: HfxTool[] = [];
       let cursor: string | undefined;
       for (let page = 0; page < 5; page++) {
         const r = await rpc(creds, "tools/list", cursor ? { cursor } : {}, Math.floor(Math.random() * 1e9) + 1);
-        for (const t of r?.tools ?? []) tools.push({ name: t.name, description: t.description });
+        for (const t of r?.tools ?? []) tools.push({ name: t.name, description: t.description, inputSchema: t.inputSchema });
         cursor = r?.nextCursor;
         if (!cursor) break;
       }
