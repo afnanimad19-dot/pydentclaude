@@ -1,20 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getHfxCreds, hfxConfigured, hfxListTools } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxConfigured, hfxListTools } from "@/lib/hyperfx";
 
-// Reports whether the Hyperfx backend is configured and reachable, and which
-// platform toolkits are live on the connected MCP (by tool-name prefix), so the
-// Connections card and the Meta Ads page can show accurate state.
+// Reports whether the marketing engine is configured and reachable, and which
+// platforms are CONNECTED (authenticated on the portal) — read from the live
+// toolkit catalog, not from the session's enabled tools, so a freshly connected
+// app shows up immediately. Tool enablement happens automatically on first use.
 export const runtime = "nodejs";
 
-const PLATFORM_PREFIXES: Record<string, string> = {
-  meta_business_: "Meta Ads",
-  google_ads_: "Google Ads",
-  google_calendar_: "Google Calendar",
-  hyperseo_: "HyperSEO",
-  tiktok_: "TikTok Ads",
-  linkedin_ads_: "LinkedIn Ads",
-  search_facebook_: "Meta Ads Library",
-  google_sheets_: "Google Sheets",
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+const PLATFORM_TOOLKITS: Record<string, string> = {
+  meta_business: "Meta Ads",
+  google_ads: "Google Ads",
+  google_calendar: "Google Calendar",
+  google_analytics_toolkit: "Google Analytics",
+  google_search_console_toolkit: "Search Console",
+  hyperseo: "HyperSEO",
+  tiktok_marketing: "TikTok Ads",
+  tiktok: "TikTok",
+  linkedin_ads_toolkit: "LinkedIn Ads",
+  instagram_toolkit: "Instagram",
+  meta_ads_library: "Meta Ads Library",
+  gmail: "Gmail",
+  google_sheets: "Google Sheets",
 };
 
 export async function GET(req: NextRequest) {
@@ -22,13 +30,29 @@ export async function GET(req: NextRequest) {
   if (!hfxConfigured(creds)) {
     return NextResponse.json({ configured: false, ok: false, error: "No Hyperfx credentials — save this clinic's MCP URL + API key below, or set HYPERFX_MCP_URL / HYPERFX_API_KEY in Netlify." });
   }
-  const r = await hfxListTools(creds);
-  if (!r.ok) return NextResponse.json({ configured: true, ok: false, error: r.error });
-  const platforms = new Set<string>();
-  for (const t of r.tools ?? []) {
-    for (const [prefix, label] of Object.entries(PLATFORM_PREFIXES)) {
-      if (t.name.startsWith(prefix)) platforms.add(label);
+
+  // Connected platforms come from the catalog's authenticated flags; the tool
+  // count comes from the session's enabled tools (informational only).
+  const [catalog, toolsRes] = await Promise.all([
+    hfxCall("discover_toolkits", { query: "" }, creds),
+    hfxListTools(creds),
+  ]);
+  if (!catalog.ok && !toolsRes.ok) {
+    return NextResponse.json({ configured: true, ok: false, error: catalog.error ?? toolsRes.error });
+  }
+
+  const platforms: string[] = [];
+  if (catalog.ok && Array.isArray(catalog.data)) {
+    for (const t of catalog.data as any[]) {
+      const label = PLATFORM_TOOLKITS[t?.id];
+      if (label && t?.authenticated) platforms.push(label);
     }
   }
-  return NextResponse.json({ configured: true, ok: true, toolCount: r.tools?.length ?? 0, platforms: [...platforms].sort() });
+
+  return NextResponse.json({
+    configured: true,
+    ok: true,
+    toolCount: toolsRes.ok ? toolsRes.tools?.length ?? 0 : 0,
+    platforms: platforms.sort(),
+  });
 }

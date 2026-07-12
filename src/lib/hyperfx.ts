@@ -132,24 +132,93 @@ function unwrap(result: any): unknown {
 
 const NOT_CONFIGURED = "Hyperfx is not configured — save this clinic's Hyperfx MCP URL + API key in Settings → Connections, or set HYPERFX_MCP_URL / HYPERFX_API_KEY in Netlify.";
 
+// Hyperfx separates "authenticated" (the account is CONNECTED on their portal)
+// from "enabled" (the toolkit's tools are exposed to an MCP session). A freshly
+// connected app therefore answers "unknown tool" until enable_toolkit runs. Map
+// each tool prefix to its toolkit so hfxCall can self-enable and retry.
+const TOOLKIT_BY_PREFIX: [string, string][] = [
+  ["meta_business_", "meta_business"],
+  ["google_ads_", "google_ads"],
+  ["google_calendar_", "google_calendar"],
+  ["google_sheets_", "google_sheets"],
+  ["google_analytics_", "google_analytics_toolkit"],
+  ["hyperseo_", "hyperseo"],
+  ["tiktok_", "tiktok_marketing"],
+  ["linkedin_ads_", "linkedin_ads_toolkit"],
+  ["search_facebook_", "meta_ads_library"],
+  ["scrape_facebook", "meta_ads_library"],
+  ["get_facebook_ad", "meta_ads_library"],
+  ["outscraper_", "outscraper_toolkit"],
+  ["scrape_reddit", "reddit_scraper"],
+  ["cmo_", "cmo"],
+  ["instagram_scraper", "instagram_scraper"],
+];
+
+function toolkitForTool(tool: string): string | null {
+  for (const [prefix, toolkit] of TOOLKIT_BY_PREFIX) if (tool.startsWith(prefix)) return toolkit;
+  return null;
+}
+
+function looksLikeUnknownTool(msg: string): boolean {
+  return /unknown tool|not (found|available|enabled)|no such tool|does not exist|invalid tool/i.test(msg);
+}
+
+// Enable a toolkit on the MCP connection (works when the account is already
+// authenticated on the portal). Returns true when the server confirms; the
+// session must then be re-initialized before the new tools are callable.
+async function tryEnableToolkit(creds: HfxCreds, toolkitId: string): Promise<boolean> {
+  try {
+    const result = await rpc(
+      creds,
+      "tools/call",
+      { name: "enable_toolkit", arguments: { toolkit_ids: [toolkitId], reason: "Pydent is reading this connected app's data for the clinic." } },
+      Math.floor(Math.random() * 1e9) + 1
+    );
+    const data = unwrap(result);
+    const txt = typeof data === "string" ? data : JSON.stringify(data ?? "");
+    return /"status"\s*:\s*"enabled"|already enabled|status.{0,4}enabled/i.test(txt);
+  } catch {
+    return false;
+  }
+}
+
 export async function hfxCall(
   tool: string,
   args: Record<string, unknown> = {},
   creds: HfxCreds = ENV_CREDS
 ): Promise<{ ok: boolean; data?: unknown; error?: string }> {
   if (!creds.url) return { ok: false, error: NOT_CONFIGURED };
-  for (let attempt = 0; attempt < 2; attempt++) {
+  let enableTried = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       if (!session(creds).initialized) await initialize(creds);
       const result = await rpc(creds, "tools/call", { name: tool, arguments: args }, Math.floor(Math.random() * 1e9) + 1);
       if (result?.isError) {
         const block = Array.isArray(result?.content) ? result.content.find((c: any) => c?.type === "text") : null;
-        return { ok: false, error: String(block?.text ?? "Tool call failed").slice(0, 500) };
+        const errText = String(block?.text ?? "Tool call failed");
+        const toolkit = toolkitForTool(tool);
+        if (!enableTried && toolkit && looksLikeUnknownTool(errText)) {
+          enableTried = true;
+          if (await tryEnableToolkit(creds, toolkit)) {
+            resetSession(creds); // enable_toolkit requires a fresh MCP session
+            continue;
+          }
+        }
+        return { ok: false, error: errText.slice(0, 500) };
       }
       return { ok: true, data: unwrap(result) };
     } catch (e) {
-      resetSession(creds); // stale session → re-initialize once, then give up
-      if (attempt === 1) return { ok: false, error: e instanceof Error ? e.message : "Hyperfx call failed" };
+      const msg = e instanceof Error ? e.message : "Hyperfx call failed";
+      const toolkit = toolkitForTool(tool);
+      if (!enableTried && toolkit && looksLikeUnknownTool(msg)) {
+        enableTried = true;
+        if (await tryEnableToolkit(creds, toolkit)) {
+          resetSession(creds);
+          continue;
+        }
+      }
+      resetSession(creds); // stale session → re-initialize, then give up
+      if (attempt >= 2) return { ok: false, error: msg };
     }
   }
   return { ok: false, error: "Hyperfx call failed" };

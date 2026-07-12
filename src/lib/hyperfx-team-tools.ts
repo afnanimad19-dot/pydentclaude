@@ -78,21 +78,37 @@ export async function execHyperfxTool(
   const creds = await getHfxCreds(workspaceId);
 
   if (name === "hyperfx_list_tools") {
-    const r = await hfxListTools(creds);
-    if (!r.ok) return `Hyperfx isn't reachable: ${r.error}`;
+    // Enabled tools carry descriptions + schemas; the catalog additionally
+    // reveals CONNECTED apps whose tools aren't enabled yet — those auto-enable
+    // the first time hyperfx_run_tool calls them, so list them too.
+    const [r, cat] = await Promise.all([hfxListTools(creds), hfxCall("discover_toolkits", { query: "" }, creds)]);
+    if (!r.ok && !cat.ok) return `Hyperfx isn't reachable: ${r.error ?? cat.error}`;
     const q = String(args?.query ?? "").toLowerCase();
-    const mine = (r.tools ?? [])
+    const enabled = (r.tools ?? [])
       .filter((t) => inLane(t.name, lanes) && hfxToolIsSafe(t.name))
       .filter((t) => !q || `${t.name} ${t.description ?? ""}`.toLowerCase().includes(q))
       .slice(0, 60);
-    if (mine.length === 0) {
+    const enabledNames = new Set(enabled.map((t) => t.name));
+    const pending: string[] = [];
+    if (cat.ok && Array.isArray(cat.data)) {
+      for (const tk of cat.data as any[]) {
+        if (!tk?.authenticated && tk?.requires_auth) continue; // not connected yet
+        for (const tn of tk?.tools ?? []) {
+          const toolName = String(tn);
+          if (enabledNames.has(toolName) || !inLane(toolName, lanes) || !hfxToolIsSafe(toolName)) continue;
+          if (q && !toolName.toLowerCase().includes(q)) continue;
+          pending.push(toolName);
+        }
+      }
+    }
+    if (enabled.length === 0 && pending.length === 0) {
       return q
         ? `No Hyperfx tools in your area match "${q}". Try hyperfx_list_tools without a query.`
-        : "No Hyperfx tools are live for this clinic yet — the clinic needs to connect the platform (e.g. Meta, Google Ads) on hyperfx.ai, or save its Hyperfx credentials in Settings → Connections.";
+        : "No Hyperfx tools are live for this clinic yet — the clinic needs to connect the platform (e.g. Meta, Google Ads) in Settings → Connections → Apps.";
     }
-    return mine
-      .map((t) => `- ${t.name} (${schemaBrief(t.inputSchema)}): ${(t.description ?? "").replace(/\s+/g, " ").trim().slice(0, 180)}`)
-      .join("\n");
+    const lines = enabled.map((t) => `- ${t.name} (${schemaBrief(t.inputSchema)}): ${(t.description ?? "").replace(/\s+/g, " ").trim().slice(0, 180)}`);
+    for (const tn of pending.slice(0, 40)) lines.push(`- ${tn} (connected — callable now; args self-explanatory from the name)`);
+    return lines.join("\n");
   }
 
   // hyperfx_run_tool
