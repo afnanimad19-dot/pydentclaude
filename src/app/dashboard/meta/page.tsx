@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Megaphone, RefreshCw, ExternalLink, Plug, DollarSign, Eye, MousePointerClick, Percent, Plus, MoreVertical, Pencil, Copy, Trash2, X, ChevronDown, ChevronRight, Pause, Play, CalendarDays } from "lucide-react";
+import { Megaphone, RefreshCw, ExternalLink, Plug, DollarSign, Eye, MousePointerClick, Percent, Plus, MoreVertical, Pencil, Copy, Trash2, X, ChevronDown, ChevronRight, Pause, Play, CalendarDays, AlertTriangle, Lightbulb, Users, ShoppingBag, MessageCircle, Smartphone, ArrowLeft, ImageIcon } from "lucide-react";
 import { Card, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { getWorkspaceId } from "@/lib/db";
+import { META_OBJECTIVES, strategiesFor, type MetaStrategy } from "@/lib/meta-strategies";
 
 // Meta Ads — live campaigns with full management, Meta-style:
 // campaign → ad sets → ads. Filter by status (active first by default), edit /
@@ -14,7 +15,7 @@ import { getWorkspaceId } from "@/lib/db";
 // graph, and its ad sets & ads. All through the marketing engine.
 
 interface MetaAccount { id: string; name: string; status: string; currency: string }
-interface MetaCampaign { id: string; name: string; status: string; objective: string; dailyBudget: number | null; lifetimeBudget: number | null; startTime: string | null; spend: number | null; clicks: number | null; impressions: number | null }
+interface MetaCampaign { id: string; name: string; status: string; objective: string; dailyBudget: number | null; lifetimeBudget: number | null; startTime: string | null; spend: number | null; clicks: number | null; impressions: number | null; results: number | null; resultLabel: string; costPerResult: number | null; issues: string[]; recommendations: string[] }
 interface MetaInsights { spend: number; impressions: number; clicks: number; ctr: number; cpc: number }
 interface AdRow { id: string; name: string; status: string }
 interface AdSetRow { id: string; name: string; status: string; dailyBudget: number | null; lifetimeBudget: number | null; optimization: string | null; ads: AdRow[] }
@@ -32,7 +33,7 @@ interface MetaData {
   campaignsError?: string | null;
 }
 
-const OBJECTIVES = ["OUTCOME_TRAFFIC", "OUTCOME_LEADS", "OUTCOME_ENGAGEMENT", "OUTCOME_AWARENESS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION"];
+const OBJ_ICONS: Record<string, typeof Users> = { Users, ShoppingBag, MousePointerClick, MessageCircle, Megaphone, Smartphone };
 
 // Meta-style date ranges: the presets Meta's insights API accepts, plus
 // this/last month and a fully custom calendar range (since → until).
@@ -152,14 +153,21 @@ export default function MetaAdsPage() {
   return (
     <div className="space-y-6">
       {createOpen && (
-        <CampaignModal
-          title="New campaign"
-          initial={{ name: "", objective: OBJECTIVES[0], dailyBudget: 10, status: "PAUSED" }}
+        <CreateCampaignWizard
           currency={cur}
           onClose={() => setCreateOpen(false)}
-          onSave={async (v) => {
-            const ok = await manage("create_campaign", { account_id: account, name: v.name, objective: v.objective, daily_budget: v.dailyBudget || undefined, status: v.status }, v.status === "ACTIVE" ? "Campaign created and LIVE." : "Campaign created (paused).");
-            if (ok) { setCreateOpen(false); fetchData(account); }
+          onCreate={async (payload) => {
+            const res = await fetch("/api/hyperfx/meta/manage", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ws, action: "create_campaign_strategy", account_id: account, ...payload }),
+            });
+            const d = await res.json().catch(() => ({}));
+            if (!res.ok) { toast(d.error ?? "Campaign creation failed", "info"); return false; }
+            toast(d.summary ?? "Campaign created.", "success");
+            setCreateOpen(false);
+            fetchData(account);
+            return true;
           }}
         />
       )}
@@ -275,16 +283,18 @@ export default function MetaAdsPage() {
               <p className="px-5 py-8 text-center text-sm text-ink-400">No {filter === "all" ? "" : filter + " "}campaigns on this ad account.</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[860px] text-left text-sm">
+                <table className="w-full min-w-[1080px] text-left text-sm">
                   <thead className="border-b border-ink-200 bg-ink-50 text-xs font-semibold uppercase tracking-wide text-ink-500">
                     <tr>
                       <th className="px-5 py-2.5">Campaign</th>
                       <th className="px-4 py-2.5">Status</th>
-                      <th className="px-4 py-2.5">Objective</th>
+                      <th className="px-4 py-2.5">Alerts</th>
+                      <th className="px-4 py-2.5 text-right">Results</th>
+                      <th className="px-4 py-2.5 text-right">Cost / result</th>
                       <th className="px-4 py-2.5 text-right">Spend ({rangeLabel})</th>
+                      <th className="px-4 py-2.5 text-right">Impressions</th>
                       <th className="px-4 py-2.5 text-right">Clicks</th>
-                      <th className="px-4 py-2.5 text-right">Daily budget</th>
-                      <th className="px-4 py-2.5">Started</th>
+                      <th className="px-4 py-2.5 text-right">Budget</th>
                       <th className="px-4 py-2.5 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -295,11 +305,26 @@ export default function MetaAdsPage() {
                           <button onClick={() => setDetail(c)} className="font-medium text-ink-900 hover:text-brand-600">{c.name}</button>
                         </td>
                         <td className="px-4 py-3"><StatusBadge status={c.status} tone={statusTone(c.status)} /></td>
-                        <td className="px-4 py-3 text-ink-600">{objLabel(c.objective)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            {c.issues.length > 0 && (
+                              <span title={c.issues.join("\n")} className="cursor-help text-rose-500"><AlertTriangle className="h-4 w-4" /></span>
+                            )}
+                            {c.recommendations.length > 0 && (
+                              <span title={c.recommendations.join("\n")} className="cursor-help text-amber-500"><Lightbulb className="h-4 w-4" /></span>
+                            )}
+                            {c.issues.length === 0 && c.recommendations.length === 0 && <span className="text-xs text-ink-300">—</span>}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="font-medium text-ink-900">{c.results != null ? c.results.toLocaleString() : "—"}</span>
+                          <span className="block text-[10px] text-ink-400">{c.resultLabel}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-ink-700">{c.costPerResult != null ? money(c.costPerResult, cur) : "—"}</td>
                         <td className="px-4 py-3 text-right font-medium text-ink-900">{c.spend != null ? money(c.spend, cur) : "—"}</td>
+                        <td className="px-4 py-3 text-right text-ink-700">{c.impressions != null ? c.impressions.toLocaleString() : "—"}</td>
                         <td className="px-4 py-3 text-right text-ink-700">{c.clicks != null ? c.clicks.toLocaleString() : "—"}</td>
-                        <td className="px-4 py-3 text-right text-ink-700">{c.dailyBudget != null ? money(c.dailyBudget, cur) : c.lifetimeBudget != null ? `${money(c.lifetimeBudget, cur)} lifetime` : <span className="text-ink-400" title="Budget is set on the ad sets">on ad sets</span>}</td>
-                        <td className="px-4 py-3 text-ink-600">{c.startTime ? c.startTime.slice(0, 10) : "—"}</td>
+                        <td className="px-4 py-3 text-right text-ink-700">{c.dailyBudget != null ? `${money(c.dailyBudget, cur)}/day` : c.lifetimeBudget != null ? `${money(c.lifetimeBudget, cur)} lifetime` : <span className="text-ink-400" title="Budget is set on the ad sets">on ad sets</span>}</td>
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-1">
                             <button onClick={() => toggleStatus(c)} disabled={busyId === c.id} title={isActive(c.status) ? "Pause" : "Activate"} className="rounded-lg p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-700">
@@ -356,7 +381,7 @@ function CampaignModal({ title, initial, currency, edit, onClose, onSave }: {
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Objective">
             <select className={inputCls} value={objective} onChange={(e) => setObjective(e.target.value)} disabled={edit}>
-              {[...new Set([initial.objective, ...OBJECTIVES])].filter(Boolean).map((o) => <option key={o} value={o}>{objLabel(o)}</option>)}
+              {[...new Set([initial.objective, ...META_OBJECTIVES.map((o) => o.key)])].filter(Boolean).map((o) => <option key={o} value={o}>{objLabel(o)}</option>)}
             </select>
           </Field>
           <Field label={`Daily budget (${currency})`}>
@@ -513,10 +538,7 @@ function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, 
                         ) : (
                           <ul className="divide-y divide-ink-100">
                             {s.ads.map((a) => (
-                              <li key={a.id} className="flex items-center justify-between py-2 text-sm">
-                                <span className="truncate text-ink-800">{a.name}</span>
-                                <StatusBadge status={a.status} tone={statusTone(a.status)} />
-                              </li>
+                              <AdRowItem key={a.id} ad={a} ws={ws} onToggle={(next) => adsetAction("update_ad", { ad_id: a.id, status: next }, next === "PAUSED" ? "Ad paused." : "Ad live.", s.id)} />
                             ))}
                           </ul>
                         )}
@@ -532,6 +554,63 @@ function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, 
         </div>
       </div>
     </div>
+  );
+}
+
+// One ad inside the drawer: status toggle + Meta-rendered creative preview.
+function AdRowItem({ ad, ws, onToggle }: { ad: AdRow; ws: string; onToggle: (next: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [preview, setPreview] = useState<{ iframeSrc?: string | null; title?: string; body?: string; error?: string } | null>(null);
+
+  function togglePreview() {
+    const next = !open;
+    setOpen(next);
+    if (next && !preview) {
+      fetch(`/api/hyperfx/meta/adpreview?ws=${ws}&ad=${encodeURIComponent(ad.id)}`)
+        .then((r) => r.json())
+        .then(setPreview)
+        .catch((e) => setPreview({ error: e instanceof Error ? e.message : "Preview failed" }));
+    }
+  }
+
+  const active = /ACTIVE/i.test(ad.status);
+  return (
+    <li className="py-2 text-sm">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-ink-800">{ad.name}</span>
+        <StatusBadge status={ad.status} tone={statusTone(ad.status)} />
+        <button onClick={() => onToggle(active ? "PAUSED" : "ACTIVE")} title={active ? "Pause ad" : "Activate ad"} className="rounded-lg p-1 text-ink-400 hover:bg-ink-100 hover:text-ink-700">
+          {active ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+        </button>
+        <button onClick={togglePreview} title="Preview the creative" className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium ${open ? "border-brand-400 text-brand-600" : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}>
+          <ImageIcon className="h-3 w-3" /> Preview
+        </button>
+      </div>
+      {open && (
+        <div className="mt-2 rounded-xl border border-ink-100 bg-ink-50/50 p-2.5">
+          {!preview ? (
+            <p className="py-4 text-center text-xs text-ink-400">Loading preview from Meta…</p>
+          ) : preview.error && !preview.iframeSrc ? (
+            <p className="text-xs text-amber-600">{preview.error}</p>
+          ) : (
+            <>
+              {(preview.title || preview.body) && (
+                <div className="mb-2 text-xs">
+                  {preview.title && <p className="font-semibold text-ink-900">{preview.title}</p>}
+                  {preview.body && <p className="whitespace-pre-wrap text-ink-600">{preview.body}</p>}
+                </div>
+              )}
+              {preview.iframeSrc ? (
+                <iframe src={preview.iframeSrc} className="h-[560px] w-full max-w-[520px] rounded-lg border border-ink-200 bg-white" title={`Preview — ${ad.name}`} />
+              ) : (
+                <p className="text-xs text-ink-400">Meta returned no visual preview for this format.</p>
+              )}
+              <p className="mt-1.5 text-[10px] text-ink-400">To change this creative, ask Helena in AI Marketing (e.g. “make a new creative for the ad ‘{ad.name}’”) — she generates the image and updates the ad after your approval.</p>
+            </>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -588,6 +667,180 @@ function SpendChart({ daily, currency }: { daily: DailyRow[]; currency: string }
           <p className="text-ink-600">{money(h.spend, currency)} · {h.clicks} clicks · {h.impressions.toLocaleString()} impr.</p>
         </div>
       )}
+    </div>
+  );
+}
+
+// ------------------------------------------------- create-campaign wizard
+// Step 1: Meta objectives as selectable boxes (icon, description, "good for" on
+// hover). Step 2: 3–6 named Pydent STRATEGIES for that objective — pre-made
+// audience/age/interest recipes with an ad-set plan. Step 3: name, location,
+// number of ad sets, budget per ad set, live/paused — then everything is created
+// on Meta automatically (ad sets paused; creatives come next via Helena).
+function CreateCampaignWizard({ currency, onClose, onCreate }: {
+  currency: string;
+  onClose: () => void;
+  onCreate: (payload: Record<string, unknown>) => Promise<boolean>;
+}) {
+  const [step, setStep] = useState(1);
+  const [objective, setObjective] = useState<string>("");
+  const [strategy, setStrategy] = useState<MetaStrategy | null>(null);
+  const [name, setName] = useState("");
+  const [city, setCity] = useState("");
+  const [country, setCountry] = useState("AE");
+  const [numAdSets, setNumAdSets] = useState(2);
+  const [budget, setBudget] = useState(15);
+  const [status, setStatus] = useState<"ACTIVE" | "PAUSED">("PAUSED");
+  const [creating, setCreating] = useState(false);
+
+  const strategies = objective ? strategiesFor(objective) : [];
+  const selObj = META_OBJECTIVES.find((o) => o.key === objective);
+
+  async function create() {
+    if (!name.trim()) { toast("Give the campaign a name.", "info"); return; }
+    setCreating(true);
+    await onCreate({
+      objective,
+      strategy_key: strategy?.key ?? null,
+      name: name.trim(),
+      city: city.trim(),
+      country_code: country.trim().toUpperCase() || "AE",
+      num_ad_sets: numAdSets,
+      daily_budget: budget,
+      status,
+    });
+    setCreating(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-surface shadow-2xl">
+        <div className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+          <div>
+            <p className="font-semibold text-ink-900">
+              {step === 1 ? "Choose your objective" : step === 2 ? "Choose a strategy" : "Set up & launch"}
+            </p>
+            <p className="text-xs text-ink-400">
+              {step === 1 ? "What should this campaign achieve?" : step === 2 ? `Pre-made ${selObj?.label ?? ""} strategies — pick one and it applies automatically.` : "Everything is created on Meta for you — ad sets start paused."}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-ink-400">Step {step} / 3</span>
+            <button onClick={onClose} className="rounded-lg p-1.5 text-ink-400 hover:bg-ink-100"><X className="h-5 w-5" /></button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {step === 1 && (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {META_OBJECTIVES.map((o) => {
+                const I = OBJ_ICONS[o.icon] ?? Megaphone;
+                const sel = objective === o.key;
+                return (
+                  <button
+                    key={o.key}
+                    onClick={() => { setObjective(o.key); setStrategy(null); }}
+                    title={`${o.details}\n\nGood for: ${o.goodFor}`}
+                    className={`flex flex-col rounded-xl border p-4 text-left transition-colors ${sel ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:border-brand-300 hover:bg-ink-50"}`}
+                  >
+                    <I className={`h-5 w-5 ${sel ? "text-brand-600" : "text-ink-400"}`} />
+                    <p className="mt-2 text-sm font-semibold text-ink-900">{o.label}</p>
+                    <p className="mt-1 text-xs leading-relaxed text-ink-500">{o.description}</p>
+                    <p className="mt-2 text-[10px] font-medium uppercase tracking-wide text-ink-400">Good for</p>
+                    <p className="text-[11px] text-ink-500">{o.goodFor}</p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="space-y-3">
+              {strategies.map((st) => {
+                const sel = strategy?.key === st.key;
+                return (
+                  <button key={st.key} onClick={() => { setStrategy(st); setName(st.name); setNumAdSets(Math.min(2, st.adSets.length)); setBudget(st.suggestedDailyBudget); }} className={`w-full rounded-xl border p-4 text-left transition-colors ${sel ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:border-brand-300 hover:bg-ink-50"}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-ink-900">{st.name}</p>
+                        <p className="mt-0.5 text-xs text-ink-600">{st.tagline}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-ink-100 px-2.5 py-1 text-[10px] font-medium text-ink-600">~{money(st.suggestedDailyBudget, currency)}/day per ad set</span>
+                    </div>
+                    <p className="mt-1.5 text-[11px] text-emerald-600">{st.projection}</p>
+                    <p className="text-[11px] text-ink-400">Best for: {st.bestFor}</p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {st.adSets.map((a) => (
+                        <span key={a.name} title={`${a.angle} · age ${a.ageMin}–${a.ageMax} · ${a.interests.join(", ")}`} className="cursor-help rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-medium text-brand-600 dark:text-brand-300">
+                          {a.name}
+                        </span>
+                      ))}
+                    </div>
+                  </button>
+                );
+              })}
+              <button onClick={() => { setStrategy(null); setName(""); setNumAdSets(1); }} className={`w-full rounded-xl border border-dashed p-3.5 text-left text-sm ${strategy === null && name === "" ? "border-brand-400 text-brand-600" : "border-ink-300 text-ink-500 hover:border-brand-300"}`}>
+                Custom — no strategy, one blank ad set (you set everything yourself)
+              </button>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="space-y-4">
+              {strategy && (
+                <div className="rounded-xl border border-brand-200 bg-brand-50/50 px-3.5 py-2.5 text-xs text-ink-600">
+                  <strong className="text-ink-900">{strategy.name}</strong> — will create {numAdSets} ad set{numAdSets > 1 ? "s" : ""}: {strategy.adSets.slice(0, numAdSets).map((a) => a.name).join(" · ")} (targeting & interests applied automatically).
+                </div>
+              )}
+              <Field label="Campaign name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="New Patient Acquisition — July" /></Field>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="City (15 km radius; blank = whole country)"><input className={inputCls} value={city} onChange={(e) => setCity(e.target.value)} placeholder="Dubai" /></Field>
+                <Field label="Country code"><input className={inputCls} value={country} onChange={(e) => setCountry(e.target.value)} placeholder="AE" maxLength={2} /></Field>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="Number of ad sets">
+                  <select className={inputCls} value={numAdSets} onChange={(e) => setNumAdSets(Number(e.target.value))}>
+                    {Array.from({ length: strategy?.adSets.length ?? 3 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </Field>
+                <Field label={`Daily budget per ad set (${currency})`}>
+                  <input type="number" min={1} step="1" className={inputCls} value={budget || ""} onChange={(e) => setBudget(Number(e.target.value) || 0)} />
+                </Field>
+              </div>
+              <Field label="Campaign status">
+                <div className="flex gap-2">
+                  {(["PAUSED", "ACTIVE"] as const).map((st) => (
+                    <button key={st} onClick={() => setStatus(st)} className={`flex-1 rounded-xl border px-3 py-2 text-sm font-medium ${status === st ? (st === "ACTIVE" ? "border-emerald-500 bg-emerald-500/10 text-emerald-600" : "border-amber-500 bg-amber-500/10 text-amber-600") : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}>
+                      {st === "ACTIVE" ? "Live" : "Draft (paused)"}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <p className="text-xs text-ink-400">Ad sets are always created paused. Creatives come next: ask Helena to generate images + copy for each ad set, or add them yourself — then activate.</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-ink-200 px-6 py-4">
+          <button onClick={() => (step === 1 ? onClose() : setStep(step - 1))} className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
+            <ArrowLeft className="h-4 w-4" /> {step === 1 ? "Cancel" : "Back"}
+          </button>
+          {step < 3 ? (
+            <button
+              onClick={() => setStep(step + 1)}
+              disabled={(step === 1 && !objective) || (step === 2 && strategies.length > 0 && !strategy && name !== "")}
+              className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+            >
+              Continue
+            </button>
+          ) : (
+            <button onClick={create} disabled={creating} className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
+              {creating ? "Creating on Meta…" : status === "ACTIVE" ? "Create & go live" : "Create as draft"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
