@@ -13,6 +13,18 @@ const num = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+const VALID_PRESETS = new Set(["today", "yesterday", "last_7d", "last_14d", "last_28d", "last_30d", "last_90d"]);
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Same Meta-style range selection as the list route: preset or custom since/until.
+function rangeArgs(req: NextRequest): Record<string, unknown> {
+  const since = req.nextUrl.searchParams.get("since") ?? "";
+  const until = req.nextUrl.searchParams.get("until") ?? "";
+  if (DATE_RE.test(since) && DATE_RE.test(until)) return { time_range: { since, until } };
+  const preset = req.nextUrl.searchParams.get("preset") ?? "";
+  return { date_preset: VALID_PRESETS.has(preset) ? preset : "last_30d" };
+}
+
 export async function GET(req: NextRequest) {
   const id = req.nextUrl.searchParams.get("id") ?? "";
   if (!id) return NextResponse.json({ error: "Campaign id required." }, { status: 400 });
@@ -21,7 +33,7 @@ export async function GET(req: NextRequest) {
 
   const [adsetsRes, dailyRes] = await Promise.all([
     hfxCall("meta_business_get_ad_sets", { campaign_id: id, limit: 25 }, creds),
-    hfxCall("meta_business_ad_insights", { object_id: id, object_type: "campaign", date_preset: "last_30d", time_increment: "1", include_actions: false, include_video_metrics: false }, creds),
+    hfxCall("meta_business_ad_insights", { object_id: id, object_type: "campaign", time_increment: "1", include_actions: false, include_video_metrics: false, ...rangeArgs(req) }, creds),
   ]);
 
   // Ad sets (budget often lives here, not on the campaign) + their ads.

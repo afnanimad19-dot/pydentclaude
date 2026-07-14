@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Megaphone, RefreshCw, ExternalLink, Plug, DollarSign, Eye, MousePointerClick, Percent, Plus, MoreVertical, Pencil, Copy, Trash2, X, ChevronDown, ChevronRight, Pause, Play } from "lucide-react";
+import { Megaphone, RefreshCw, ExternalLink, Plug, DollarSign, Eye, MousePointerClick, Percent, Plus, MoreVertical, Pencil, Copy, Trash2, X, ChevronDown, ChevronRight, Pause, Play, CalendarDays } from "lucide-react";
 import { Card, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -14,7 +14,7 @@ import { getWorkspaceId } from "@/lib/db";
 // graph, and its ad sets & ads. All through the marketing engine.
 
 interface MetaAccount { id: string; name: string; status: string; currency: string }
-interface MetaCampaign { id: string; name: string; status: string; objective: string; dailyBudget: number | null; lifetimeBudget: number | null; startTime: string | null }
+interface MetaCampaign { id: string; name: string; status: string; objective: string; dailyBudget: number | null; lifetimeBudget: number | null; startTime: string | null; spend: number | null; clicks: number | null; impressions: number | null }
 interface MetaInsights { spend: number; impressions: number; clicks: number; ctr: number; cpc: number }
 interface AdRow { id: string; name: string; status: string }
 interface AdSetRow { id: string; name: string; status: string; dailyBudget: number | null; lifetimeBudget: number | null; optimization: string | null; ads: AdRow[] }
@@ -28,9 +28,41 @@ interface MetaData {
   account?: string;
   campaigns?: MetaCampaign[];
   insights?: MetaInsights | null;
+  insightsError?: string | null;
+  campaignsError?: string | null;
 }
 
 const OBJECTIVES = ["OUTCOME_TRAFFIC", "OUTCOME_LEADS", "OUTCOME_ENGAGEMENT", "OUTCOME_AWARENESS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION"];
+
+// Meta-style date ranges: the presets Meta's insights API accepts, plus
+// this/last month and a fully custom calendar range (since → until).
+interface DateRange { preset: string; since: string; until: string }
+const RANGE_PRESETS: [string, string][] = [
+  ["today", "Today"],
+  ["yesterday", "Yesterday"],
+  ["last_7d", "Last 7 days"],
+  ["last_14d", "Last 14 days"],
+  ["last_28d", "Last 28 days"],
+  ["last_30d", "Last 30 days"],
+  ["last_90d", "Last 90 days"],
+  ["this_month", "This month"],
+  ["last_month", "Last month"],
+  ["custom", "Custom range…"],
+];
+const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function computeRange(r: DateRange): { qs: string; label: string } {
+  if (r.preset === "custom") {
+    if (r.since && r.until) return { qs: `&since=${r.since}&until=${r.until}`, label: `${r.since} → ${r.until}` };
+    return { qs: "&preset=last_30d", label: "Last 30 days" }; // until both dates picked
+  }
+  if (r.preset === "this_month" || r.preset === "last_month") {
+    const now = new Date();
+    const first = r.preset === "this_month" ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const last = r.preset === "this_month" ? now : new Date(now.getFullYear(), now.getMonth(), 0);
+    return { qs: `&since=${isoDay(first)}&until=${isoDay(last)}`, label: r.preset === "this_month" ? "This month" : "Last month" };
+  }
+  return { qs: `&preset=${r.preset || "last_30d"}`, label: RANGE_PRESETS.find(([k]) => k === r.preset)?.[1] ?? "Last 30 days" };
+}
 
 const money = (n: number, cur = "USD") => `${cur === "USD" ? "$" : `${cur} `}${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 const statusTone = (s: string): "green" | "amber" | "gray" | "red" =>
@@ -50,17 +82,23 @@ export default function MetaAdsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [detail, setDetail] = useState<MetaCampaign | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [range, setRange] = useState<DateRange>({ preset: "last_30d", since: "", until: "" });
+  const { qs: rangeQs, label: rangeLabel } = computeRange(range);
+  const accountRef = useRef("");
+  useEffect(() => { accountRef.current = account; }, [account]);
 
   const fetchData = useCallback((acct?: string) => {
     getWorkspaceId()
-      .then((w) => { setWs(w); return fetch(`/api/hyperfx/meta?ws=${w ?? ""}${acct ? `&account=${encodeURIComponent(acct)}` : ""}`); })
+      .then((w) => { setWs(w); return fetch(`/api/hyperfx/meta?ws=${w ?? ""}${acct ? `&account=${encodeURIComponent(acct)}` : ""}${rangeQs}`); })
       .then((r) => r.json())
       .then((d) => { setData(d); if (d.account) setAccount(d.account); })
       .catch((e) => setData({ configured: true, connected: false, error: e instanceof Error ? e.message : "Request failed" }))
       .finally(() => setLoading(false));
-  }, []);
+  }, [rangeQs]);
   const load = useCallback((acct?: string) => { setLoading(true); fetchData(acct); }, [fetchData]);
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // Initial load + refetch whenever the date range changes (keeps the account;
+  // no sync setState here — `loading` already starts true for the first load).
+  useEffect(() => { fetchData(accountRef.current || undefined); }, [fetchData]);
 
   const cur = data?.accounts?.find((a) => a.id === account)?.currency ?? "USD";
 
@@ -138,7 +176,7 @@ export default function MetaAdsPage() {
           }}
         />
       )}
-      {detail && ws && <CampaignDrawer campaign={detail} ws={ws} account={account} currency={cur} onClose={() => setDetail(null)} onChanged={() => fetchData(account)} />}
+      {detail && ws && <CampaignDrawer campaign={detail} ws={ws} account={account} currency={cur} rangeQs={rangeQs} rangeLabel={rangeLabel} onClose={() => setDetail(null)} onChanged={() => fetchData(account)} />}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -147,7 +185,25 @@ export default function MetaAdsPage() {
           </h1>
           <p className="text-sm text-ink-500">Your live Meta campaigns — view, edit, duplicate, create. Click a campaign for its full overview.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 rounded-lg border border-ink-200 bg-surface px-2 py-1">
+            <CalendarDays className="h-4 w-4 shrink-0 text-ink-400" />
+            <select
+              value={range.preset}
+              onChange={(e) => setRange((r) => ({ ...r, preset: e.target.value }))}
+              className="bg-transparent py-0.5 text-sm text-ink-700 outline-none"
+              title="Date range"
+            >
+              {RANGE_PRESETS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+            </select>
+            {range.preset === "custom" && (
+              <>
+                <input type="date" value={range.since} max={range.until || undefined} onChange={(e) => setRange((r) => ({ ...r, since: e.target.value }))} className="rounded border border-ink-200 bg-surface px-1.5 py-0.5 text-xs text-ink-700 outline-none" title="From" />
+                <span className="text-xs text-ink-400">→</span>
+                <input type="date" value={range.until} min={range.since || undefined} onChange={(e) => setRange((r) => ({ ...r, until: e.target.value }))} className="rounded border border-ink-200 bg-surface px-1.5 py-0.5 text-xs text-ink-700 outline-none" title="To" />
+              </>
+            )}
+          </div>
           {(data?.accounts?.length ?? 0) > 1 && (
             <select value={account} onChange={(e) => { setAccount(e.target.value); load(e.target.value); }} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-sm text-ink-700 outline-none" title="Ad account">
               {data!.accounts!.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -182,9 +238,9 @@ export default function MetaAdsPage() {
           {data.insights && (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {[
-                [DollarSign, "Spend (30d)", money(data.insights.spend, cur)],
-                [Eye, "Impressions (30d)", data.insights.impressions.toLocaleString()],
-                [MousePointerClick, "Clicks (30d)", data.insights.clicks.toLocaleString()],
+                [DollarSign, `Spend — ${rangeLabel}`, money(data.insights.spend, cur)],
+                [Eye, "Impressions", data.insights.impressions.toLocaleString()],
+                [MousePointerClick, "Clicks", data.insights.clicks.toLocaleString()],
                 [Percent, "CTR / CPC", `${data.insights.ctr.toFixed(2)}% · ${money(data.insights.cpc, cur)}`],
               ].map(([Icon, label, value], i) => {
                 const I = Icon as typeof DollarSign;
@@ -198,6 +254,11 @@ export default function MetaAdsPage() {
             </div>
           )}
 
+          {data.insightsError && (
+            <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-700">
+              Performance data unavailable for this range: {data.insightsError}
+            </p>
+          )}
           <Card className="overflow-visible">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-200 px-5 py-4">
               <div>
@@ -214,12 +275,14 @@ export default function MetaAdsPage() {
               <p className="px-5 py-8 text-center text-sm text-ink-400">No {filter === "all" ? "" : filter + " "}campaigns on this ad account.</p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[720px] text-left text-sm">
+                <table className="w-full min-w-[860px] text-left text-sm">
                   <thead className="border-b border-ink-200 bg-ink-50 text-xs font-semibold uppercase tracking-wide text-ink-500">
                     <tr>
                       <th className="px-5 py-2.5">Campaign</th>
                       <th className="px-4 py-2.5">Status</th>
                       <th className="px-4 py-2.5">Objective</th>
+                      <th className="px-4 py-2.5 text-right">Spend ({rangeLabel})</th>
+                      <th className="px-4 py-2.5 text-right">Clicks</th>
                       <th className="px-4 py-2.5 text-right">Daily budget</th>
                       <th className="px-4 py-2.5">Started</th>
                       <th className="px-4 py-2.5 text-right">Actions</th>
@@ -233,6 +296,8 @@ export default function MetaAdsPage() {
                         </td>
                         <td className="px-4 py-3"><StatusBadge status={c.status} tone={statusTone(c.status)} /></td>
                         <td className="px-4 py-3 text-ink-600">{objLabel(c.objective)}</td>
+                        <td className="px-4 py-3 text-right font-medium text-ink-900">{c.spend != null ? money(c.spend, cur) : "—"}</td>
+                        <td className="px-4 py-3 text-right text-ink-700">{c.clicks != null ? c.clicks.toLocaleString() : "—"}</td>
                         <td className="px-4 py-3 text-right text-ink-700">{c.dailyBudget != null ? money(c.dailyBudget, cur) : c.lifetimeBudget != null ? `${money(c.lifetimeBudget, cur)} lifetime` : <span className="text-ink-400" title="Budget is set on the ad sets">on ad sets</span>}</td>
                         <td className="px-4 py-3 text-ink-600">{c.startTime ? c.startTime.slice(0, 10) : "—"}</td>
                         <td className="px-4 py-3 text-right">
@@ -319,11 +384,13 @@ function CampaignModal({ title, initial, currency, edit, onClose, onSave }: {
 }
 
 // ------------------------------------------------------------ detail drawer
-function CampaignDrawer({ campaign, ws, account, currency, onClose, onChanged }: {
+function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, onClose, onChanged }: {
   campaign: MetaCampaign;
   ws: string;
   account: string;
   currency: string;
+  rangeQs: string;
+  rangeLabel: string;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -335,7 +402,7 @@ function CampaignDrawer({ campaign, ws, account, currency, onClose, onChanged }:
   const [busySet, setBusySet] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    fetch(`/api/hyperfx/meta/campaign?ws=${ws}&id=${encodeURIComponent(campaign.id)}&account=${encodeURIComponent(account)}`)
+    fetch(`/api/hyperfx/meta/campaign?ws=${ws}&id=${encodeURIComponent(campaign.id)}&account=${encodeURIComponent(account)}${rangeQs}`)
       .then((r) => r.json())
       .then((d) => {
         setAdsets(d.adsets ?? []);
@@ -344,7 +411,7 @@ function CampaignDrawer({ campaign, ws, account, currency, onClose, onChanged }:
         setErr(d.adsetsError || d.insightsError || null);
       })
       .catch((e) => setErr(e instanceof Error ? e.message : "Failed to load"));
-  }, [ws, campaign.id, account]);
+  }, [ws, campaign.id, account, rangeQs]);
   useEffect(() => { load(); }, [load]);
 
   async function adsetAction(action: string, params: Record<string, unknown>, okMsg: string, id: string) {
@@ -374,7 +441,7 @@ function CampaignDrawer({ campaign, ws, account, currency, onClose, onChanged }:
           {totals && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
-                ["Spend (30d)", money(totals.spend, currency)],
+                [`Spend — ${rangeLabel}`, money(totals.spend, currency)],
                 ["Impressions", totals.impressions.toLocaleString()],
                 ["Clicks", totals.clicks.toLocaleString()],
                 ["CTR / CPC", `${totals.ctr.toFixed(2)}% · ${money(totals.cpc, currency)}`],
@@ -388,11 +455,11 @@ function CampaignDrawer({ campaign, ws, account, currency, onClose, onChanged }:
           )}
 
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">Daily spend — last 30 days</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">Daily spend — {rangeLabel}</p>
             {daily.length > 1 ? (
               <SpendChart daily={daily} currency={currency} />
             ) : (
-              <p className="rounded-xl border border-ink-100 px-4 py-6 text-center text-sm text-ink-400">{adsets === null ? "Loading…" : "No delivery in the last 30 days."}</p>
+              <p className="rounded-xl border border-ink-100 px-4 py-6 text-center text-sm text-ink-400">{adsets === null ? "Loading…" : "No delivery in this date range."}</p>
             )}
           </div>
 
@@ -495,7 +562,7 @@ function SpendChart({ daily, currency }: { daily: DailyRow[]; currency: string }
   const h = hover != null ? daily[hover] : null;
   return (
     <div ref={ref} className="relative" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full text-brand-600 dark:text-brand-300" role="img" aria-label="Daily spend, last 30 days">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full text-brand-600 dark:text-brand-300" role="img" aria-label="Daily spend for the selected date range">
         {[0.25, 0.5, 0.75].map((f) => (
           <line key={f} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + f * (H - PAD_T - PAD_B)} y2={PAD_T + f * (H - PAD_T - PAD_B)} className="stroke-ink-100" strokeWidth="1" />
         ))}
