@@ -162,3 +162,77 @@ export function hyperfxSystemNote(agent: keyof typeof HFX_LANES): string {
   };
   return `You also have Hyperfx marketing tools for ${what[agent] ?? "marketing research"}: call hyperfx_list_tools to discover them (optionally with a keyword), then hyperfx_run_tool to run one with JSON args. RULES FOR WRITE ACTIONS (Helena only): before ANY create/update call that touches live ads, present the complete plan — objective, daily budget, audience, placement, creative/copy — and wait for the user's explicit confirmation ("yes", "launch", "go ahead") in this chat. Create campaigns with status PAUSED unless the user explicitly says go live. Never delete anything. Budget values are in CENTS on Meta tools (e.g. $20 = 2000). Other agents are read-only: draft the plan and point the user to the Ads page. If Hyperfx says it isn't configured, tell the user to add their Hyperfx credentials in Settings → Connections (or connect the platform on hyperfx.ai).`;
 }
+
+/* ------------------------------------------------------------------ */
+// Engine-first ads performance for the agents' NAMED tools. Helena's legacy
+// get_meta_ads_performance / get_google_ads_performance used Pydent's own
+// Meta/Google OAuth (usually NOT connected) — the reason chat said "Meta isn't
+// connected" while the Ads tab (which reads the engine) worked. These helpers
+// answer from the engine first; callers fall back to the legacy OAuth path
+// only when the engine has nothing.
+
+export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d"): Promise<string | null> {
+  try {
+    const creds = await getHfxCreds(workspaceId);
+    const accountsRes = await hfxCall("meta_business_list_ad_accounts", { detail: "core" }, creds);
+    if (!accountsRes.ok) return null;
+    const accounts: any[] = (accountsRes.data as any)?.accounts ?? [];
+    if (accounts.length === 0) return "The Meta connection works, but no ad accounts are visible on it.";
+    const acct = accounts[0];
+    const actId = String(acct.id ?? "").startsWith("act_") ? String(acct.id) : `act_${acct.id}`;
+    const ins = await hfxCall(
+      "meta_business_ad_insights",
+      { object_id: actId, object_type: "account", level: "campaign", date_preset: preset, include_actions: false, include_video_metrics: false },
+      creds
+    );
+    if (!ins.ok) return `Meta ad account "${acct.name ?? acct.id}" is connected, but insights failed: ${ins.error}`;
+    const raw = ins.data as any;
+    const rows: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
+    if (rows.length === 0) return `Meta ad account "${acct.name ?? acct.id}" (${preset.replaceAll("_", " ")}): no delivery in this period — $0 spend.`;
+    let spend = 0, impressions = 0, clicks = 0;
+    const perCampaign: string[] = [];
+    for (const r of rows) {
+      const s = Number(r.spend) || 0, i = Number(r.impressions) || 0, c = Number(r.clicks) || 0;
+      spend += s; impressions += i; clicks += c;
+      perCampaign.push(`- ${r.campaign_name ?? r.campaign_id}: $${s.toFixed(2)} spend, ${i} impressions, ${c} clicks${i > 0 ? ` (CTR ${((c / i) * 100).toFixed(2)}%)` : ""}`);
+    }
+    return [
+      `Meta Ads performance — account "${acct.name ?? acct.id}", ${preset.replaceAll("_", " ")}:`,
+      `TOTAL: $${spend.toFixed(2)} spend · ${impressions} impressions · ${clicks} clicks${impressions > 0 ? ` · CTR ${((clicks / impressions) * 100).toFixed(2)}%` : ""}${clicks > 0 ? ` · CPC $${(spend / clicks).toFixed(2)}` : ""}`,
+      "By campaign:",
+      ...perCampaign.slice(0, 25),
+    ].join("\n");
+  } catch {
+    return null;
+  }
+}
+
+export async function hfxGoogleAdsPerformance(workspaceId: string): Promise<string | null> {
+  try {
+    const creds = await getHfxCreds(workspaceId);
+    const accountsRes = await hfxCall("google_ads_list_accounts", {}, creds);
+    if (!accountsRes.ok) return null;
+    const accounts: any[] = ((accountsRes.data as any)?.accounts ?? []).filter((a: any) => !a.error && !a.manager);
+    if (accounts.length === 0) return "The Google Ads connection works, but no (non-manager) accounts are accessible.";
+    const acct = accounts[0];
+    const perf = await hfxCall("google_ads_get_campaign_performance", { customer_id: String(acct.customer_id ?? acct.id), date_range: "LAST_30_DAYS" }, creds);
+    if (!perf.ok) return `Google Ads account "${acct.descriptive_name ?? acct.name}" is connected, but performance failed: ${perf.error}`;
+    const rows: any[] = (Array.isArray(perf.data) ? (perf.data as any[]) : []).filter((r) => !r.error);
+    if (rows.length === 0) return `Google Ads account "${acct.descriptive_name ?? acct.name}" (last 30 days): no campaign delivery.`;
+    let cost = 0, impressions = 0, clicks = 0;
+    const per: string[] = [];
+    for (const r of rows) {
+      const c = (Number(r.cost_micros) || 0) / 1_000_000;
+      cost += c; impressions += Number(r.impressions) || 0; clicks += Number(r.clicks) || 0;
+      per.push(`- ${r.campaign_name}: $${c.toFixed(2)} cost, ${r.impressions} impressions, ${r.clicks} clicks, ${r.conversions} conversions`);
+    }
+    return [
+      `Google Ads performance — account "${acct.descriptive_name ?? acct.name}", last 30 days:`,
+      `TOTAL: $${cost.toFixed(2)} cost · ${impressions} impressions · ${clicks} clicks`,
+      "By campaign:",
+      ...per.slice(0, 25),
+    ].join("\n");
+  } catch {
+    return null;
+  }
+}

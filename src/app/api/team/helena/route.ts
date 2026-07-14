@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { HFX_TEAM_TOOLS, execHyperfxTool, hyperfxSystemNote } from "@/lib/hyperfx-team-tools";
+import { HFX_TEAM_TOOLS, execHyperfxTool, hyperfxSystemNote, hfxMetaPerformance, hfxGoogleAdsPerformance } from "@/lib/hyperfx-team-tools";
 import { wpPublishPost, wpUploadMedia } from "@/lib/wp-publish";
 import { generateImage } from "@/lib/image-gen";
 import { runAnalyticsReport, runSearchConsoleReport, getGoogleAdsPerformance } from "@/lib/google-api";
@@ -157,7 +157,7 @@ export async function POST(req: NextRequest) {
       return `Report saved. Download: ${origin}/api/team/report/${id}?format=docx (Word) — or open/print to PDF: ${origin}/api/team/report/${id}`;
     }
     if (name === "generate_featured_image") {
-      const img = await generateImage(String(args.prompt || ""));
+      const img = await generateImage(String(args.prompt || ""), workspaceId);
       if (!img.ok || !img.bytes) return `Image not created: ${img.error}`;
       const up = await wpUploadMedia(workspaceId, img.bytes, "featured.png", img.mime ?? "image/png");
       if (!up.ok) return `Image made but upload failed: ${up.error}`;
@@ -177,8 +177,18 @@ export async function POST(req: NextRequest) {
     }
     if (name === "get_analytics_report") { await logActivity(workspaceId, "helena", "Pulled Google Analytics report"); return runAnalyticsReport(workspaceId, Number(args.days) || 28); }
     if (name === "get_search_console_report") { await logActivity(workspaceId, "helena", "Pulled Search Console report"); return runSearchConsoleReport(workspaceId, Number(args.days) || 28); }
-    if (name === "get_meta_ads_performance") { await logActivity(workspaceId, "helena", "Pulled Meta Ads performance"); return getMetaAdsPerformance(workspaceId); }
-    if (name === "get_google_ads_performance") { await logActivity(workspaceId, "helena", "Pulled Google Ads performance"); return getGoogleAdsPerformance(workspaceId); }
+    if (name === "get_meta_ads_performance") {
+      await logActivity(workspaceId, "helena", "Pulled Meta Ads performance");
+      const viaEngine = await hfxMetaPerformance(workspaceId);
+      if (viaEngine) return viaEngine;
+      return getMetaAdsPerformance(workspaceId);
+    }
+    if (name === "get_google_ads_performance") {
+      await logActivity(workspaceId, "helena", "Pulled Google Ads performance");
+      const viaEngine = await hfxGoogleAdsPerformance(workspaceId);
+      if (viaEngine) return viaEngine;
+      return getGoogleAdsPerformance(workspaceId);
+    }
     if (name === "research_url") return firecrawlScrape(String(args.url || ""));
     if (name === "post_to_facebook") {
       const res = await postToFacebookPage(workspaceId, String(args.message || ""), args.link ? String(args.link) : undefined);
@@ -187,7 +197,7 @@ export async function POST(req: NextRequest) {
     }
     if (name === "post_to_instagram") {
       // Instagram needs a public image URL — generate the image and host it on WordPress media.
-      const img = await generateImage(String(args.image_prompt || ""));
+      const img = await generateImage(String(args.image_prompt || ""), workspaceId);
       if (!img.ok || !img.bytes) return `Couldn't make the image: ${img.error}`;
       const up = await wpUploadMedia(workspaceId, img.bytes, "ig-post.png", img.mime ?? "image/png");
       if (!up.ok || !up.url) return `Image upload failed (Instagram needs a public image): ${up.error}`;

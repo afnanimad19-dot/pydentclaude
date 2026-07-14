@@ -186,7 +186,7 @@ export async function hfxCall(
   tool: string,
   args: Record<string, unknown> = {},
   creds: HfxCreds = ENV_CREDS
-): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+): Promise<{ ok: boolean; data?: unknown; content?: unknown[]; error?: string }> {
   if (!creds.url) return { ok: false, error: NOT_CONFIGURED };
   let enableTried = false;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -206,7 +206,7 @@ export async function hfxCall(
         }
         return { ok: false, error: errText.slice(0, 500) };
       }
-      return { ok: true, data: unwrap(result) };
+      return { ok: true, data: unwrap(result), content: Array.isArray(result?.content) ? result.content : [] };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Hyperfx call failed";
       const toolkit = toolkitForTool(tool);

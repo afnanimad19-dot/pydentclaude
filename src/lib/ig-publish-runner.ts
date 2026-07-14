@@ -58,7 +58,7 @@ export async function runDueIgPosts(limit = 10): Promise<{ ok: boolean; publishe
       let imageUrl: string = row.image_url ?? "";
       if (!imageUrl) {
         const prompt = String(row.caption || row.media_name || "A clean, professional dental clinic social media image");
-        const img = await generateImage(prompt);
+        const img = await generateImage(prompt, row.workspace_id);
         if (!img.ok || !img.bytes) { await fail(`Couldn't generate the image: ${img.error ?? "image error"}`); continue; }
         const up = await wpUploadMedia(row.workspace_id, img.bytes, row.media_name || "ig-post.png", img.mime ?? "image/png");
         if (!up.ok || !up.url) { await fail(`Image hosting failed (Instagram needs a public image — connect WordPress): ${up.error ?? "upload error"}`); continue; }
