@@ -49,8 +49,11 @@ export async function getWorkspaceId(): Promise<string | null> {
   try {
     const { data } = await supabase.from("profiles").select("workspace_id").eq("user_id", uid).maybeSingle();
     let ws = data?.workspace_id ?? null;
-    // No profile yet → provision a fresh, isolated workspace (never fall back to any existing one).
-    if (!ws) ws = await bootstrapWorkspace();
+    // Always run bootstrap once per session: it provisions a workspace when one
+    // is missing AND self-heals legacy accounts that were left sharing another
+    // user's workspace (they get detached into their own fresh workspace).
+    const healed = await bootstrapWorkspace();
+    if (healed) ws = healed;
     _wsCache = ws;
     _wsCacheUser = uid;
     return ws;

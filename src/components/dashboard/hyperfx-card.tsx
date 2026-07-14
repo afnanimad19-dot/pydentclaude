@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Zap, ExternalLink, RefreshCw, CheckCircle2 } from "lucide-react";
+import { Zap, RefreshCw, CheckCircle2 } from "lucide-react";
 import { Card, StatusBadge } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -101,7 +101,7 @@ export function HyperfxCard() {
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-ink-400">Live platforms:</span>
               {(s.platforms?.length ?? 0) === 0 ? (
-                <span className="text-sm text-ink-500">none enabled yet — connect them in Apps below</span>
+                <span className="text-sm text-ink-500">none connected yet — status updates automatically once apps are integrated for this clinic</span>
               ) : (
                 s.platforms!.map((p) => (
                   <span key={p} className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-600">
@@ -122,9 +122,7 @@ export function HyperfxCard() {
         <button onClick={load} className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-3 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Re-check
         </button>
-        <a href="https://hyperfx.ai" target="_blank" rel="noreferrer" className="ml-auto flex items-center gap-1.5 text-sm font-medium text-brand-600 dark:text-brand-300">
-          Open the connection portal <ExternalLink className="h-3.5 w-3.5" />
-        </a>
+
       </div>
     </Card>
   );

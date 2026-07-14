@@ -45,8 +45,10 @@ export async function GET(req: NextRequest) {
       id: String(t.id),
       name: String(t.name ?? t.id),
       description: String(t.description ?? "").slice(0, 140),
-      connected: !!t.authenticated,
+      // "Connected" means a REAL account link; no-auth built-ins are engine features, not connections.
+      connected: !!t.requires_auth && !!t.authenticated,
       needsAuth: !!t.requires_auth,
+      builtin: !t.requires_auth,
       toolCount: Array.isArray(t.tools) ? t.tools.length : 0,
       category: categorize(String(t.id)),
     }))

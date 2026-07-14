@@ -13,11 +13,13 @@ import { getWorkspaceId } from "@/lib/db";
 
 interface AppItem { id: string; name: string; connected: boolean; needsAuth: boolean; category: string }
 
+// Only platforms that need a REAL account connection — status is fetched live
+// from the engine, never assumed. (YouTube research is a built-in scraper and
+// lives in the Research section, not here.)
 const SOCIAL_IDS: Record<string, { label: string; gives: string }> = {
   instagram_toolkit: { label: "Instagram", gives: "posts, reels, reach & engagement" },
   meta_business: { label: "Facebook (Meta)", gives: "page reach, posts & ad audiences" },
   tiktok: { label: "TikTok", gives: "videos, views & audience" },
-  youtube_toolkit: { label: "YouTube", gives: "channel & video performance" },
   linkedin_toolkit: { label: "LinkedIn", gives: "company page & posts" },
   x_toolkit: { label: "X (Twitter)", gives: "posts & engagement" },
   pinterest_toolkit: { label: "Pinterest", gives: "boards, pins & saves" },
@@ -84,7 +86,7 @@ export default function SocialOverviewPage() {
                 {p.connected ? (
                   <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-600"><CheckCircle2 className="h-3 w-3" /> Connected</span>
                 ) : (
-                  <Link href="/dashboard/settings?tab=connections" className="flex items-center gap-1 rounded-full bg-brand-600 px-2.5 py-0.5 text-[10px] font-semibold text-white hover:bg-brand-700">Connect <ExternalLink className="h-2.5 w-2.5" /></Link>
+                  <span className="rounded-full bg-ink-100 px-2.5 py-0.5 text-[10px] font-medium text-ink-500">Needs integration</span>
                 )}
               </div>
               <p className="mt-1.5 text-xs text-ink-500">{p.connected ? `Live: ${p.gives}.` : `Connect to see ${p.gives}.`}</p>

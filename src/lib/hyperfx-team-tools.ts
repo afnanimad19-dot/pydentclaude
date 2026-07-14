@@ -39,7 +39,7 @@ export const HFX_TEAM_TOOLS = [
     function: {
       name: "hyperfx_run_tool",
       description:
-        "Run one Hyperfx tool by exact name (from hyperfx_list_tools) with JSON arguments matching its schema. Read-style tools only — creating or editing live ads is not allowed from here.",
+        "Run one Hyperfx tool by exact name (from hyperfx_list_tools) with JSON arguments matching its schema. Write actions are allowed only where your instructions permit them, and ALWAYS require the user's explicit confirmation in chat first.",
       parameters: {
         type: "object",
         properties: {
@@ -51,6 +51,27 @@ export const HFX_TEAM_TOOLS = [
     },
   },
 ];
+
+// Helena may RUN ads end-to-end (create/update campaigns, ad sets, ads,
+// creatives, upload images) — the system note requires an explicit user
+// confirmation in chat before any of these fire. Deletes stay UI-only.
+const HELENA_WRITE_TOOLS = new Set([
+  "meta_business_create_campaign",
+  "meta_business_update_campaign",
+  "meta_business_activate_campaign",
+  "meta_business_create_ad_set",
+  "meta_business_update_ad_set",
+  "meta_business_create_ad",
+  "meta_business_create_ad_creative",
+  "meta_business_upload_ad_image",
+  "meta_business_preview_blueprint",
+  "meta_business_create_from_blueprint",
+]);
+
+function agentMayRun(agent: string, tool: string): boolean {
+  if (hfxToolIsSafe(tool)) return true;
+  return agent === "helena" && HELENA_WRITE_TOOLS.has(tool);
+}
 
 function inLane(tool: string, prefixes: string[]): boolean {
   return prefixes.some((p) => tool.startsWith(p));
@@ -85,7 +106,7 @@ export async function execHyperfxTool(
     if (!r.ok && !cat.ok) return `Hyperfx isn't reachable: ${r.error ?? cat.error}`;
     const q = String(args?.query ?? "").toLowerCase();
     const enabled = (r.tools ?? [])
-      .filter((t) => inLane(t.name, lanes) && hfxToolIsSafe(t.name))
+      .filter((t) => inLane(t.name, lanes) && agentMayRun(agent, t.name))
       .filter((t) => !q || `${t.name} ${t.description ?? ""}`.toLowerCase().includes(q))
       .slice(0, 60);
     const enabledNames = new Set(enabled.map((t) => t.name));
@@ -95,7 +116,7 @@ export async function execHyperfxTool(
         if (!tk?.authenticated && tk?.requires_auth) continue; // not connected yet
         for (const tn of tk?.tools ?? []) {
           const toolName = String(tn);
-          if (enabledNames.has(toolName) || !inLane(toolName, lanes) || !hfxToolIsSafe(toolName)) continue;
+          if (enabledNames.has(toolName) || !inLane(toolName, lanes) || !agentMayRun(agent, toolName)) continue;
           if (q && !toolName.toLowerCase().includes(q)) continue;
           pending.push(toolName);
         }
@@ -115,7 +136,7 @@ export async function execHyperfxTool(
   const tool = String(args?.tool ?? "").trim();
   if (!tool) return "Provide the tool name (from hyperfx_list_tools).";
   if (!inLane(tool, lanes)) return `"${tool}" is outside your area — pick one from hyperfx_list_tools.`;
-  if (!hfxToolIsSafe(tool)) return `"${tool}" is a write action (creates/edits live ads) — not allowed from chat. Suggest the change to the user instead.`;
+  if (!agentMayRun(agent, tool)) return `"${tool}" is a write action you can't run — draft the plan and point the user to the Ads page instead.`;
   let toolArgs: Record<string, unknown> = {};
   if (args?.args) {
     try {
@@ -134,10 +155,10 @@ export async function execHyperfxTool(
 export function hyperfxSystemNote(agent: keyof typeof HFX_LANES): string {
   const what: Record<string, string> = {
     helena:
-      "live Meta/Google/TikTok/LinkedIn ads data (accounts, campaigns, insights), Meta Ads-Library competitor research, and CMO brand reports",
+      "live Meta/Google/TikTok/LinkedIn ads data (accounts, campaigns, insights), Meta Ads-Library competitor research, CMO brand reports — and you can RUN Meta ads: create/update campaigns, ad sets, ads and creatives, and upload ad images",
     sam: "HyperSEO keyword/SERP research, AI-search visibility, competitor SEO analysis, and Google Ads keyword insights",
     kai: "Google-review and Reddit scraping for reputation monitoring, plus CMO brand reports",
     angela: "Google Maps lead scraping (find local audiences) and CMO brand reports",
   };
-  return `You also have Hyperfx marketing tools for ${what[agent] ?? "marketing research"}: call hyperfx_list_tools to discover them (optionally with a keyword), then hyperfx_run_tool to run one with JSON args. They are read-only — for anything that would create or change live ads, draft the plan and ask the user to run it from the Meta Ads page. If Hyperfx says it isn't configured, tell the user to add their Hyperfx credentials in Settings → Connections (or connect the platform on hyperfx.ai).`;
+  return `You also have Hyperfx marketing tools for ${what[agent] ?? "marketing research"}: call hyperfx_list_tools to discover them (optionally with a keyword), then hyperfx_run_tool to run one with JSON args. RULES FOR WRITE ACTIONS (Helena only): before ANY create/update call that touches live ads, present the complete plan — objective, daily budget, audience, placement, creative/copy — and wait for the user's explicit confirmation ("yes", "launch", "go ahead") in this chat. Create campaigns with status PAUSED unless the user explicitly says go live. Never delete anything. Budget values are in CENTS on Meta tools (e.g. $20 = 2000). Other agents are read-only: draft the plan and point the user to the Ads page. If Hyperfx says it isn't configured, tell the user to add their Hyperfx credentials in Settings → Connections (or connect the platform on hyperfx.ai).`;
 }

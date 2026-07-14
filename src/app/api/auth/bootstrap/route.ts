@@ -28,7 +28,31 @@ export async function POST(req: NextRequest) {
   try {
     // Already provisioned?
     const { data: existing } = await db.from("profiles").select("workspace_id").eq("user_id", user.id).maybeSingle();
-    if (existing?.workspace_id) return NextResponse.json({ workspaceId: existing.workspace_id });
+    if (existing?.workspace_id) {
+      // SELF-HEAL for legacy accounts: before the isolation fix, some accounts
+      // were left pointing at ANOTHER user's workspace (they saw that clinic's
+      // data). If this user is not the workspace's original owner and was never
+      // invited as a team member, detach them into a fresh, empty workspace.
+      // The original owner's account and data are never touched.
+      const { data: members } = await db.from("profiles").select("user_id, created_at").eq("workspace_id", existing.workspace_id).order("created_at").limit(1);
+      const owner = members?.[0];
+      if (owner && owner.user_id !== user.id) {
+        const email0 = (user.email ?? "").toLowerCase();
+        const { data: invite } = email0
+          ? await db.from("team_members").select("id").eq("workspace_id", existing.workspace_id).eq("email", email0).limit(1).maybeSingle()
+          : { data: null };
+        if (!invite) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const freshName = (user.user_metadata as any)?.clinic_name || user.email || "My clinic";
+          const { data: fresh } = await db.from("workspaces").insert({ name: freshName }).select("id").single();
+          if (fresh?.id) {
+            await db.from("profiles").update({ workspace_id: fresh.id }).eq("user_id", user.id);
+            return NextResponse.json({ workspaceId: fresh.id, healed: true });
+          }
+        }
+      }
+      return NextResponse.json({ workspaceId: existing.workspace_id });
+    }
 
     const email = user.email ?? "";
     // Invited to an existing clinic? Join it (don't create a new empty one).
