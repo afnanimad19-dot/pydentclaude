@@ -249,6 +249,14 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
   const [attaching, setAttaching] = useState(false);
   const attachRef = useRef<HTMLInputElement>(null);
   const [listening, setListening] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  // Grow the input with its content (wrapped lines included) up to a max, then scroll.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+  }, [draft]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recRef = useRef<any>(null);
 
@@ -503,7 +511,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
 
         {/* Right: chat on top, work boxes beneath (uses the bottom space) */}
         <div className="flex min-w-0 flex-col gap-5">
-        <Card className="flex h-[58vh] min-h-[420px] flex-col">
+        <Card className="flex h-[74vh] min-h-[580px] flex-col">
           <div className="flex items-center justify-between gap-2 border-b border-ink-200 px-5 py-2.5">
             <span className="flex items-center gap-2 text-sm font-medium text-ink-600"><Bot className="h-4 w-4 text-brand-500" /> {agent.name}</span>
             <div className="relative flex items-center gap-1.5">
@@ -592,12 +600,13 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
               <button onClick={() => attachRef.current?.click()} title="Attach a photo or document" className="rounded-xl border border-ink-200 p-2.5 text-ink-500 hover:bg-ink-50"><Paperclip className="h-5 w-5" /></button>
               <button onClick={toggleVoice} title={listening ? "Stop dictating" : "Dictate your message (speech-to-text)"} className={`rounded-xl border p-2.5 ${listening ? "border-rose-400 bg-rose-500/10 text-rose-500" : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}><Mic className={`h-5 w-5 ${listening ? "animate-pulse" : ""}`} /></button>
               <textarea
+                ref={taRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                rows={Math.min(6, Math.max(1, draft.split("\n").length))}
+                rows={1}
                 placeholder={listening ? "Listening… speak now" : `Message ${agent.name}…  (Shift+Enter for a new line)`}
-                className={`${inputCls} resize-none`}
+                className={`${inputCls} max-h-[220px] resize-none overflow-y-auto`}
               />
               <button onClick={send} disabled={busy} className="rounded-xl bg-brand-600 px-4 py-2.5 text-white hover:bg-brand-700 disabled:opacity-50"><Send className="h-5 w-5" /></button>
             </div>

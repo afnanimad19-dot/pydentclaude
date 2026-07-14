@@ -203,6 +203,131 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
   },
 ];
 
+// ─────────────────────────────── second wave — more Hyperfx-style templates
+AGENT_TEMPLATES.push(
+  // Helena
+  {
+    id: "helena-launch-campaign",
+    agent: "helena",
+    title: "Launch a Meta campaign (with my approval)",
+    description: "Plan a full campaign — objective, budget, audience, creative — then launch it paused.",
+    apps: ["Meta Ads"],
+    prompt:
+      "I want to launch a new Meta ads campaign for the clinic. Propose a complete plan first:\n1. Objective and campaign structure (campaign → ad set → ad)\n2. Daily budget recommendation with reasoning\n3. Audience (location around the clinic, age, interests)\n4. Ad copy (primary text, headline, description) and a creative concept — generate the image\nShow me the full plan and WAIT for my approval. When I say launch, create it PAUSED so I can review it in the Ads tab before it spends.",
+  },
+  {
+    id: "helena-creative-pack",
+    agent: "helena",
+    title: "Ad creative pack (3 images + copy)",
+    description: "Three ready-to-run ad creatives: image + primary text + headline each.",
+    apps: ["Image generation", "Meta Ads"],
+    prompt:
+      "Create an ad creative pack for our clinic: 3 different concepts (e.g. before/after style, family care, limited-time offer). For each one:\n1. Generate the image\n2. Primary text (under 125 characters), headline (under 40), description\n3. Which audience it fits best\nUse my brand knowledge for tone and services.",
+  },
+  {
+    id: "helena-video-script",
+    agent: "helena",
+    title: "Short-form video scripts (Reels/TikTok)",
+    description: "5 scripted 20–30s videos with hooks, shots and captions.",
+    apps: ["Instagram", "TikTok"],
+    prompt:
+      "Write 5 short-form video scripts (20–30 seconds each) for our clinic's Reels/TikTok. For each: the hook (first 2 seconds), shot-by-shot outline the team can film on a phone, on-screen text, and the caption with hashtags. Mix education, myth-busting and behind-the-scenes. Keep claims compliant.",
+  },
+  {
+    id: "helena-offer-promo",
+    agent: "helena",
+    title: "Seasonal promo — full funnel",
+    description: "One offer, everywhere: ad, landing copy, social posts, email/WhatsApp.",
+    apps: ["Meta Ads", "Instagram", "Email"],
+    prompt:
+      "Design a seasonal promotion for one of our treatments (pick the best fit from my brand knowledge). Deliver the full funnel:\n1. The offer (with compliant terms)\n2. Meta ad copy + creative concept\n3. Two social posts (announce + last-chance)\n4. A landing-page copy block\n5. An email + WhatsApp version for existing patients\nShow it all for approval; don't launch anything yet.",
+  },
+  // Sam
+  {
+    id: "sam-topic-cluster",
+    agent: "sam",
+    title: "Blog topic cluster (3 months)",
+    description: "A pillar + supporting posts plan mapped to real keywords.",
+    apps: ["HyperSEO"],
+    prompt:
+      "Build a 3-month blog topic cluster for the clinic. Research real keywords first, then propose: 1 pillar page and 10 supporting posts, each with target keyword (+volume), search intent, a working title, and internal-link plan to the pillar and treatment pages. Order them by expected impact.",
+  },
+  {
+    id: "sam-schema-faq",
+    agent: "sam",
+    title: "FAQ + schema for AI search",
+    description: "FAQ blocks and schema so AI assistants cite the clinic.",
+    apps: ["HyperSEO", "Website"],
+    prompt:
+      "Create the FAQ + schema plan that gets our clinic cited by AI search: 10 real patient questions (research what people actually ask about our treatments and city), a concise expert answer for each (no medical advice), and the FAQPage + LocalBusiness JSON-LD schema blocks ready to paste into the site.",
+  },
+  {
+    id: "sam-local-citations",
+    agent: "sam",
+    title: "Local citations & directories audit",
+    description: "Where the clinic should be listed and what's inconsistent.",
+    apps: ["HyperSEO", "Maps"],
+    prompt:
+      "Audit our local presence: search for our clinic's listings (Google Maps, directories, health platforms). Check name/address/phone consistency, find the directories where competitor clinics are listed but we aren't, and give me a prioritized citation-building list with exactly what to submit where.",
+  },
+  // Kai
+  {
+    id: "kai-testimonials",
+    agent: "kai",
+    title: "Mine testimonials from reviews",
+    description: "Turn 5-star reviews into ready-to-use marketing quotes.",
+    apps: ["Google Reviews"],
+    prompt:
+      "Go through our Google reviews and mine the best testimonials: pick the 10 strongest quotes (specific, emotional, treatment-related), lightly trim them for length (keep meaning intact), note the reviewer's first name + rating, and suggest where each fits best — website, Instagram post, or ads. Flag any that mention staff by name so we can thank them.",
+  },
+  {
+    id: "kai-reply-templates",
+    agent: "kai",
+    title: "Review reply template pack",
+    description: "On-brand reply templates for every review situation.",
+    apps: ["Google Reviews"],
+    prompt:
+      "Write our review reply template pack, matched to our brand voice: 5-star (3 variants), 4-star, 3-star, negative-but-fair, unfair/angry, and suspected-fake. Each under 60 words, warm, professional, no medical detail, and where relevant inviting the patient to contact us privately. Base the tone on how our best existing replies sound.",
+  },
+  {
+    id: "kai-weekly-pulse",
+    agent: "kai",
+    title: "Weekly reputation pulse",
+    description: "A quick weekly check: new reviews, sentiment shift, one action.",
+    apps: ["Google Reviews", "Reddit"],
+    prompt:
+      "Run this week's reputation pulse: new reviews since last week (count + average), any sentiment shift, notable mentions on Reddit, one thing to celebrate with the team, and one action for next week. Keep it to a tight summary I can paste into our team chat.",
+  },
+  // Angela
+  {
+    id: "angela-birthday",
+    agent: "angela",
+    title: "Birthday & milestone messages",
+    description: "Automatic-feel birthday/anniversary touchpoints.",
+    apps: ["WhatsApp", "Email"],
+    prompt:
+      "Write our patient milestone message set: birthday (WhatsApp + email), 1-year-as-a-patient thank you, and a 'welcome to the family' message for new patients after their first visit. Warm, short, on-brand, each with a soft booking nudge. Show me the set for approval.",
+  },
+  {
+    id: "angela-referral",
+    agent: "angela",
+    title: "Referral program launch",
+    description: "A refer-a-friend program: mechanics + all the messages.",
+    apps: ["WhatsApp", "Email"],
+    prompt:
+      "Design a refer-a-friend program for the clinic: propose the incentive mechanics (compliant for healthcare in our market), then write the launch email, the WhatsApp message, the thank-you message when a referral books, and a small script the front desk can use. Present everything for approval.",
+  },
+  {
+    id: "angela-noshow",
+    agent: "angela",
+    title: "No-show reduction sequence",
+    description: "Reminder + confirmation flow that cuts missed appointments.",
+    apps: ["WhatsApp", "SMS"],
+    prompt:
+      "Build our no-show reduction messaging: a confirmation request at booking, a reminder 48h before (with easy reschedule), a day-of reminder, and a gentle 'we missed you' rebooking message after a no-show. WhatsApp-first with SMS fallbacks, all short and friendly. Show me the flow for approval.",
+  }
+);
+
 export function templatesFor(agentKey: string): AgentTemplate[] {
   return AGENT_TEMPLATES.filter((t) => t.agent === agentKey);
 }

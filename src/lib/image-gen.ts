@@ -45,10 +45,19 @@ export async function generateImage(prompt: string): Promise<{ ok: boolean; byte
   const openai = process.env.OPENAI_API_KEY;
   const openrouter = process.env.OPENROUTER_API_KEY;
   try {
-    if (openai) return await viaOpenAI(openai, prompt);
+    // Try OpenAI first when its key exists, but NEVER dead-end on it: an invalid/
+    // expired OPENAI_API_KEY (401) must fall through to OpenRouter, which is the
+    // key the app actually runs on.
+    if (openai) {
+      const r = await viaOpenAI(openai, prompt);
+      if (r.ok || !openrouter) return r;
+    }
     if (openrouter) return await viaOpenRouter(openrouter, prompt);
     return { ok: false, error: "Image generation needs OPENAI_API_KEY or OPENROUTER_API_KEY." };
   } catch (e) {
+    if (openrouter) {
+      try { return await viaOpenRouter(openrouter, prompt); } catch { /* fall through */ }
+    }
     return { ok: false, error: e instanceof Error ? e.message : "Image generation failed." };
   }
 }
