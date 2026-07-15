@@ -86,6 +86,7 @@ const nav: NavItem[] = [
     children: [
       { href: "/dashboard/social", label: "Overview" },
       { href: "/dashboard/instagram", label: "Content calendar" },
+      { href: "/dashboard/social/brand", label: "Brand identity" },
     ],
   },
   {

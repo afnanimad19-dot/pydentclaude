@@ -2171,19 +2171,63 @@ export async function fetchAgentActivity(agentKey: string): Promise<AgentActivit
 
 // ----------------------------------------------------------- AI Team: brand + chats (0030)
 
+// A clinic's structured brand identity — everything the AI agents need to sound
+// like the real clinic when they write posts, ads, emails and replies.
+export interface BrandDoctor { name: string; specialty: string; experience: string; email: string }
+export interface BrandDetails {
+  about: string;
+  services: string;
+  tone: string;
+  contactEmail: string;
+  phone: string;
+  address: string;
+  website: string;
+  instagram: string;
+  facebook: string;
+  tiktok: string;
+  doctors: BrandDoctor[];
+}
+export const emptyBrandDetails: BrandDetails = {
+  about: "", services: "", tone: "", contactEmail: "", phone: "", address: "", website: "",
+  instagram: "", facebook: "", tiktok: "", doctors: [],
+};
+
 export interface BrandKnowledge {
   profile: string;
   logoUrl: string;
   colors: string;
+  details?: BrandDetails;
+}
+
+// Turn the structured identity into the plain-text profile the agents read.
+function composeBrandProfile(d: BrandDetails, clinicName?: string): string {
+  const lines: string[] = [];
+  if (clinicName) lines.push(`Clinic: ${clinicName}`);
+  if (d.about) lines.push(d.about);
+  if (d.services) lines.push(`Services / specialties: ${d.services}`);
+  if (d.doctors?.length) {
+    lines.push("Doctors:");
+    for (const doc of d.doctors) {
+      const bits = [doc.name, doc.specialty, doc.experience && `${doc.experience} experience`, doc.email].filter(Boolean);
+      if (bits.length) lines.push(`- ${bits.join(" — ")}`);
+    }
+  }
+  const contact = [d.contactEmail && `email ${d.contactEmail}`, d.phone && `phone ${d.phone}`, d.address, d.website].filter(Boolean).join(", ");
+  if (contact) lines.push(`Contact: ${contact}`);
+  const socials = [d.instagram && `Instagram ${d.instagram}`, d.facebook && `Facebook ${d.facebook}`, d.tiktok && `TikTok ${d.tiktok}`].filter(Boolean).join(", ");
+  if (socials) lines.push(`Social: ${socials}`);
+  if (d.tone) lines.push(`Brand voice: ${d.tone}`);
+  return lines.join("\n");
 }
 
 export async function fetchBrandKnowledge(): Promise<BrandKnowledge> {
   try {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("brand_knowledge").select("*").eq("workspace_id", ws).maybeSingle();
-    return { profile: data?.profile ?? "", logoUrl: data?.logo_url ?? "", colors: data?.colors ?? "" };
+    const details = (data?.details && typeof data.details === "object") ? { ...emptyBrandDetails, ...data.details } : emptyBrandDetails;
+    return { profile: data?.profile ?? "", logoUrl: data?.logo_url ?? "", colors: data?.colors ?? "", details };
   } catch {
-    return { profile: "", logoUrl: "", colors: "" };
+    return { profile: "", logoUrl: "", colors: "", details: emptyBrandDetails };
   }
 }
 
@@ -2191,12 +2235,33 @@ export async function saveBrandKnowledge(b: BrandKnowledge): Promise<{ ok: boole
   const ws = await getWorkspaceId();
   if (!ws) return { ok: false, message: "Sign in first." };
   const { data: existing } = await supabase.from("brand_knowledge").select("workspace_id").eq("workspace_id", ws).maybeSingle();
-  const row = { profile: b.profile, logo_url: b.logoUrl, colors: b.colors, updated_at: new Date().toISOString() };
+  // When structured details are provided, compose the agent-facing profile from
+  // them (so what the clinic fills in the Brand Identity page is exactly what the
+  // agents use). The freeform team-ai brand modal still saves profile directly.
+  let profile = b.profile;
+  const row: Record<string, unknown> = { logo_url: b.logoUrl, colors: b.colors, updated_at: new Date().toISOString() };
+  if (b.details) {
+    const clinicName = await fetchWorkspaceName().catch(() => "");
+    profile = composeBrandProfile(b.details, clinicName || undefined);
+    row.details = b.details;
+  }
+  row.profile = profile;
   const { error } = existing
     ? await supabase.from("brand_knowledge").update(row).eq("workspace_id", ws)
     : await supabase.from("brand_knowledge").insert({ workspace_id: ws, ...row });
-  if (error) return { ok: false, message: error.message };
-  return { ok: true, message: "Brand knowledge saved." };
+  if (error) {
+    // `details` column may not exist yet (migration 0054 not run) — retry without it.
+    if (b.details && /details|column/i.test(error.message)) {
+      delete row.details;
+      const retry = existing
+        ? await supabase.from("brand_knowledge").update(row).eq("workspace_id", ws)
+        : await supabase.from("brand_knowledge").insert({ workspace_id: ws, ...row });
+      if (!retry.error) return { ok: true, message: "Saved (run migration 0054 to store the full structured identity)." };
+      return { ok: false, message: retry.error.message };
+    }
+    return { ok: false, message: error.message };
+  }
+  return { ok: true, message: "Brand identity saved — your agents will use it." };
 }
 
 export interface BrandDocument {
