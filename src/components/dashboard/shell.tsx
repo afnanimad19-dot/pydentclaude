@@ -154,9 +154,9 @@ const nav: NavItem[] = [
     label: "Reports",
     icon: BarChart3,
     children: [
-      { href: "/dashboard/reports", label: "Practice analytics" },
-      { href: "/dashboard/reports#production", label: "Production" },
-      { href: "/dashboard/reports#channels", label: "Channels & agents" },
+      { href: "/dashboard/reports", label: "Overview" },
+      { href: "/dashboard/reports#analytics", label: "Google Analytics" },
+      { href: "/dashboard/reports#search", label: "Search Console" },
     ],
   },
   {
