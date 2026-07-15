@@ -177,6 +177,15 @@ export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d
   try {
     if (/^(lifetime|all[_ ]?time|max)/i.test(preset)) preset = "maximum";
     if (!META_PRESETS.has(preset)) preset = "last_30d";
+    // "maximum" as an explicit ~35-month range — the engine ignores that preset.
+    let range: Record<string, unknown> = { date_preset: preset };
+    if (preset === "maximum") {
+      const now = new Date();
+      const start = new Date(now);
+      start.setMonth(start.getMonth() - 35);
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      range = { time_range: { since: iso(start), until: iso(now) } };
+    }
     const creds = await getHfxCreds(workspaceId);
     const accountsRes = await hfxCall("meta_business_list_ad_accounts", { detail: "core" }, creds);
     if (!accountsRes.ok) return null;
@@ -201,7 +210,7 @@ export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d
     const actId = String(acct.id ?? "").startsWith("act_") ? String(acct.id) : `act_${acct.id}`;
     const ins = await hfxCall(
       "meta_business_ad_insights",
-      { object_id: actId, object_type: "account", level: "campaign", date_preset: preset, include_actions: false, include_video_metrics: false },
+      { object_id: actId, object_type: "account", level: "campaign", include_actions: false, include_video_metrics: false, ...range },
       creds
     );
     if (!ins.ok) return `Meta ad account "${acct.name ?? acct.id}" is connected, but insights failed: ${ins.error}`;
@@ -217,7 +226,7 @@ export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d
       if (camps.length > 0) {
         const per = await Promise.all(
           camps.slice(0, 12).map((c: any) =>
-            hfxCall("meta_business_ad_insights", { object_id: String(c.id), object_type: "campaign", date_preset: preset, include_actions: false, include_video_metrics: false }, creds).then((r) => ({ c, r }))
+            hfxCall("meta_business_ad_insights", { object_id: String(c.id), object_type: "campaign", include_actions: false, include_video_metrics: false, ...range }, creds).then((r) => ({ c, r }))
           )
         );
         const rebuilt: any[] = [];

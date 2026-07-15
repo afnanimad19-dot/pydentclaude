@@ -19,18 +19,29 @@ const num = (v: unknown): number => {
 const VALID_PRESETS = new Set(["today", "yesterday", "last_7d", "last_14d", "last_28d", "last_30d", "last_90d", "maximum"]);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// "All time": the engine doesn't honor date_preset "maximum", so send an
+// explicit range instead — Meta's insights API accepts at most ~37 months back.
+function maximumRange(): Record<string, unknown> {
+  const now = new Date();
+  const since = new Date(now);
+  since.setMonth(since.getMonth() - 35);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  return { time_range: { since: iso(since), until: iso(now) } };
+}
+
 function rangeArgs(req: NextRequest): Record<string, unknown> {
   const since = req.nextUrl.searchParams.get("since") ?? "";
   const until = req.nextUrl.searchParams.get("until") ?? "";
   if (DATE_RE.test(since) && DATE_RE.test(until)) return { time_range: { since, until } };
   const preset = req.nextUrl.searchParams.get("preset") ?? "";
+  if (preset === "maximum") return maximumRange();
   return { date_preset: VALID_PRESETS.has(preset) ? preset : "last_30d" };
 }
 
 // Which insights "action" counts as the RESULT for each objective (priority order).
 const RESULT_PRIORITY: Record<string, string[]> = {
-  OUTCOME_LEADS: ["lead", "onsite_conversion.lead_grouped", "leadgen_grouped", "onsite_conversion.messaging_conversation_started_7d", "link_click"],
-  OUTCOME_ENGAGEMENT: ["onsite_conversion.messaging_conversation_started_7d", "post_engagement", "page_engagement", "video_view", "link_click"],
+  OUTCOME_LEADS: ["lead", "onsite_conversion.lead_grouped", "leadgen_grouped", "onsite_conversion.total_messaging_connection", "onsite_conversion.messaging_conversation_started_7d", "link_click"],
+  OUTCOME_ENGAGEMENT: ["onsite_conversion.total_messaging_connection", "onsite_conversion.messaging_conversation_started_7d", "post_engagement", "page_engagement", "video_view", "link_click"],
   OUTCOME_TRAFFIC: ["link_click", "landing_page_view"],
   OUTCOME_SALES: ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase", "onsite_conversion.purchase", "lead", "link_click"],
   OUTCOME_APP_PROMOTION: ["mobile_app_install", "app_install", "omni_app_install", "link_click"],
@@ -40,6 +51,7 @@ const RESULT_LABEL: Record<string, string> = {
   lead: "Leads",
   "onsite_conversion.lead_grouped": "Leads",
   leadgen_grouped: "Leads",
+  "onsite_conversion.total_messaging_connection": "Conversations",
   "onsite_conversion.messaging_conversation_started_7d": "Messages",
   post_engagement: "Engagements",
   page_engagement: "Engagements",
@@ -54,6 +66,33 @@ const RESULT_LABEL: Record<string, string> = {
   app_install: "Installs",
   omni_app_install: "Installs",
 };
+
+// Meta's API returns NULL recommendations for most accounts (many alerts are
+// Ads-Manager-UI-only) — so derive our own from the delivery numbers, the way
+// a media buyer reads them: fatigue, audience size, CTR, objective mismatch,
+// cost vs the account's own average.
+function smartRecommendations(
+  c: { status: string; objective: string; results: number | null; costPerResult: number | null },
+  p: { spend: number; impressions: number; clicks: number; reach: number; actions: any[] } | undefined,
+  avgCostPerResult: number | null
+): string[] {
+  const recs: string[] = [];
+  if (!p) return recs;
+  const freq = p.reach > 0 ? p.impressions / p.reach : 0;
+  if (freq > 3.5) recs.push(`Audience fatigue: people have seen these ads ${freq.toFixed(1)}× on average in this range — refresh the creative or expand the audience.`);
+  if (p.reach > 0 && p.reach < 8000 && p.spend > 300) recs.push(`Audience looks too small (${p.reach.toLocaleString()} people reached for this spend) — broaden the targeting.`);
+  const ctr = p.impressions > 0 ? (p.clicks / p.impressions) * 100 : 0;
+  if (p.impressions > 20000 && ctr < 0.5) recs.push(`Low CTR (${ctr.toFixed(2)}%) — the creative isn't stopping the scroll; test new hooks or formats.`);
+  const msgActions = (p.actions ?? []).some((a: any) => /messaging/i.test(String(a?.action_type ?? "")));
+  if (c.objective === "OUTCOME_ENGAGEMENT" && msgActions) {
+    recs.push("This campaign optimizes for engagement (likes/shares) but is producing messaging conversations — switching the objective to Leads would target message-senders directly.");
+  }
+  if (/ACTIVE/i.test(c.status) && p.spend === 0 && p.impressions === 0) recs.push("Active but not delivering in this date range — check budget, schedule or ad review status.");
+  if (avgCostPerResult != null && c.costPerResult != null && avgCostPerResult > 0 && c.costPerResult > avgCostPerResult * 2) {
+    recs.push(`Cost per result (${c.costPerResult.toFixed(2)}) is more than double this account's average (${avgCostPerResult.toFixed(2)}) — shift budget to the better performers.`);
+  }
+  return recs.slice(0, 4);
+}
 
 function pickResult(objective: string, actions: any[], reach: number, impressions: number): { results: number; label: string } {
   if (objective === "OUTCOME_AWARENESS") return { results: reach || impressions, label: "Reach" };
@@ -229,6 +268,12 @@ export async function GET(req: NextRequest) {
         };
       })
     : [];
+
+  // Performance-derived recommendations per campaign (Meta's own are null via
+  // the API for most accounts — see smartRecommendations).
+  const withCost = campaigns.filter((c: any) => c.costPerResult != null && c.costPerResult > 0);
+  const avgCostPerResult = withCost.length > 0 ? withCost.reduce((s: number, c: any) => s + c.costPerResult, 0) / withCost.length : null;
+  for (const c of campaigns) c.smart = smartRecommendations(c, perf.get(c.id), avgCostPerResult);
 
   // Campaign details come back with EMPTY issues/recommendations on this
   // engine — Meta's alerts live behind its health-check tools instead

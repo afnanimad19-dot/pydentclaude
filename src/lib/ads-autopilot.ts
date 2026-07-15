@@ -6,7 +6,7 @@
 // Deduped via hyperfx_config.autopilot_seen so each recommendation is handled once.
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { collectAlertStrings, getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
+import { collectAlertStrings, getHfxCreds, hfxCall, hfxConfigured, hfxFlatRow, hfxMetric, hfxRowHasMetrics, hfxRows } from "@/lib/hyperfx";
 import { logActivity } from "@/lib/activity";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -53,6 +53,30 @@ async function scanWorkspace(ws: string): Promise<ScanItem[]> {
           items.push({ campaignId: accountId, campaignName: String(acct.name ?? "Ad account"), kind: "recommendation", text: text.slice(0, 200) });
         }
       } catch { /* health check unavailable — skip */ }
+    }
+
+    // Performance-derived signals (Meta's API recommendations are usually
+    // null): audience fatigue and dead creative on ACTIVE campaigns. Texts
+    // carry no numbers so the dedupe key stays stable between runs.
+    if (camps.length > 0) {
+      const actId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+      const ins = await hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", level: "campaign", date_preset: "last_30d", include_actions: false, include_video_metrics: false }, creds);
+      if (ins.ok) {
+        const activeIds = new Map(camps.filter((c: any) => /ACTIVE/i.test(String(c.effective_status ?? c.status ?? ""))).map((c: any) => [String(c.id), String(c.name ?? c.id)]));
+        for (const raw of hfxRows(ins.data).filter(hfxRowHasMetrics)) {
+          const r = hfxFlatRow(raw);
+          const cid = String(r.campaign_id ?? "");
+          if (!activeIds.has(cid)) continue;
+          const name = activeIds.get(cid)!;
+          const impressions = hfxMetric(r, "impressions"), reach = hfxMetric(r, "reach"), clicks = hfxMetric(r, "clicks");
+          if (reach > 0 && impressions / reach > 3.5) {
+            items.push({ campaignId: cid, campaignName: name, kind: "recommendation", text: "Audience fatigue: this audience has seen the ads many times over the last 30 days — refresh the creative or expand the audience." });
+          }
+          if (impressions > 20000 && (clicks / impressions) * 100 < 0.5) {
+            items.push({ campaignId: cid, campaignName: name, kind: "recommendation", text: "Low CTR on high impressions — the creative isn't stopping the scroll; generate a fresh creative and test new hooks." });
+          }
+        }
+      }
     }
   }
   return items;

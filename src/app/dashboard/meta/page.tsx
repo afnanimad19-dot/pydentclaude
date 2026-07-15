@@ -15,7 +15,7 @@ import { META_OBJECTIVES, strategiesFor, type MetaStrategy } from "@/lib/meta-st
 // graph, and its ad sets & ads. All through the marketing engine.
 
 interface MetaAccount { id: string; name: string; status: string; currency: string }
-interface MetaCampaign { id: string; name: string; status: string; objective: string; dailyBudget: number | null; lifetimeBudget: number | null; startTime: string | null; spend: number | null; clicks: number | null; impressions: number | null; results: number | null; resultLabel: string; costPerResult: number | null; issues: string[]; recommendations: string[] }
+interface MetaCampaign { id: string; name: string; status: string; objective: string; dailyBudget: number | null; lifetimeBudget: number | null; startTime: string | null; spend: number | null; clicks: number | null; impressions: number | null; results: number | null; resultLabel: string; costPerResult: number | null; issues: string[]; recommendations: string[]; smart?: string[] }
 interface MetaInsights { spend: number; impressions: number; clicks: number; ctr: number; cpc: number }
 interface AdRow { id: string; name: string; status: string }
 interface AdSetPerf { spend: number; impressions: number; clicks: number; results: number; ctr: number }
@@ -351,10 +351,10 @@ export default function MetaAdsPage() {
                             {c.issues.length > 0 && (
                               <span title={c.issues.join("\n")} className="cursor-help text-rose-500"><AlertTriangle className="h-4 w-4" /></span>
                             )}
-                            {c.recommendations.length > 0 && (
-                              <span title={c.recommendations.join("\n")} className="cursor-help text-amber-500"><Lightbulb className="h-4 w-4" /></span>
+                            {(c.recommendations.length > 0 || (c.smart?.length ?? 0) > 0) && (
+                              <span title={[...c.recommendations, ...(c.smart ?? [])].join("\n")} className="cursor-help text-amber-500"><Lightbulb className="h-4 w-4" /></span>
                             )}
-                            {c.issues.length === 0 && c.recommendations.length === 0 && <span className="text-xs text-ink-300">—</span>}
+                            {c.issues.length === 0 && c.recommendations.length === 0 && (c.smart?.length ?? 0) === 0 && <span className="text-xs text-ink-300">—</span>}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-right">
@@ -521,7 +521,7 @@ function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, 
         </div>
 
         <div className="space-y-5 p-6">
-          {(campaign.issues.length > 0 || campaign.recommendations.length > 0) && (
+          {(campaign.issues.length > 0 || campaign.recommendations.length > 0 || (campaign.smart?.length ?? 0) > 0) && (
             <div className="space-y-2">
               {campaign.issues.length > 0 && (
                 <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3">
@@ -533,6 +533,12 @@ function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, 
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
                   <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700"><Lightbulb className="h-3.5 w-3.5" /> Meta&apos;s recommendations</p>
                   <ul className="mt-1 space-y-1 text-sm text-amber-800">{campaign.recommendations.map((t, i) => <li key={i}>• {t}</li>)}</ul>
+                </div>
+              )}
+              {(campaign.smart?.length ?? 0) > 0 && (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700"><Lightbulb className="h-3.5 w-3.5" /> Recommendations — from this range&apos;s performance</p>
+                  <ul className="mt-1 space-y-1 text-sm text-amber-800">{campaign.smart!.map((t, i) => <li key={i}>• {t}</li>)}</ul>
                 </div>
               )}
             </div>

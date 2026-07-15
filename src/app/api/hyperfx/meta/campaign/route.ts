@@ -17,11 +17,20 @@ const VALID_PRESETS = new Set(["today", "yesterday", "last_7d", "last_14d", "las
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Same Meta-style range selection as the list route: preset or custom since/until.
+// "maximum" becomes an explicit ~35-month range (the engine ignores that preset;
+// Meta's API caps lookback at ~37 months).
 function rangeArgs(req: NextRequest): Record<string, unknown> {
   const since = req.nextUrl.searchParams.get("since") ?? "";
   const until = req.nextUrl.searchParams.get("until") ?? "";
   if (DATE_RE.test(since) && DATE_RE.test(until)) return { time_range: { since, until } };
   const preset = req.nextUrl.searchParams.get("preset") ?? "";
+  if (preset === "maximum") {
+    const now = new Date();
+    const start = new Date(now);
+    start.setMonth(start.getMonth() - 35);
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    return { time_range: { since: iso(start), until: iso(now) } };
+  }
   return { date_preset: VALID_PRESETS.has(preset) ? preset : "last_30d" };
 }
 
@@ -46,7 +55,7 @@ export async function GET(req: NextRequest) {
   // spellings once and remember which one the server accepts.
   let adsetObjType: string | null = null;
   const rangeArgsMemo = rangeArgs(req);
-  const RESULT_TYPES = ["lead", "onsite_conversion.lead_grouped", "onsite_conversion.messaging_conversation_started_7d", "purchase", "omni_purchase", "link_click"];
+  const RESULT_TYPES = ["lead", "onsite_conversion.lead_grouped", "onsite_conversion.total_messaging_connection", "onsite_conversion.messaging_conversation_started_7d", "purchase", "omni_purchase", "link_click"];
   async function adsetPerf(sid: string) {
     for (const t of adsetObjType ? [adsetObjType] : ["adset", "ad_set"]) {
       const r = await hfxCall("meta_business_ad_insights", { object_id: sid, object_type: t, include_actions: true, include_video_metrics: false, ...rangeArgsMemo }, creds);
