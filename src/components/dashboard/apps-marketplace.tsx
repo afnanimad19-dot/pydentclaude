@@ -10,7 +10,7 @@ import { getWorkspaceId } from "@/lib/db";
 // automatically from the clinic's marketing engine: connect an app there and
 // this flips to Connected by itself — there is nothing to click here.
 
-interface AppItem { id: string; name: string; connected: boolean }
+interface AppItem { id: string; name: string; connected: boolean; description?: string; builtin?: boolean }
 
 // The main apps a dental clinic actually needs — deliberately short.
 const CURATED: { id: string; name: string; detail: string }[] = [
@@ -51,6 +51,10 @@ export function AppsMarketplace() {
   if (!configured) return null; // appears once the engine is configured
 
   const connectedCount = CURATED.filter((c) => apps.get(c.id)?.connected).length;
+  // Anything ELSE the clinic has connected on the engine (GitHub, Notion,
+  // Shopify, Stripe, Calendly, …) appears automatically below the curated list.
+  const curatedIds = new Set(CURATED.map((c) => c.id));
+  const extras = [...apps.values()].filter((a) => a.connected && !a.builtin && !curatedIds.has(a.id));
 
   return (
     <Card className="p-6">
@@ -59,7 +63,7 @@ export function AppsMarketplace() {
           <Grid3x3 className="h-5 w-5 text-brand-500" /> Marketing apps
         </h2>
         <div className="flex items-center gap-2 text-xs text-ink-400">
-          <span>{connectedCount} of {CURATED.length} connected</span>
+          <span>{connectedCount + extras.length} connected</span>
           <button onClick={reload} title="Refresh" className="rounded-lg p-1 text-ink-400 hover:bg-ink-100"><RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} /></button>
         </div>
       </div>
@@ -88,6 +92,16 @@ export function AppsMarketplace() {
             </div>
           );
         })}
+        {extras.map((a) => (
+          <div key={a.id} className="flex items-center gap-3 py-3">
+            <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-ink-900">{a.name}</p>
+              <p className="truncate text-xs text-ink-400">{a.description || "Connected for this clinic — available to the AI Marketing team."}</p>
+            </div>
+            <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-semibold text-emerald-600"><CheckCircle2 className="h-3 w-3" /> Connected</span>
+          </div>
+        ))}
       </div>
     </Card>
   );

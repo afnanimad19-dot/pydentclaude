@@ -136,25 +136,47 @@ const NOT_CONFIGURED = "Hyperfx is not configured — save this clinic's Hyperfx
 // from "enabled" (the toolkit's tools are exposed to an MCP session). A freshly
 // connected app therefore answers "unknown tool" until enable_toolkit runs. Map
 // each tool prefix to its toolkit so hfxCall can self-enable and retry.
+// More specific prefixes MUST come before shorter ones that share a stem
+// (tiktok_marketing_ before tiktok_, linkedin_ads_ before linkedin_, …).
+// Unmapped or wrongly-guessed ids are rescued at runtime by
+// resolveToolkitFromCatalog, which finds the toolkit owning a tool by name.
 const TOOLKIT_BY_PREFIX: [string, string][] = [
   ["meta_business_", "meta_business"],
   ["google_ads_", "google_ads"],
   ["google_calendar_", "google_calendar"],
   ["google_sheets_", "google_sheets"],
+  ["google_docs_", "google_docs"],
   ["google_analytics_", "google_analytics_toolkit"],
+  ["google_search_console_", "google_search_console_toolkit"],
   ["hyperseo_", "hyperseo"],
-  ["tiktok_", "tiktok_marketing"],
+  ["tiktok_marketing_", "tiktok_marketing"],
+  ["tiktok_", "tiktok"],
   ["linkedin_ads_", "linkedin_ads_toolkit"],
+  ["linkedin_", "linkedin_toolkit"],
   ["search_facebook_", "meta_ads_library"],
   ["scrape_facebook", "meta_ads_library"],
   ["get_facebook_ad", "meta_ads_library"],
   ["outscraper_", "outscraper_toolkit"],
   ["scrape_reddit", "reddit_scraper"],
+  ["reddit_ads_", "reddit_ads"],
   ["cmo_", "cmo"],
   ["instagram_scraper", "instagram_scraper"],
   ["instagram_", "instagram_toolkit"],
   ["wordpress_", "wordpress_org_toolkit"],
-  ["google_search_console_", "google_search_console_toolkit"],
+  ["github_", "github_toolkit"],
+  ["gmail_", "gmail"],
+  ["hubspot_", "hubspot_toolkit"],
+  ["gtm_", "google_tag_manager"],
+  ["notion_", "notion"],
+  ["shopify_", "shopify"],
+  ["x_", "x_toolkit"],
+  ["snapchat_", "snapchat_marketing"],
+  ["stripe_", "stripe"],
+  ["amazon_ads_", "amazon_ads"],
+  ["calendly_", "calendly"],
+  ["outlook_calendar_", "outlook_calendar"],
+  ["outlook_", "outlook"],
+  ["teams_", "microsoft_teams"],
 ];
 
 function toolkitForTool(tool: string): string | null {
@@ -164,6 +186,43 @@ function toolkitForTool(tool: string): string | null {
 
 function looksLikeUnknownTool(msg: string): boolean {
   return /unknown tool|not (found|available|enabled)|no such tool|does not exist|invalid tool/i.test(msg);
+}
+
+// Ask the live catalog which toolkit owns a tool — rescues tools whose prefix
+// isn't (correctly) mapped above. discover_toolkits is a built-in, always on.
+async function resolveToolkitFromCatalog(creds: HfxCreds, tool: string): Promise<string | null> {
+  try {
+    if (!session(creds).initialized) await initialize(creds);
+    const result = await rpc(
+      creds,
+      "tools/call",
+      { name: "discover_toolkits", arguments: { query: "" } },
+      Math.floor(Math.random() * 1e9) + 1
+    );
+    const data = unwrap(result);
+    if (Array.isArray(data)) {
+      for (const tk of data as any[]) {
+        if (Array.isArray(tk?.tools) && tk.tools.map(String).includes(tool)) {
+          return String(tk.id ?? "") || null;
+        }
+      }
+    }
+  } catch { /* catalog unavailable — give up quietly */ }
+  return null;
+}
+
+// Enable whichever toolkit provides `tool`: mapped prefix first, then the
+// catalog's answer. True when any candidate reports enabled.
+async function tryEnableForTool(creds: HfxCreds, tool: string): Promise<boolean> {
+  const candidates: string[] = [];
+  const mapped = toolkitForTool(tool);
+  if (mapped) candidates.push(mapped);
+  const fromCatalog = await resolveToolkitFromCatalog(creds, tool);
+  if (fromCatalog && !candidates.includes(fromCatalog)) candidates.push(fromCatalog);
+  for (const c of candidates) {
+    if (await tryEnableToolkit(creds, c)) return true;
+  }
+  return false;
 }
 
 // Enable a toolkit on the MCP connection (works when the account is already
@@ -199,10 +258,9 @@ export async function hfxCall(
       if (result?.isError) {
         const block = Array.isArray(result?.content) ? result.content.find((c: any) => c?.type === "text") : null;
         const errText = String(block?.text ?? "Tool call failed");
-        const toolkit = toolkitForTool(tool);
-        if (!enableTried && toolkit && looksLikeUnknownTool(errText)) {
+        if (!enableTried && looksLikeUnknownTool(errText)) {
           enableTried = true;
-          if (await tryEnableToolkit(creds, toolkit)) {
+          if (await tryEnableForTool(creds, tool)) {
             resetSession(creds); // enable_toolkit requires a fresh MCP session
             continue;
           }
@@ -212,10 +270,9 @@ export async function hfxCall(
       return { ok: true, data: unwrap(result), content: Array.isArray(result?.content) ? result.content : [] };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Hyperfx call failed";
-      const toolkit = toolkitForTool(tool);
-      if (!enableTried && toolkit && looksLikeUnknownTool(msg)) {
+      if (!enableTried && looksLikeUnknownTool(msg)) {
         enableTried = true;
-        if (await tryEnableToolkit(creds, toolkit)) {
+        if (await tryEnableForTool(creds, tool)) {
           resetSession(creds);
           continue;
         }
@@ -260,7 +317,7 @@ export async function hfxListTools(
 // Only read-style tools may be invoked through the generic /api/hyperfx/call
 // endpoint — creating/updating ads (i.e. spending money) stays off until a
 // proper per-action confirmation UI exists.
-const SAFE_TOOL = /(_(list|get|search|query|insights?|report|preview|overview|results?|volume|ideas|difficulty|competitors?|history|intent|intersection|pagespeed|mentions|traffic|rank|benchmarks?|details)($|_))|^(hyperseo_|search_facebook_|scrape_|outscraper_search|outscraper_get)/;
+const SAFE_TOOL = /(_(list|get|search|query|insights?|report|preview|overview|results?|volume|ideas|difficulty|competitors?|history|intent|intersection|pagespeed|mentions|traffic|rank|benchmarks?|details|find|forecast|calculate)($|_))|^(hyperseo_|search_facebook_|scrape_|outscraper_search|outscraper_get)/;
 
 // Tool results wrap tabular rows differently across toolkits — accept every
 // shape we've seen: bare array, {data|insights|results|rows: [...]}, the

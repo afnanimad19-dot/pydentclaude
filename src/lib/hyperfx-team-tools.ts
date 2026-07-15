@@ -14,10 +14,17 @@ import { getHfxCreds, hfxCall, hfxFlatRow, hfxListTools, hfxMetric, hfxRowHasMet
 
 // Which slice of the Hyperfx catalog each team member may touch.
 export const HFX_LANES: Record<string, string[]> = {
-  helena: ["meta_business_", "search_facebook_", "scrape_facebook", "cmo_", "google_ads_", "tiktok_", "linkedin_ads_", "instagram_", "google_analytics_"],
-  sam: ["hyperseo_", "cmo_", "google_ads_", "google_search_console_", "google_analytics_", "wordpress_"],
-  kai: ["outscraper_", "scrape_reddit", "cmo_", "instagram_"],
-  angela: ["outscraper_", "cmo_"],
+  // Helena — paid media + social growth: every ads platform, social publishing, analytics.
+  helena: [
+    "meta_business_", "search_facebook_", "scrape_facebook", "cmo_", "google_ads_", "tiktok_", "linkedin_",
+    "instagram_", "google_analytics_", "snapchat_", "reddit_ads_", "amazon_ads_", "x_", "shopify_",
+  ],
+  // Sam — SEO + content: search data, site analytics, content/docs, tracking setup.
+  sam: ["hyperseo_", "cmo_", "google_ads_", "google_search_console_", "google_analytics_", "wordpress_", "notion_", "google_docs_", "gtm_"],
+  // Kai — reputation + community: reviews, comments, mentions across social.
+  kai: ["outscraper_", "scrape_reddit", "cmo_", "instagram_", "x_", "tiktok_", "linkedin_"],
+  // Angela — front desk: CRM, email, calendars, scheduling links, spreadsheets.
+  angela: ["outscraper_", "cmo_", "hubspot_", "calendly_", "google_calendar_", "gmail_", "outlook_", "teams_", "google_sheets_", "google_docs_"],
 };
 
 // OpenAI function-calling tool definitions to append to a team agent's TOOLS.
@@ -52,26 +59,77 @@ export const HFX_TEAM_TOOLS = [
   },
 ];
 
-// Helena may RUN ads end-to-end (create/update campaigns, ad sets, ads,
-// creatives, upload images) — the system note requires an explicit user
-// confirmation in chat before any of these fire. Deletes stay UI-only.
-const HELENA_WRITE_TOOLS = new Set([
-  "meta_business_create_campaign",
-  "meta_business_update_campaign",
-  "meta_business_activate_campaign",
-  "meta_business_create_ad_set",
-  "meta_business_update_ad_set",
-  "meta_business_create_ad",
-  "meta_business_update_ad",
-  "meta_business_create_ad_creative",
-  "meta_business_upload_ad_image",
-  "meta_business_preview_blueprint",
-  "meta_business_create_from_blueprint",
-]);
+// Per-agent write whitelists. The system note requires an explicit user
+// confirmation in chat before ANY of these fire. Deletes stay UI-only
+// everywhere — no agent can delete anything.
+const AGENT_WRITE_TOOLS: Record<string, Set<string>> = {
+  // Helena runs Meta ads end-to-end and can publish organic social posts.
+  helena: new Set([
+    "meta_business_create_campaign",
+    "meta_business_update_campaign",
+    "meta_business_activate_campaign",
+    "meta_business_create_ad_set",
+    "meta_business_update_ad_set",
+    "meta_business_create_ad",
+    "meta_business_update_ad",
+    "meta_business_create_ad_creative",
+    "meta_business_upload_ad_image",
+    "meta_business_preview_blueprint",
+    "meta_business_create_from_blueprint",
+    "x_post_tweet",
+    "linkedin_create_post",
+    "linkedin_create_image_post",
+    "linkedin_share_url",
+  ]),
+  // Sam drafts and publishes content documents.
+  sam: new Set([
+    "notion_create_page",
+    "notion_update_page",
+    "notion_append_block_children",
+    "google_docs_create_document",
+    "google_docs_insert_text",
+    "google_docs_append_text",
+    "google_docs_replace_text",
+    "google_docs_batch_update",
+  ]),
+  // Kai replies to comments/mentions (reputation care).
+  kai: new Set([
+    "instagram_reply_to_comment",
+    "x_reply_to_tweet",
+    "linkedin_comment_on_post",
+  ]),
+  // Angela handles email, calendars, scheduling links, CRM records, sheets.
+  angela: new Set([
+    "gmail_send_email",
+    "gmail_reply_to_email",
+    "gmail_create_draft",
+    "gmail_send_draft",
+    "outlook_send_email",
+    "outlook_reply_to_email",
+    "outlook_create_draft",
+    "google_calendar_create_event",
+    "google_calendar_update_event",
+    "outlook_calendar_create_event",
+    "outlook_calendar_update_event",
+    "calendly_create_single_use_link",
+    "hubspot_create_contact",
+    "hubspot_update_contact",
+    "hubspot_create_company",
+    "hubspot_create_deal",
+    "hubspot_update_deal",
+    "hubspot_create_note",
+    "hubspot_create_task",
+    "hubspot_associate_objects",
+    "google_sheets_create_spreadsheet",
+    "google_sheets_add_sheet",
+    "google_sheets_append_values",
+    "google_sheets_update_values",
+  ]),
+};
 
 function agentMayRun(agent: string, tool: string): boolean {
   if (hfxToolIsSafe(tool)) return true;
-  return agent === "helena" && HELENA_WRITE_TOOLS.has(tool);
+  return AGENT_WRITE_TOOLS[agent]?.has(tool) ?? false;
 }
 
 function inLane(tool: string, prefixes: string[]): boolean {
@@ -156,10 +214,10 @@ export async function execHyperfxTool(
 export function hyperfxSystemNote(agent: keyof typeof HFX_LANES): string {
   const what: Record<string, string> = {
     helena:
-      "live Meta/Google/TikTok/LinkedIn ads data (accounts, campaigns, ad sets, ads, creatives, insights), Instagram account/post insights, Google Analytics reports, Meta Ads-Library competitor research, CMO brand reports — and you can RUN Meta ads: create/update campaigns, ad sets, ads and creatives, and upload ad images",
-    sam: "HyperSEO keyword/SERP research, AI-search visibility, competitor SEO analysis, Google Search Console data (queries, clicks, positions, indexing), Google Analytics reports, WordPress content, and Google Ads keyword insights",
-    kai: "Google-review and Reddit scraping for reputation monitoring, Instagram comments/mentions and post insights, plus CMO brand reports",
-    angela: "Google Maps lead scraping (find local audiences) and CMO brand reports",
+      "live ads data on EVERY connected platform — Meta, Google, TikTok, LinkedIn, Snapchat, Reddit, Amazon (accounts, campaigns, ad sets/groups/squads, ads, creatives, reports) — Instagram account/post insights, X/Twitter, Google Analytics reports, Shopify store data, Meta Ads-Library competitor research, CMO brand reports. You can RUN Meta ads (create/update campaigns, ad sets, ads, creatives, upload images) and publish X/LinkedIn posts",
+    sam: "HyperSEO keyword/SERP research, AI-search visibility, competitor SEO analysis, Google Search Console data (queries, clicks, positions, indexing), Google Analytics reports, WordPress content, Notion and Google Docs drafting, Google Tag Manager setup, and Google Ads keyword insights",
+    kai: "Google-review and Reddit scraping for reputation monitoring, Instagram/X/TikTok/LinkedIn comments, mentions and post insights, plus CMO brand reports — you can reply to comments after user confirmation",
+    angela: "Google Maps lead scraping (find local audiences), HubSpot CRM (contacts, companies, deals, notes, tasks), clinic email via Gmail/Outlook, Google & Outlook Calendar plus Calendly scheduling, Google Sheets exports, and CMO brand reports — you can send emails, create events and CRM records after user confirmation",
   };
   return `You also have Hyperfx marketing tools for ${what[agent] ?? "marketing research"}: call hyperfx_list_tools to discover them (optionally with a keyword), then hyperfx_run_tool to run one with JSON args.
 RESEARCH LIKE A MEDIA BUYER — drill down the hierarchy instead of guessing, and answer from REAL fetched data, never from assumption:
@@ -169,8 +227,9 @@ RESEARCH LIKE A MEDIA BUYER — drill down the hierarchy instead of guessing, an
 • Search Console: google_search_console_list_sites → query_search_analytics (clicks, impressions, CTR, position) / inspect_url.
 • Instagram: instagram_get_user_profile / get_account_insights → list_media → get_media_insights; comments via list_comments.
 • WordPress: wordpress_list_posts / list_pages / list_media, create/update for content.
+• Every other platform follows the same list → get → details pattern: TikTok/Snapchat/Reddit/Amazon/LinkedIn ads (list_ad_accounts → list_campaigns → list_ad_groups|ad_squads → list_ads, performance via *_report/*_stats/*_metrics tools), HubSpot (list/search contacts, companies, deals, pipelines, engagements), Gmail/Outlook (list/search emails → get → thread), Google Calendar & Outlook Calendar & Calendly (list events, free/busy, availability), Notion (search → query_database → get_block_children), Google Docs/Sheets (list → get document/values), Shopify (products, orders, customers, inventory), GitHub, Microsoft Teams, X/Twitter (search_tweets, timelines, DMs), TikTok organic (list_videos → get_video_insights).
 When a tool answers with an envelope (summary_metrics + detailed_insights), read detailed_insights for per-row data and summary_metrics for totals.
-RULES FOR WRITE ACTIONS (Helena only): before ANY create/update call that touches live ads, present the complete plan — objective, daily budget, audience, placement, creative/copy — and wait for the user's explicit confirmation ("yes", "launch", "go ahead") in this chat. Create campaigns with status PAUSED unless the user explicitly says go live. Never delete anything. Budget values are in CENTS on Meta tools (e.g. $20 = 2000). Other agents are read-only: draft the plan and point the user to the Ads page. If Hyperfx says it isn't configured, tell the user to add their Hyperfx credentials in Settings → Connections (or connect the platform on hyperfx.ai).`;
+RULES FOR WRITE ACTIONS: only the write tools allowed for YOUR role are callable (they appear in hyperfx_list_tools; everything else is read-only for you). Before ANY write that reaches the outside world — ads, emails, calendar events, CRM records, social posts or replies, documents — state exactly what you will do (recipient/audience, full content, budget if any) and wait for the user's explicit confirmation ("yes", "send", "launch", "go ahead") in this chat. Meta ads: create campaigns with status PAUSED unless the user explicitly says go live; budget values are in CENTS (e.g. $20 = 2000). Never delete anything — deletes are UI-only. If Hyperfx says it isn't configured, tell the user to add their Hyperfx credentials in Settings → Connections (or connect the platform on hyperfx.ai).`;
 }
 
 /* ------------------------------------------------------------------ */

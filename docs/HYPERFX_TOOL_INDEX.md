@@ -83,6 +83,37 @@ Result action types seen live: `onsite_conversion.total_messaging_connection`
 - **Taxonomy**: `list_categories`, `create_category`, `list_tags`, `create_tag`
 - **Comments/sites**: `list_comments`, `approve_comment`, `delete_comment`, `list_sites`
 
+## Additional platforms (same list → get → details pattern)
+
+- **GitHub** (`github_*`): repos (`list_repos`, `get_repo`, `create_repo`, `fork_repo`), branches (`list/get/create/delete/merge_branch`), files (`get_file_contents`, `create_or_update_file`, `list_directory`, `search_code`), issues (`list/get/create/update/close_issue`, comments), PRs (`list/get/create/merge_pull_request`, comments, reviews), users/orgs
+- **Gmail** (`gmail_*`): read (`list_emails`, `get_email`, `search_emails`, threads), send (`send_email`, `reply_to_email`, `forward_email`, drafts CRUD + `send_draft`), manage (archive/delete/read/unread, labels CRUD), attachments (`list_attachments`, `get_attachment`)
+- **Google Calendar** (`google_calendar_*`): calendars CRUD, events (`list/get/create/update/delete/move/search_events`), availability (`get_freebusy`, ACL)
+- **Google Docs** (`google_docs_*`): documents CRUD + copy, editing (`insert_text`, `replace_text`, `insert_table`, `insert_image`, `append_text`, `batch_update`), `export_document` (PDF/Word/HTML), `share_document`
+- **Google Sheets** (`google_sheets_*`): spreadsheets CRUD + copy, tabs (`list/add/delete/rename_sheet`), data (`get_values`, `update_values`, `append_values`, `clear_values`, batch variants), formatting (`format_cells`, conditional)
+- **HubSpot** (`hubspot_*`): contacts/companies/deals CRUD + search + merge, associations (`associate_objects`, `list_associations`), engagements (`create_note/task/meeting/call`, `list_engagements`), tickets + pipelines (`list_pipelines`, `list_pipeline_stages`), properties
+- **Google Tag Manager** (`gtm_*`): accounts/containers CRUD, workspaces (+ `get_workspace_status`), tags/triggers/variables CRUD, versions (`create_version`, `publish_version`, environments)
+- **Notion** (`notion_*`): `search`, pages (get/create/update/archive), databases (list/get/create/update/`query_database`), blocks (`get_block_children`, `append_block_children`, update/delete), comments
+- **Shopify** (`shopify_*`): products + variants CRUD, orders (list/get/create/update/cancel/refund/fulfill), customers CRUD + search, inventory (`get_inventory_level`, `update_inventory_level`, locations), collections + metafields, discounts (`price_rules`, `discount_codes`)
+- **TikTok organic** (`tiktok_*`): profile (`get_user_info`, followers), content (`list_videos`, `get_video`, `upload_video`, comments), analytics (`get_video_insights`, `get_account_insights`)
+- **TikTok Marketing** (`tiktok_marketing_*`): accounts (+ `get_balance`), campaigns/ad groups/ads CRUD, `upload_image`/`upload_video`, reporting (`get_reports`, `get_audience_insights`), targeting (`search_interests`, `list_locations`)
+- **X / Twitter** (`x_*`): tweets (`post_tweet`, `get_tweet`, `search_tweets`, like/retweet/quote/reply, `get_tweet_replies`), users (profiles, follow, followers/following, block/mute), lists + `get_timelines`, DMs (`send_dm`, conversations)
+- **Snapchat Ads** (`snapchat_*`): organizations/ad accounts/funding, campaigns CRUD, ad squads CRUD, ads + creatives (+ `upload_media`), audiences + targeting (`search_interests`, `list_locations`), stats (`get_campaign_stats`, `get_ad_squad_stats`, `get_ad_stats`)
+- **Stripe** (`stripe_*`): customers CRUD + search, products/prices, subscriptions (create/update/cancel/pause), payments (`payment_intents`, charges, refunds), invoices (create/send/void), `create_payment_link`, coupons, `get_balance`, `calculate_mrr`
+- **Amazon Ads** (`amazon_ads_*`): profiles, SP campaigns/ad groups CRUD, keywords (+ `get_keyword_suggestions`), product ads, reporting (`request_report` → `get_report`, `get_campaign_metrics`, `get_keyword_metrics`)
+- **Calendly** (`calendly_*`): event types, scheduled events (list/get/cancel), invitees, availability (`get_user_availability`), `create_single_use_link`, webhooks, user/org info
+- **LinkedIn organic** (`linkedin_*`): profile, posts (create/list/get/delete, image/video posts, `share_url`), engagement (like/comment/list comments), connections
+- **Outlook mail** (`outlook_*`): read (list/get/search messages, folders), send (send/reply/forward, drafts), manage (move/delete/mark read, folders), attachments, contacts CRUD
+- **Outlook Calendar** (`outlook_calendar_*`): calendars, events CRUD + accept/decline + search, availability (`get_schedule`, `find_meeting_times`)
+- **Microsoft Teams** (`teams_*`): teams/channels CRUD, messages (send/reply/list, chat messages), chats + members, shifts, activity feed
+- **LinkedIn Ads** (`linkedin_ads_*`): ad accounts (+ `get_account_report`), campaigns CRUD + search + `get_campaign_report`, creatives CRUD
+- **Reddit Ads** (`reddit_ads_*`): businesses/ad accounts/funding, campaigns/ad groups/ads CRUD, promoted posts, audiences + pixels + `get_targeting`, reports per level + `forecast`
+
+Agent access: lanes in `HFX_LANES` (Helena = all ads + social + commerce, Sam =
+SEO/content/docs/GTM, Kai = reputation/comments, Angela = CRM/email/calendar/
+sheets). Writes are whitelisted per agent in `AGENT_WRITE_TOOLS` and always
+confirmation-gated in chat; deletes are never exposed to agents. Unknown
+toolkits self-enable via catalog lookup (`resolveToolkitFromCatalog`).
+
 ## Where this maps into Pydent
 
 - MCP client + envelope parsing: `src/lib/hyperfx.ts`
