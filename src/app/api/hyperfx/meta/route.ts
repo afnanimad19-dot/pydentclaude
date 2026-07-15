@@ -16,7 +16,7 @@ const num = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const VALID_PRESETS = new Set(["today", "yesterday", "last_7d", "last_14d", "last_28d", "last_30d", "last_90d"]);
+const VALID_PRESETS = new Set(["today", "yesterday", "last_7d", "last_14d", "last_28d", "last_30d", "last_90d", "maximum"]);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function rangeArgs(req: NextRequest): Record<string, unknown> {
@@ -103,33 +103,64 @@ export async function GET(req: NextRequest) {
 
   const perf = new Map<string, { spend: number; impressions: number; clicks: number; reach: number; actions: any[] }>();
   let totals: { spend: number; impressions: number; clicks: number } | null = null;
+  let insightsNote: string | null = null;
+
+  const addRow = (cid: string, r: any) => {
+    const row = { spend: num(r.spend), impressions: num(r.impressions), clicks: num(r.clicks), reach: num(r.reach), actions: r.actions ?? [] };
+    const prev = perf.get(cid);
+    if (prev) {
+      prev.spend += row.spend; prev.impressions += row.impressions; prev.clicks += row.clicks; prev.reach += row.reach;
+      prev.actions = [...prev.actions, ...row.actions];
+    } else if (cid) {
+      perf.set(cid, row);
+    }
+    return row;
+  };
+
   if (insightsRes.ok) {
-    const rows: any[] = hfxRows(insightsRes.data);
+    const rows: any[] = hfxRows(insightsRes.data).filter((r: any) => r && (r.spend !== undefined || r.impressions !== undefined));
     totals = { spend: 0, impressions: 0, clicks: 0 };
     for (const r of rows) {
-      const row = { spend: num(r.spend), impressions: num(r.impressions), clicks: num(r.clicks), reach: num(r.reach), actions: r.actions ?? [] };
+      const row = addRow(String(r.campaign_id ?? ""), r);
       totals.spend += row.spend;
       totals.impressions += row.impressions;
       totals.clicks += row.clicks;
-      const cid = String(r.campaign_id ?? "");
-      if (cid) {
-        const prev = perf.get(cid);
-        if (prev) {
-          prev.spend += row.spend; prev.impressions += row.impressions; prev.clicks += row.clicks; prev.reach += row.reach;
-          prev.actions = [...prev.actions, ...row.actions];
-        } else {
-          perf.set(cid, row);
-        }
-      }
     }
   }
 
+  // FALLBACK: some accounts return nothing for the account-level campaign
+  // breakdown while direct per-campaign insights work fine (the drawer's path).
+  // If the rollup came back empty but campaigns exist, query each campaign
+  // directly and rebuild the totals from those.
+  const campaignRowsRaw: any[] = campaignsRes.ok ? ((campaignsRes.data as any)?.campaigns ?? []) : [];
+  if ((!totals || (totals.spend === 0 && totals.impressions === 0)) && campaignRowsRaw.length > 0) {
+    const ids = campaignRowsRaw.map((c: any) => String(c.id ?? "")).filter(Boolean).slice(0, 12);
+    const per = await Promise.all(
+      ids.map((cid) => hfxCall("meta_business_ad_insights", { object_id: cid, object_type: "campaign", include_actions: true, include_video_metrics: false, ...rangeArgs(req) }, creds).then((r) => ({ cid, r })))
+    );
+    let any = false;
+    const t = { spend: 0, impressions: 0, clicks: 0 };
+    for (const { cid, r } of per) {
+      if (!r.ok) continue;
+      for (const row of hfxRows(r.data).filter((x: any) => x && (x.spend !== undefined || x.impressions !== undefined))) {
+        const added = addRow(cid, row);
+        t.spend += added.spend; t.impressions += added.impressions; t.clicks += added.clicks;
+        any = true;
+      }
+    }
+    if (any) {
+      totals = t;
+      insightsNote = "per-campaign fallback used (account-level rollup returned no rows)";
+    }
+  }
+
+  const havePerf = insightsRes.ok || insightsNote !== null;
   const campaigns = campaignsRes.ok
     ? ((campaignsRes.data as any)?.campaigns ?? []).map((c: any) => {
         const p = perf.get(String(c.id ?? ""));
         const objective = c.objective ?? "—";
         const picked = p ? pickResult(objective, p.actions, p.reach, p.impressions) : pickResult(objective, [], 0, 0);
-        const spend = insightsRes.ok ? (p?.spend ?? 0) : null;
+        const spend = havePerf ? (p?.spend ?? 0) : null;
         return {
           id: String(c.id ?? ""),
           name: c.name ?? c.id ?? "Campaign",
@@ -139,11 +170,11 @@ export async function GET(req: NextRequest) {
           lifetimeBudget: c.lifetime_budget != null ? num(c.lifetime_budget) / 100 : null,
           startTime: c.start_time ?? null,
           spend,
-          clicks: insightsRes.ok ? (p?.clicks ?? 0) : null,
-          impressions: insightsRes.ok ? (p?.impressions ?? 0) : null,
-          results: insightsRes.ok ? picked.results : null,
+          clicks: havePerf ? (p?.clicks ?? 0) : null,
+          impressions: havePerf ? (p?.impressions ?? 0) : null,
+          results: havePerf ? picked.results : null,
           resultLabel: picked.label,
-          costPerResult: insightsRes.ok && picked.results > 0 && spend != null ? spend / picked.results : null,
+          costPerResult: havePerf && picked.results > 0 && spend != null ? spend / picked.results : null,
           issues: (Array.isArray(c.issues_info) ? c.issues_info : []).map((i: any) => String(i?.error_summary ?? i?.error_message ?? i?.message ?? "Issue")).slice(0, 5),
           recommendations: (Array.isArray(c.recommendations) ? c.recommendations : []).map((r: any) => String(r?.title ?? r?.message ?? r?.code ?? "Recommendation")).slice(0, 5),
         };
@@ -170,6 +201,7 @@ export async function GET(req: NextRequest) {
       ? { ...totals, ctr: totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0, cpc: totals.clicks > 0 ? totals.spend / totals.clicks : 0 }
       : null,
     campaignsError: campaignsRes.ok ? null : campaignsRes.error,
-    insightsError: insightsRes.ok ? null : insightsRes.error,
+    insightsError: havePerf ? null : insightsRes.error ?? null,
+    insightsNote,
   });
 }

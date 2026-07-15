@@ -96,8 +96,13 @@ const TOOLS = [
     type: "function",
     function: {
       name: "get_meta_ads_performance",
-      description: "Pull Facebook/Instagram (Meta) ad performance for the last 30 days — spend, impressions, clicks, CTR, CPC.",
-      parameters: { type: "object", properties: {} },
+      description: "Pull Facebook/Instagram (Meta) ad performance — spend, impressions, clicks, CTR, CPC — for a chosen period (default last 30 days).",
+      parameters: {
+        type: "object",
+        properties: {
+          date_preset: { type: "string", enum: ["today", "yesterday", "last_7d", "last_14d", "last_28d", "last_30d", "last_90d", "maximum"], description: "Reporting window; 'maximum' = all time." },
+        },
+      },
     },
   },
   {
@@ -181,7 +186,7 @@ export async function POST(req: NextRequest) {
       await logActivity(workspaceId, "helena", "Pulled Meta Ads performance");
       // ENGINE-ONLY: all Meta data flows through the marketing engine — there is
       // no separate Pydent-side Meta integration anymore.
-      const viaEngine = await hfxMetaPerformance(workspaceId);
+      const viaEngine = await hfxMetaPerformance(workspaceId, args.date_preset ? String(args.date_preset) : "last_30d");
       return viaEngine ?? "Couldn't reach the marketing engine for Meta data — check the Marketing engine card in Settings → Connections (or /api/hyperfx/diag for the exact reason).";
     }
     if (name === "get_google_ads_performance") {

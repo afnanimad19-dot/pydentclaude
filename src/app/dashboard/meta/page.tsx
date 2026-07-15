@@ -47,6 +47,7 @@ const RANGE_PRESETS: [string, string][] = [
   ["last_28d", "Last 28 days"],
   ["last_30d", "Last 30 days"],
   ["last_90d", "Last 90 days"],
+  ["maximum", "All time (maximum)"],
   ["this_month", "This month"],
   ["last_month", "Last month"],
   ["custom", "Custom range…"],

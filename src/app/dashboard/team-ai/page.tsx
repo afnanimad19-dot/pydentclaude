@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, FileText, Activity, Clock, Play, Pause, LayoutGrid, Paperclip, Mic, X } from "lucide-react";
 import Link from "next/link";
 import { Card, PageHeader } from "@/components/ui";
@@ -560,14 +560,17 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>
                   {typeof m.content === "string" ? (
-                    linkify(m.content)
+                    m.role === "assistant" ? renderMarkdown(m.content) : linkify(m.content)
                   ) : (
                     <>
                       {m.content.filter((pt) => pt.type === "image_url").map((pt, j) => (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img key={j} src={(pt as { image_url: { url: string } }).image_url.url} alt="attachment" className="mb-2 max-h-56 rounded-xl" />
                       ))}
-                      {linkify(m.content.filter((pt) => pt.type === "text").map((pt) => (pt as { text: string }).text).join("\n"))}
+                      {(() => {
+                        const joined = m.content.filter((pt) => pt.type === "text").map((pt) => (pt as { text: string }).text).join("\n");
+                        return m.role === "assistant" ? renderMarkdown(joined) : linkify(joined);
+                      })()}
                     </>
                   )}
                 </div>
@@ -784,6 +787,58 @@ function linkify(text: string) {
       <span key={i}>{p}</span>
     )
   );
+}
+
+// Inline markdown inside one line: [links](url), **bold**, `code`, bare URLs.
+function inlineMd(text: string): ReactNode[] {
+  const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|(https?:\/\/[^\s)]+)/g;
+  const out: ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let k = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push(<span key={k++}>{text.slice(last, m.index)}</span>);
+    if (m[1] !== undefined) out.push(<a key={k++} href={m[2]} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 underline underline-offset-2 hover:text-brand-700">{m[1]}</a>);
+    else if (m[3] !== undefined) out.push(<strong key={k++} className="font-semibold">{m[3]}</strong>);
+    else if (m[4] !== undefined) out.push(<code key={k++} className="rounded bg-ink-100 px-1 py-0.5 font-mono text-[12px]">{m[4]}</code>);
+    else if (m[5] !== undefined) out.push(<a key={k++} href={m[5]} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 underline underline-offset-2 hover:text-brand-700">{m[5]}</a>);
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(<span key={k++}>{text.slice(last)}</span>);
+  return out;
+}
+
+// Render agent replies as formatted text — headings, bullets, numbered lists,
+// bold, code, links — so raw markdown symbols (#, **, `) never show in chat.
+function renderMarkdown(text: string) {
+  return text.split("\n").map((line, i) => {
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      const cls = h[1].length <= 2 ? "mt-2 text-[15px] font-bold text-ink-900" : "mt-1.5 text-sm font-semibold text-ink-900";
+      return <div key={i} className={cls}>{inlineMd(h[2])}</div>;
+    }
+    if (/^\s*([-*_]){3,}\s*$/.test(line)) return <hr key={i} className="my-2 border-ink-200" />;
+    const b = line.match(/^(\s*)[-*•]\s+(.*)$/);
+    if (b) {
+      return (
+        <div key={i} className="flex gap-2" style={{ paddingLeft: Math.min(b[1].length, 8) * 6 }}>
+          <span className="select-none text-ink-400">•</span>
+          <span className="min-w-0 flex-1">{inlineMd(b[2])}</span>
+        </div>
+      );
+    }
+    const n = line.match(/^\s*(\d{1,3})[.)]\s+(.*)$/);
+    if (n) {
+      return (
+        <div key={i} className="flex gap-2">
+          <span className="select-none font-medium text-ink-500">{n[1]}.</span>
+          <span className="min-w-0 flex-1">{inlineMd(n[2])}</span>
+        </div>
+      );
+    }
+    if (!line.trim()) return <div key={i} className="h-2" />;
+    return <div key={i}>{inlineMd(line)}</div>;
+  });
 }
 
 function ScheduleModal({ agentKey, agentName, onClose, onSaved }: { agentKey: string; agentName: string; onClose: () => void; onSaved: () => void }) {

@@ -171,8 +171,12 @@ export function hyperfxSystemNote(agent: keyof typeof HFX_LANES): string {
 // answer from the engine first; callers fall back to the legacy OAuth path
 // only when the engine has nothing.
 
+const META_PRESETS = new Set(["today", "yesterday", "last_7d", "last_14d", "last_28d", "last_30d", "last_90d", "maximum"]);
+
 export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d"): Promise<string | null> {
   try {
+    if (/^(lifetime|all[_ ]?time|max)/i.test(preset)) preset = "maximum";
+    if (!META_PRESETS.has(preset)) preset = "last_30d";
     const creds = await getHfxCreds(workspaceId);
     const accountsRes = await hfxCall("meta_business_list_ad_accounts", { detail: "core" }, creds);
     if (!accountsRes.ok) return null;
@@ -186,7 +190,31 @@ export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d
       creds
     );
     if (!ins.ok) return `Meta ad account "${acct.name ?? acct.id}" is connected, but insights failed: ${ins.error}`;
-    const rows: any[] = hfxRows(ins.data).filter((r) => r && (r.spend !== undefined || r.impressions !== undefined));
+    let rows: any[] = hfxRows(ins.data).filter((r) => r && (r.spend !== undefined || r.impressions !== undefined));
+
+    // FALLBACK: some accounts answer the account-level campaign rollup with
+    // nothing while direct per-campaign insights return real numbers. When the
+    // rollup is empty/zero but campaigns exist, query each campaign directly.
+    const rollupEmpty = rows.length === 0 || rows.every((r) => !(Number(r.spend) || 0) && !(Number(r.impressions) || 0));
+    if (rollupEmpty) {
+      const camp = await hfxCall("meta_business_search_campaigns", { account_id: String(acct.id), detail: "summary", limit: 15 }, creds);
+      const camps: any[] = camp.ok ? ((camp.data as any)?.campaigns ?? []) : [];
+      if (camps.length > 0) {
+        const per = await Promise.all(
+          camps.slice(0, 12).map((c: any) =>
+            hfxCall("meta_business_ad_insights", { object_id: String(c.id), object_type: "campaign", date_preset: preset, include_actions: false, include_video_metrics: false }, creds).then((r) => ({ c, r }))
+          )
+        );
+        const rebuilt: any[] = [];
+        for (const { c, r } of per) {
+          if (!r.ok) continue;
+          for (const row of hfxRows(r.data).filter((x: any) => x && (x.spend !== undefined || x.impressions !== undefined))) {
+            rebuilt.push({ ...row, campaign_id: row.campaign_id ?? c.id, campaign_name: row.campaign_name ?? c.name });
+          }
+        }
+        if (rebuilt.some((r) => (Number(r.spend) || 0) > 0 || (Number(r.impressions) || 0) > 0)) rows = rebuilt;
+      }
+    }
     if (rows.length === 0) return `Meta ad account "${acct.name ?? acct.id}" (${preset.replaceAll("_", " ")}): no delivery in this period — $0 spend.`;
     let spend = 0, impressions = 0, clicks = 0;
     const perCampaign: string[] = [];

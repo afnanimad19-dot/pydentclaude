@@ -13,7 +13,7 @@ const num = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const VALID_PRESETS = new Set(["today", "yesterday", "last_7d", "last_14d", "last_28d", "last_30d", "last_90d"]);
+const VALID_PRESETS = new Set(["today", "yesterday", "last_7d", "last_14d", "last_28d", "last_30d", "last_90d", "maximum"]);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Same Meta-style range selection as the list route: preset or custom since/until.

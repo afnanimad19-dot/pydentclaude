@@ -74,6 +74,33 @@ export async function GET(req: NextRequest) {
       entry.campaignsWithRecommendations = camps.filter((c) => Array.isArray(c.recommendations) && c.recommendations.length).length;
       if (camps[0]) entry.sampleCampaignFields = Object.keys(camps[0]).slice(0, 30);
 
+      // Direct per-campaign insights — the fallback path the app now uses when
+      // the account-level rollup is empty. Compares the two sources head-on.
+      if (camps[0]) {
+        const direct = await hfxCall("meta_business_ad_insights", { object_id: String(camps[0].id), object_type: "campaign", include_actions: true, date_preset: "last_30d" }, creds);
+        if (direct.ok) {
+          const rr = hfxRows(direct.data).filter((r: any) => r && (r.spend !== undefined || r.impressions !== undefined));
+          entry.firstCampaignDirect = {
+            campaign: camps[0].name ?? camps[0].id,
+            rows: rr.length,
+            spend: rr.reduce((s: number, r: any) => s + (Number(r.spend) || 0), 0),
+            impressions: rr.reduce((s: number, r: any) => s + (Number(r.impressions) || 0), 0),
+          };
+        } else {
+          entry.firstCampaignDirect = `ERROR: ${direct.error}`;
+        }
+      }
+
+      // Account-level insights WITHOUT level:"campaign" — isolates whether the
+      // rollup parameter itself is what returns nothing.
+      const noLevel = await hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", include_actions: false, date_preset: "last_30d" }, creds);
+      if (noLevel.ok) {
+        const rr = hfxRows(noLevel.data).filter((r: any) => r && (r.spend !== undefined || r.impressions !== undefined));
+        entry.accountNoLevel = { rows: rr.length, spend: rr.reduce((s: number, r: any) => s + (Number(r.spend) || 0), 0) };
+      } else {
+        entry.accountNoLevel = `ERROR: ${noLevel.error}`;
+      }
+
       for (const preset of ["last_30d", "last_90d"]) {
         const ins = await hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", level: "campaign", include_actions: true, date_preset: preset }, creds);
         if (!ins.ok) {
@@ -94,6 +121,12 @@ export async function GET(req: NextRequest) {
       }
       deep[acct.name ?? id] = entry;
     }
+    // Which engine tools could surface Meta's alerts/recommendations — tells us
+    // where creative-fatigue alerts should come from if search_campaigns
+    // detail:"full" doesn't carry them.
+    deep.alertToolCandidates = (tools.tools ?? [])
+      .filter((t) => t.name.startsWith("meta_business_") && /health|recommend|issue|diagnos|alert/i.test(t.name))
+      .map((t) => t.name);
     out.deep = deep;
   }
 
