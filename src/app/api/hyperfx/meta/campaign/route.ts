@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getHfxCreds, hfxCall, hfxConfigured, hfxRows } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxConfigured, hfxFlatRow, hfxMetric, hfxRowHasMetrics, hfxRows } from "@/lib/hyperfx";
 
 // One campaign's full picture, Meta-style: the campaign → its ad sets → their
 // ads, plus a last-30-days daily performance series for the overview graph.
@@ -54,8 +54,9 @@ export async function GET(req: NextRequest) {
       adsetObjType = t;
       let spend = 0, impressions = 0, clicks = 0;
       const byType = new Map<string, number>();
-      for (const row of hfxRows(r.data).filter((x: any) => x && (x.spend !== undefined || x.impressions !== undefined))) {
-        spend += num(row.spend); impressions += num(row.impressions); clicks += num(row.clicks);
+      for (const raw of hfxRows(r.data).filter(hfxRowHasMetrics)) {
+        const row = hfxFlatRow(raw);
+        spend += hfxMetric(row, "spend"); impressions += hfxMetric(row, "impressions"); clicks += hfxMetric(row, "clicks");
         for (const a of Array.isArray(row.actions) ? row.actions : []) {
           const k = String(a?.action_type ?? "");
           byType.set(k, (byType.get(k) ?? 0) + num(a?.value));
@@ -93,11 +94,12 @@ export async function GET(req: NextRequest) {
   // Daily series for the graph + totals.
   const rawDaily: any[] = dailyRes.ok ? hfxRows(dailyRes.data) : [];
   const daily = rawDaily
+    .map(hfxFlatRow)
     .map((r: any) => ({
-      date: String(r.date_start ?? r.date ?? "").slice(0, 10),
-      spend: num(r.spend),
-      impressions: num(r.impressions),
-      clicks: num(r.clicks),
+      date: String(r.date_start ?? r.date ?? r.date_stop ?? "").slice(0, 10),
+      spend: hfxMetric(r, "spend"),
+      impressions: hfxMetric(r, "impressions"),
+      clicks: hfxMetric(r, "clicks"),
     }))
     .filter((r) => r.date)
     .sort((a, b) => (a.date < b.date ? -1 : 1));

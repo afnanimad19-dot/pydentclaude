@@ -6,7 +6,7 @@
 // Deduped via hyperfx_config.autopilot_seen so each recommendation is handled once.
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
+import { collectAlertStrings, getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
 import { logActivity } from "@/lib/activity";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -20,19 +20,39 @@ async function scanWorkspace(ws: string): Promise<ScanItem[]> {
   if (!hfxConfigured(creds)) return [];
   const accountsRes = await hfxCall("meta_business_list_ad_accounts", { detail: "id_only" }, creds);
   if (!accountsRes.ok) return [];
-  const first = ((accountsRes.data as any)?.accounts ?? [])[0];
-  if (!first?.id) return [];
-  const campaignsRes = await hfxCall("meta_business_search_campaigns", { account_id: String(first.id), detail: "full", limit: 25, status_filter: ["ACTIVE"] }, creds);
-  if (!campaignsRes.ok) return [];
+  const accounts: any[] = (accountsRes.data as any)?.accounts ?? [];
   const items: ScanItem[] = [];
-  for (const c of (campaignsRes.data as any)?.campaigns ?? []) {
-    const id = String(c.id ?? "");
-    const name = String(c.name ?? id);
-    for (const i of Array.isArray(c.issues_info) ? c.issues_info : []) {
-      items.push({ campaignId: id, campaignName: name, kind: "issue", text: String(i?.error_summary ?? i?.error_message ?? i?.message ?? "Delivery issue").slice(0, 200) });
+  for (const acct of accounts.slice(0, 3)) {
+    if (!acct?.id) continue;
+    const accountId = String(acct.id);
+    const campaignsRes = await hfxCall("meta_business_search_campaigns", { account_id: accountId, detail: "full", limit: 25, status_filter: ["ACTIVE"] }, creds);
+    const camps: any[] = campaignsRes.ok ? ((campaignsRes.data as any)?.campaigns ?? []) : [];
+    const itemsBefore = items.length;
+    for (const c of camps) {
+      const id = String(c.id ?? "");
+      const name = String(c.name ?? id);
+      for (const i of Array.isArray(c.issues_info) ? c.issues_info : []) {
+        items.push({ campaignId: id, campaignName: name, kind: "issue", text: String(i?.error_summary ?? i?.error_message ?? i?.message ?? "Delivery issue").slice(0, 200) });
+      }
+      for (const r of Array.isArray(c.recommendations) ? c.recommendations : []) {
+        items.push({ campaignId: id, campaignName: name, kind: "recommendation", text: String(r?.title ?? r?.message ?? r?.code ?? "Recommendation").slice(0, 200) });
+      }
     }
-    for (const r of Array.isArray(c.recommendations) ? c.recommendations : []) {
-      items.push({ campaignId: id, campaignName: name, kind: "recommendation", text: String(r?.title ?? r?.message ?? r?.code ?? "Recommendation").slice(0, 200) });
+    // This engine returns EMPTY issues/recommendations on campaign details —
+    // Meta's alerts live behind its health-check tools. Read (or run) one for
+    // any account whose campaigns carried nothing inline.
+    if (camps.length > 0 && items.length === itemsBefore) {
+      try {
+        let found = collectAlertStrings((await hfxCall("meta_business_get_health_check", { account_id: accountId }, creds)).data);
+        if (found.length === 0) {
+          const run = await hfxCall("meta_business_run_health_check", { account_id: accountId }, creds);
+          found = collectAlertStrings(run.ok ? run.data : null);
+          if (found.length === 0 && run.ok) found = collectAlertStrings((await hfxCall("meta_business_get_health_check", { account_id: accountId }, creds)).data);
+        }
+        for (const text of found) {
+          items.push({ campaignId: accountId, campaignName: String(acct.name ?? "Ad account"), kind: "recommendation", text: text.slice(0, 200) });
+        }
+      } catch { /* health check unavailable — skip */ }
     }
   }
   return items;

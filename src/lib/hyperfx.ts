@@ -260,13 +260,22 @@ export async function hfxListTools(
 const SAFE_TOOL = /(_(list|get|search|query|insights?|report|preview|overview|results?|volume|ideas|difficulty|competitors?|history|intent|intersection|pagespeed|mentions|traffic|rank|benchmarks?|details)($|_))|^(hyperseo_|search_facebook_|scrape_|outscraper_search|outscraper_get)/;
 
 // Tool results wrap tabular rows differently across toolkits — accept every
-// shape we've seen: bare array, {data|insights|results|rows: [...]}, or a
-// single row object.
+// shape we've seen: bare array, {data|insights|results|rows: [...]}, the
+// insights envelope {summary_metrics, detailed_insights: [...], ...}, or a
+// single row object. Prefer a NON-EMPTY row array; when only summary totals
+// came back, surface those as one row so totals still compute.
+const ROW_KEYS = ["data", "insights", "detailed_insights", "results", "rows"];
 export function hfxRows(data: unknown): any[] {
   if (Array.isArray(data)) return data;
   const d = data as any;
   if (d && typeof d === "object") {
-    for (const k of ["data", "insights", "results", "rows"]) {
+    for (const k of ROW_KEYS) {
+      if (Array.isArray(d[k]) && d[k].length > 0) return d[k];
+    }
+    if (d.summary_metrics && typeof d.summary_metrics === "object" && !Array.isArray(d.summary_metrics)) {
+      return [d.summary_metrics];
+    }
+    for (const k of ROW_KEYS) {
       if (Array.isArray(d[k])) return d[k];
     }
     return [d];
@@ -274,6 +283,72 @@ export function hfxRows(data: unknown): any[] {
   return [];
 }
 
+// One insights row, whatever this engine version calls things: flattens a
+// nested `metrics` object and lets callers read spend/impressions/… without
+// caring whether the field is `spend`, `total_spend`, or inside `metrics`.
+export function hfxFlatRow(r: any): any {
+  if (r && typeof r === "object" && r.metrics && typeof r.metrics === "object" && !Array.isArray(r.metrics)) {
+    return { ...r, ...r.metrics };
+  }
+  return r ?? {};
+}
+
+// True when a (flattened) row carries delivery metrics under any known name.
+export function hfxRowHasMetrics(r: any): boolean {
+  const f = hfxFlatRow(r);
+  return f.spend !== undefined || f.impressions !== undefined || f.total_spend !== undefined || f.total_impressions !== undefined;
+}
+
+// Numeric metric off a flattened row, tolerating the total_ prefix.
+export function hfxMetric(r: any, key: string): number {
+  const f = hfxFlatRow(r);
+  const n = Number(f[key] ?? f[`total_${key}`]);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export function hfxToolIsSafe(tool: string): boolean {
   return SAFE_TOOL.test(tool);
+}
+
+// Pull human-readable alert/recommendation lines out of a health-check or
+// recommendations payload whose exact shape we don't control. Walks the object
+// a few levels deep, keeps entries that look like findings, skips passes.
+const ALERT_TEXT_KEYS = ["title", "message", "recommendation", "error_summary", "summary", "description", "issue", "details", "text"];
+const ALERT_NAME_KEYS = ["campaign_name", "ad_name", "adset_name", "ad_set_name", "entity_name", "name", "check", "check_name", "category"];
+export function collectAlertStrings(data: unknown, cap = 10): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (s: string) => {
+    const t = s.trim();
+    if (t.length > 8 && !/^(ok|pass|passed|healthy|no issues?( found)?)\.?$/i.test(t) && !seen.has(t)) {
+      seen.add(t);
+      out.push(t.length > 220 ? `${t.slice(0, 220)}…` : t);
+    }
+  };
+  const walk = (v: any, depth: number, keyHint: string) => {
+    if (out.length >= cap || v == null || depth > 4) return;
+    if (typeof v === "string") {
+      if (/issue|recommend|alert|warning|error|fatigue|improve/i.test(keyHint)) push(v);
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const item of v) walk(item, depth + 1, keyHint);
+      return;
+    }
+    if (typeof v === "object") {
+      const status = String(v.status ?? v.result ?? "");
+      const isPass = /^(ok|pass|passed|healthy|good)$/i.test(status);
+      const text = ALERT_TEXT_KEYS.map((k) => v[k]).find((x) => typeof x === "string" && x.trim());
+      if (text && !isPass) {
+        const name = ALERT_NAME_KEYS.map((k) => v[k]).find((x) => typeof x === "string" && x.trim() && x !== text);
+        push(name ? `${name}: ${text}` : String(text));
+      }
+      for (const [k, child] of Object.entries(v)) {
+        if (ALERT_TEXT_KEYS.includes(k)) continue;
+        walk(child, depth + 1, k);
+      }
+    }
+  };
+  walk(data, 0, "");
+  return out.slice(0, cap);
 }

@@ -8,7 +8,7 @@
 // Uses the clinic's OWN Hyperfx account when saved (Settings → Connections),
 // else the app-level env credentials — Option 1 of the multi-clinic model.
 
-import { getHfxCreds, hfxCall, hfxListTools, hfxToolIsSafe, hfxRows } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxFlatRow, hfxListTools, hfxMetric, hfxRowHasMetrics, hfxRows, hfxToolIsSafe } from "@/lib/hyperfx";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -205,12 +205,12 @@ export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d
       creds
     );
     if (!ins.ok) return `Meta ad account "${acct.name ?? acct.id}" is connected, but insights failed: ${ins.error}`;
-    let rows: any[] = hfxRows(ins.data).filter((r) => r && (r.spend !== undefined || r.impressions !== undefined));
+    let rows: any[] = hfxRows(ins.data).filter(hfxRowHasMetrics).map(hfxFlatRow);
 
     // FALLBACK: some accounts answer the account-level campaign rollup with
     // nothing while direct per-campaign insights return real numbers. When the
     // rollup is empty/zero but campaigns exist, query each campaign directly.
-    const rollupEmpty = rows.length === 0 || rows.every((r) => !(Number(r.spend) || 0) && !(Number(r.impressions) || 0));
+    const rollupEmpty = rows.length === 0 || rows.every((r) => !hfxMetric(r, "spend") && !hfxMetric(r, "impressions"));
     if (rollupEmpty) {
       const camp = await hfxCall("meta_business_search_campaigns", { account_id: String(acct.id), detail: "summary", limit: 15 }, creds);
       const camps: any[] = camp.ok ? ((camp.data as any)?.campaigns ?? []) : [];
@@ -223,24 +223,26 @@ export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d
         const rebuilt: any[] = [];
         for (const { c, r } of per) {
           if (!r.ok) continue;
-          for (const row of hfxRows(r.data).filter((x: any) => x && (x.spend !== undefined || x.impressions !== undefined))) {
+          for (const raw of hfxRows(r.data).filter(hfxRowHasMetrics)) {
+            const row = hfxFlatRow(raw);
             rebuilt.push({ ...row, campaign_id: row.campaign_id ?? c.id, campaign_name: row.campaign_name ?? c.name });
           }
         }
-        if (rebuilt.some((r) => (Number(r.spend) || 0) > 0 || (Number(r.impressions) || 0) > 0)) rows = rebuilt;
+        if (rebuilt.some((r) => hfxMetric(r, "spend") > 0 || hfxMetric(r, "impressions") > 0)) rows = rebuilt;
       }
     }
-    if (rows.length === 0) return `Meta ad account "${acct.name ?? acct.id}" (${preset.replaceAll("_", " ")}): no delivery in this period — $0 spend.`;
+    const cur = acct.currency && acct.currency !== "USD" ? `${acct.currency} ` : "$";
+    if (rows.length === 0) return `Meta ad account "${acct.name ?? acct.id}" (${preset.replaceAll("_", " ")}): no delivery in this period — ${cur}0 spend.`;
     let spend = 0, impressions = 0, clicks = 0;
     const perCampaign: string[] = [];
     for (const r of rows) {
-      const s = Number(r.spend) || 0, i = Number(r.impressions) || 0, c = Number(r.clicks) || 0;
+      const s = hfxMetric(r, "spend"), i = hfxMetric(r, "impressions"), c = hfxMetric(r, "clicks");
       spend += s; impressions += i; clicks += c;
-      perCampaign.push(`- ${r.campaign_name ?? r.campaign_id}: $${s.toFixed(2)} spend, ${i} impressions, ${c} clicks${i > 0 ? ` (CTR ${((c / i) * 100).toFixed(2)}%)` : ""}`);
+      perCampaign.push(`- ${r.campaign_name ?? r.campaign_id}: ${cur}${s.toFixed(2)} spend, ${i} impressions, ${c} clicks${i > 0 ? ` (CTR ${((c / i) * 100).toFixed(2)}%)` : ""}`);
     }
     return [
       `Meta Ads performance — account "${acct.name ?? acct.id}", ${preset.replaceAll("_", " ")}:`,
-      `TOTAL: $${spend.toFixed(2)} spend · ${impressions} impressions · ${clicks} clicks${impressions > 0 ? ` · CTR ${((clicks / impressions) * 100).toFixed(2)}%` : ""}${clicks > 0 ? ` · CPC $${(spend / clicks).toFixed(2)}` : ""}`,
+      `TOTAL: ${cur}${spend.toFixed(2)} spend · ${impressions} impressions · ${clicks} clicks${impressions > 0 ? ` · CTR ${((clicks / impressions) * 100).toFixed(2)}%` : ""}${clicks > 0 ? ` · CPC ${cur}${(spend / clicks).toFixed(2)}` : ""}`,
       "By campaign:",
       ...perCampaign.slice(0, 25),
     ].join("\n");

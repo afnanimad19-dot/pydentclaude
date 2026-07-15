@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
   // recommendations on EVERY ad account, so "no data showing" stops being a
   // mystery — either Meta returns zeros (real) or the shape/params are off.
   if (req.nextUrl.searchParams.get("deep") && accounts.length) {
-    const { hfxRows } = await import("@/lib/hyperfx");
+    const { hfxRows, hfxFlatRow, hfxMetric, hfxRowHasMetrics } = await import("@/lib/hyperfx");
     const deep: Record<string, unknown> = {};
     for (const acct of accounts.slice(0, 3)) {
       const id = String(acct.id ?? "");
@@ -79,12 +79,13 @@ export async function GET(req: NextRequest) {
       if (camps[0]) {
         const direct = await hfxCall("meta_business_ad_insights", { object_id: String(camps[0].id), object_type: "campaign", include_actions: true, date_preset: "last_30d" }, creds);
         if (direct.ok) {
-          const rr = hfxRows(direct.data).filter((r: any) => r && (r.spend !== undefined || r.impressions !== undefined));
+          const rr = hfxRows(direct.data).filter(hfxRowHasMetrics);
           entry.firstCampaignDirect = {
             campaign: camps[0].name ?? camps[0].id,
             rows: rr.length,
-            spend: rr.reduce((s: number, r: any) => s + (Number(r.spend) || 0), 0),
-            impressions: rr.reduce((s: number, r: any) => s + (Number(r.impressions) || 0), 0),
+            spend: rr.reduce((s: number, r: any) => s + hfxMetric(r, "spend"), 0),
+            impressions: rr.reduce((s: number, r: any) => s + hfxMetric(r, "impressions"), 0),
+            firstRowKeys: rr[0] ? Object.keys(hfxFlatRow(rr[0])).slice(0, 25) : null,
           };
         } else {
           entry.firstCampaignDirect = `ERROR: ${direct.error}`;
@@ -95,8 +96,14 @@ export async function GET(req: NextRequest) {
       // rollup parameter itself is what returns nothing.
       const noLevel = await hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", include_actions: false, date_preset: "last_30d" }, creds);
       if (noLevel.ok) {
-        const rr = hfxRows(noLevel.data).filter((r: any) => r && (r.spend !== undefined || r.impressions !== undefined));
-        entry.accountNoLevel = { rows: rr.length, spend: rr.reduce((s: number, r: any) => s + (Number(r.spend) || 0), 0) };
+        const rr = hfxRows(noLevel.data).filter(hfxRowHasMetrics);
+        const env = noLevel.data as any;
+        entry.accountNoLevel = {
+          rows: rr.length,
+          spend: rr.reduce((s: number, r: any) => s + hfxMetric(r, "spend"), 0),
+          summaryMetricsKeys: env?.summary_metrics && typeof env.summary_metrics === "object" ? Object.keys(env.summary_metrics).slice(0, 20) : null,
+          detailedInsightsCount: Array.isArray(env?.detailed_insights) ? env.detailed_insights.length : null,
+        };
       } else {
         entry.accountNoLevel = `ERROR: ${noLevel.error}`;
       }
@@ -107,14 +114,14 @@ export async function GET(req: NextRequest) {
           entry[preset] = `ERROR: ${ins.error}`;
           continue;
         }
-        const rows = hfxRows(ins.data).filter((r: any) => r && (r.spend !== undefined || r.impressions !== undefined));
-        const sample = rows[0];
+        const rows = hfxRows(ins.data).filter(hfxRowHasMetrics);
+        const sample = rows[0] ? hfxFlatRow(rows[0]) : null;
         entry[preset] = {
           rows: rows.length,
-          totalSpend: rows.reduce((s: number, r: any) => s + (Number(r.spend) || 0), 0),
-          totalImpressions: rows.reduce((s: number, r: any) => s + (Number(r.impressions) || 0), 0),
+          totalSpend: rows.reduce((s: number, r: any) => s + hfxMetric(r, "spend"), 0),
+          totalImpressions: rows.reduce((s: number, r: any) => s + hfxMetric(r, "impressions"), 0),
           sampleRow: sample
-            ? { campaign: sample.campaign_name ?? sample.campaign_id, spend: sample.spend, impressions: sample.impressions, clicks: sample.clicks, actionTypes: (sample.actions ?? []).map((a: any) => a.action_type).slice(0, 8) }
+            ? { campaign: sample.campaign_name ?? sample.campaign_id, spend: sample.spend ?? sample.total_spend, impressions: sample.impressions ?? sample.total_impressions, clicks: sample.clicks ?? sample.total_clicks, actionTypes: (sample.actions ?? []).map((a: any) => a.action_type).slice(0, 8) }
             : null,
           rawShape: Array.isArray(ins.data) ? "array" : Object.keys((ins.data as any) ?? {}).slice(0, 8),
         };

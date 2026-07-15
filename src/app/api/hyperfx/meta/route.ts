@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getHfxCreds, hfxCall, hfxConfigured, hfxListTools, hfxRows } from "@/lib/hyperfx";
+import { collectAlertStrings, getHfxCreds, hfxCall, hfxConfigured, hfxFlatRow, hfxMetric, hfxRowHasMetrics, hfxRows } from "@/lib/hyperfx";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 // The Meta Ads tab's data: ad accounts, campaigns (with Meta's issues +
@@ -130,12 +130,13 @@ export async function GET(req: NextRequest) {
   let insightsNote: string | null = null;
   let adsCount: number | null = null;
   if (adLevelRes.ok) {
-    const adIds = new Set(hfxRows(adLevelRes.data).map((r: any) => String(r?.ad_id ?? "")).filter(Boolean));
+    const adIds = new Set(hfxRows(adLevelRes.data).map((r: any) => String(hfxFlatRow(r)?.ad_id ?? "")).filter(Boolean));
     if (adIds.size > 0) adsCount = adIds.size;
   }
 
-  const addRow = (cid: string, r: any) => {
-    const row = { spend: num(r.spend), impressions: num(r.impressions), clicks: num(r.clicks), reach: num(r.reach), actions: r.actions ?? [] };
+  const addRow = (cid: string, raw: any) => {
+    const r = hfxFlatRow(raw);
+    const row = { spend: hfxMetric(r, "spend"), impressions: hfxMetric(r, "impressions"), clicks: hfxMetric(r, "clicks"), reach: hfxMetric(r, "reach"), actions: r.actions ?? [] };
     const prev = perf.get(cid);
     if (prev) {
       prev.spend += row.spend; prev.impressions += row.impressions; prev.clicks += row.clicks; prev.reach += row.reach;
@@ -147,10 +148,10 @@ export async function GET(req: NextRequest) {
   };
 
   if (insightsRes.ok) {
-    const rows: any[] = hfxRows(insightsRes.data).filter((r: any) => r && (r.spend !== undefined || r.impressions !== undefined));
+    const rows: any[] = hfxRows(insightsRes.data).filter(hfxRowHasMetrics);
     totals = { spend: 0, impressions: 0, clicks: 0 };
     for (const r of rows) {
-      const row = addRow(String(r.campaign_id ?? ""), r);
+      const row = addRow(String(hfxFlatRow(r).campaign_id ?? ""), r);
       totals.spend += row.spend;
       totals.impressions += row.impressions;
       totals.clicks += row.clicks;
@@ -175,7 +176,7 @@ export async function GET(req: NextRequest) {
     const byCid = new Map<string, { ad?: any[]; plain?: any[] }>();
     for (const { cid, r, mode } of per) {
       if (!r.ok) continue;
-      const rows = hfxRows(r.data).filter((x: any) => x && (x.spend !== undefined || x.impressions !== undefined));
+      const rows = hfxRows(r.data).filter(hfxRowHasMetrics);
       const e = byCid.get(cid) ?? {};
       e[mode] = rows;
       byCid.set(cid, e);
@@ -186,7 +187,7 @@ export async function GET(req: NextRequest) {
     for (const [cid, e] of byCid) {
       const rows = (e.ad?.length ? e.ad : e.plain) ?? [];
       for (const r of e.ad ?? []) {
-        const aid = String(r?.ad_id ?? "");
+        const aid = String(hfxFlatRow(r)?.ad_id ?? "");
         if (aid) adIds.add(aid);
       }
       for (const row of rows) {
@@ -229,33 +230,21 @@ export async function GET(req: NextRequest) {
       })
     : [];
 
-  // When campaign details carry NO issues/recommendations at all (some engine
-  // versions strip them), hunt for a dedicated health/recommendations tool and
-  // surface whatever it returns as account-level alerts. Fully tolerant: any
-  // failure here just means no banner.
+  // Campaign details come back with EMPTY issues/recommendations on this
+  // engine — Meta's alerts live behind its health-check tools instead
+  // (meta_business_get_health_check / meta_business_run_health_check). Read
+  // the last health check; if there is none yet, run one and read again.
+  // Fully tolerant: any failure here just means no banner.
   let accountAlerts: string[] = [];
   const noInlineAlerts = campaigns.length > 0 && campaigns.every((c: any) => c.issues.length === 0 && c.recommendations.length === 0);
   if (noInlineAlerts) {
     try {
-      const tl = await hfxListTools(creds);
-      const candidates = (tl.tools ?? [])
-        .filter((t) => t.name.startsWith("meta_business_") && /health|recommend|alert|diagnos|issue/i.test(t.name))
-        .slice(0, 2);
-      for (const cand of candidates) {
-        const r = await hfxCall(cand.name, { account_id: account.id }, creds);
-        if (!r.ok) continue;
-        const items = hfxRows(r.data)
-          .map((row: any) => {
-            if (typeof row === "string") return row;
-            const what = row?.title ?? row?.message ?? row?.recommendation ?? row?.error_summary ?? row?.summary ?? row?.description ?? null;
-            const who = row?.campaign_name ?? row?.ad_name ?? row?.adset_name ?? row?.name ?? null;
-            return what ? (who ? `${who}: ${what}` : String(what)) : null;
-          })
-          .filter(Boolean) as string[];
-        if (items.length > 0) {
-          accountAlerts = items.slice(0, 10);
-          break;
-        }
+      const readCheck = async () => collectAlertStrings((await hfxCall("meta_business_get_health_check", { account_id: account.id }, creds)).data);
+      accountAlerts = await readCheck();
+      if (accountAlerts.length === 0) {
+        const run = await hfxCall("meta_business_run_health_check", { account_id: account.id }, creds);
+        accountAlerts = collectAlertStrings(run.ok ? run.data : null);
+        if (accountAlerts.length === 0 && run.ok) accountAlerts = await readCheck();
       }
     } catch { /* alerts stay empty */ }
   }
