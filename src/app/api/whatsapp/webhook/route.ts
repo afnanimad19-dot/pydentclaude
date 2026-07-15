@@ -208,7 +208,14 @@ async function handleWhatsApp(m: any, contacts: any[], phoneNumberId?: string) {
   const name = contacts.find((c) => c.wa_id === phone)?.profile?.name || phone;
   const body: string = m.text?.body ?? `[${m.type ?? "message"}]`;
   const creds = phoneNumberId ? await getWaCredsByPhoneId(phoneNumberId) : null;
-  await storeInbound("whatsapp", phone, name, body, m.id ?? null, creds?.workspace ?? (await activeWorkspace()), creds ? { wa: { phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken } } : undefined);
+  // Diagnose the #1 silent failure after re-registering a number: the Phone
+  // Number ID Meta sends doesn't match the one saved in the config, so the
+  // reply is sent from (and stored under) the wrong/unknown account.
+  if (phoneNumberId && !creds) {
+    await logEvent(`⚠️ Inbound arrived on Phone Number ID ${phoneNumberId}, but NO saved WhatsApp config matches it. Paste THIS exact Phone Number ID in Settings → WhatsApp config (Meta → WhatsApp → API Setup shows it). Using a fallback account for now.`);
+  }
+  const ws = creds?.workspace ?? (await activeWorkspace());
+  await storeInbound("whatsapp", phone, name, body, m.id ?? null, ws, creds ? { wa: { phoneNumberId: creds.phoneNumberId, accessToken: creds.accessToken } } : undefined);
 }
 
 // Messenger / Instagram inbound adapter (Messenger Platform event format).
@@ -319,9 +326,24 @@ async function storeInbound(
   if (!agentId) {
     const { data: def } = await supabase.from("channel_defaults").select("agent_id, enabled").eq("workspace_id", ws).eq("channel", channel).maybeSingle();
     if (def?.enabled && def.agent_id) agentId = def.agent_id;
+
+    // SINGLE-CLINIC TOLERANCE: the config row and the channel default can end up
+    // under different workspace keys (e.g. the config saved under "default"
+    // while the agent default is under the real workspace UUID). When there is
+    // exactly ONE enabled default for this channel across the whole install,
+    // use it rather than silently dropping the reply. Multi-tenant installs
+    // (several enabled defaults) stay strict — no cross-clinic leakage.
+    if (!agentId) {
+      const { data: allDefs } = await supabase.from("channel_defaults").select("workspace_id, agent_id, enabled").eq("channel", channel).eq("enabled", true).not("agent_id", "is", null);
+      const enabled = (allDefs ?? []).filter((d: any) => d.agent_id);
+      if (enabled.length === 1) {
+        agentId = enabled[0].agent_id;
+        await logEvent(`ℹ️ Used the only WhatsApp agent set on this account (its default lives under a different workspace than this number's config — reconnecting the number under the same login keeps them aligned).`);
+      }
+    }
   }
   if (!agentId) {
-    await logEvent(`Stored ${channel} message from ${name}. No auto-reply: no agent set for ${channel} (turn one on in AI Agents → Agent Hub).`);
+    await logEvent(`Stored ${channel} message from ${name}. No auto-reply: no agent is set for ${channel} in workspace ${ws ?? "(none)"} — turn one on in AI Agents → Agent Hub while logged into this clinic.`);
     return;
   }
 
