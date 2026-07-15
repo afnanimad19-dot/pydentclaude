@@ -1,8 +1,23 @@
 // Sends transactional/campaign email. Prefers Brevo (BREVO_API_KEY) when set;
-// otherwise falls back to the clinic's connected Gmail (Google OAuth, gmail.send
-// scope) so "Send now" works without a separate email provider.
+// otherwise the clinic's Gmail — via the marketing engine (Gmail connected on
+// Hyperfx) or the in-app Google OAuth — so "Send now" works without a separate
+// email provider.
 
 import { getValidGoogleToken, getConnectionApiKey } from "@/lib/google-api";
+import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
+
+// Send through the engine's Gmail toolkit (connected on Hyperfx). Returns null
+// when the engine has no Gmail (so callers fall through to other paths).
+async function sendViaEngineGmail(ws: string, input: { to: string; subject: string; html: string }): Promise<string | null> {
+  const creds = await getHfxCreds(ws);
+  if (!hfxConfigured(creds)) return null;
+  const subject = input.subject.replace(/[\r\n]+/g, " ").slice(0, 250);
+  const r = await hfxCall("gmail_send_email", { to: input.to, subject, body: input.html, html: input.html, is_html: true, body_type: "html" }, creds);
+  if (r.ok) return `Email sent to ${input.to} (via Gmail).`;
+  // Not connected / tool unavailable → let another path try.
+  if (/unknown tool|not (connected|found|available|enabled)|auth|permission|no gmail/i.test(r.error ?? "")) return null;
+  return `Gmail (engine) send failed: ${String(r.error ?? "").slice(0, 200)}`;
+}
 
 async function sendViaBrevo(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string }, key: string): Promise<string> {
   const fromEmail = input.fromEmail || process.env.BREVO_FROM_EMAIL;
@@ -50,9 +65,14 @@ export async function sendEmail(input: { to: string; subject: string; html: stri
     }
     // 2) a global Brevo key (Netlify), if the SaaS provides one
     if (process.env.BREVO_API_KEY) return await sendViaBrevo(input, process.env.BREVO_API_KEY);
-    // 3) the clinic's connected Gmail
+    // 3) the clinic's Gmail connected on the marketing engine (Hyperfx)
+    if (input.ws) {
+      const viaEngine = await sendViaEngineGmail(input.ws, input);
+      if (viaEngine) return viaEngine;
+    }
+    // 4) the clinic's Gmail connected via in-app Google OAuth
     if (input.ws) return await sendViaGmail(input.ws, input);
-    return "Email isn't connected. Connect Gmail or paste your Brevo key in Settings → Connections.";
+    return "Email isn't connected. Connect Gmail (on the marketing engine or in Settings → Connections) or paste your Brevo key to send.";
   } catch (e) {
     return `Email send failed: ${e instanceof Error ? e.message : "error"}`;
   }

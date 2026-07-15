@@ -6,6 +6,7 @@ import { Card, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { getWorkspaceId } from "@/lib/db";
+import { AdsStatusRow } from "@/components/dashboard/ads-status-row";
 import { META_OBJECTIVES, strategiesFor, conversionsFor, MESSAGING_APPS, PLACEMENTS, type MetaStrategy } from "@/lib/meta-strategies";
 
 // Meta Ads — live campaigns with full management, Meta-style:
@@ -258,6 +259,9 @@ export default function MetaAdsPage() {
           )}
         </div>
       </div>
+
+      {/* All ad platforms at a glance — connection + last-30-day spend. */}
+      <AdsStatusRow ws={ws} />
 
       {loading && !data && <Card className="p-10 text-center text-sm text-ink-400">Loading Meta ads…</Card>}
 
