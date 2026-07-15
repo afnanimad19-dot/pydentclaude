@@ -12,22 +12,29 @@ import { getHfxCreds, hfxCall, hfxConfigured, hfxListTools } from "@/lib/hyperfx
 // Generate through the marketing engine's image_gen toolkit. Tool names/schemas
 // are discovered at runtime (their catalog lists each toolkit's tools), so this
 // keeps working when the engine renames or adds models.
-async function viaEngine(ws: string | null, prompt: string): Promise<{ ok: boolean; bytes?: Buffer; mime?: string; error?: string }> {
-  const creds = await getHfxCreds(ws);
-  if (!hfxConfigured(creds)) return { ok: false, error: "Marketing engine not configured." };
-
-  // Find the generation tool on the image toolkit.
-  const cat = await hfxCall("discover_toolkits", { query: "image generation" }, creds);
-  let toolName = "";
-  if (cat.ok && Array.isArray(cat.data)) {
-    const tk = (cat.data as any[]).find((t) => t?.id === "image_gen") ?? (cat.data as any[]).find((t) => /image/i.test(String(t?.id)));
-    const names: string[] = (tk?.tools ?? []).map(String);
-    toolName = names.find((n) => /generat|create|text_to/i.test(n) && /image/i.test(n)) ?? names.find((n) => /image/i.test(n)) ?? "";
+// Pull image bytes out of whatever shape an image tool returns (MCP image
+// block, a data: URL in the text, or a hosted image URL we download).
+async function extractImage(r: { data?: unknown; content?: unknown[] }): Promise<{ ok: boolean; bytes?: Buffer; mime?: string }> {
+  const imgBlock = ((r.content ?? []) as any[]).find((c: any) => c?.type === "image" && c?.data);
+  if (imgBlock) return { ok: true, bytes: Buffer.from(String(imgBlock.data), "base64"), mime: imgBlock.mimeType ?? "image/png" };
+  const txt = typeof r.data === "string" ? r.data : JSON.stringify(r.data ?? "");
+  const dataUrl = txt.match(/data:(image\/\w+);base64,([A-Za-z0-9+/=]+)/);
+  if (dataUrl) return { ok: true, bytes: Buffer.from(dataUrl[2], "base64"), mime: dataUrl[1] };
+  const urlMatch = txt.match(/https?:\/\/[^\s"'\\)}\]]+/g)?.find((u) => /\.(png|jpe?g|webp)(\?|$)/i.test(u)) ?? txt.match(/https?:\/\/[^\s"'\\)}\]]+/)?.[0];
+  if (urlMatch) {
+    try {
+      const res = await fetch(urlMatch, { signal: AbortSignal.timeout(45000) });
+      const mime = (res.headers.get("content-type") ?? "").split(";")[0];
+      if (res.ok && mime.startsWith("image/")) return { ok: true, bytes: Buffer.from(await res.arrayBuffer()), mime };
+    } catch { /* fall through */ }
   }
-  if (!toolName) return { ok: false, error: "No image tool available on the engine." };
+  return { ok: false };
+}
 
+// One image tool, tolerant to which string argument it wants (prompt vs a
+// differently-named field discovered from its schema).
+async function runImageTool(creds: any, toolName: string, prompt: string): Promise<{ ok: boolean; bytes?: Buffer; mime?: string; error?: string }> {
   let r = await hfxCall(toolName, { prompt }, creds);
-  // If the tool wants a differently-named argument, learn its schema and retry once.
   if (!r.ok && /required|invalid|argument|param|validation|unexpected/i.test(r.error ?? "")) {
     const tools = await hfxListTools(creds);
     const schema: any = tools.tools?.find((t) => t.name === toolName)?.inputSchema;
@@ -38,24 +45,40 @@ async function viaEngine(ws: string | null, prompt: string): Promise<{ ok: boole
     if (key && key !== "prompt") r = await hfxCall(toolName, { [key]: prompt }, creds);
   }
   if (!r.ok) return { ok: false, error: r.error };
+  const img = await extractImage(r);
+  return img.ok ? img : { ok: false, error: "returned no readable image" };
+}
 
-  // 1) MCP image content block (base64).
-  const imgBlock = (r.content ?? []).find((c: any) => c?.type === "image" && c?.data) as any;
-  if (imgBlock) return { ok: true, bytes: Buffer.from(String(imgBlock.data), "base64"), mime: imgBlock.mimeType ?? "image/png" };
-  // 2) A data: URL anywhere in the result.
-  const txt = typeof r.data === "string" ? r.data : JSON.stringify(r.data ?? "");
-  const dataUrl = txt.match(/data:(image\/\w+);base64,([A-Za-z0-9+/=]+)/);
-  if (dataUrl) return { ok: true, bytes: Buffer.from(dataUrl[2], "base64"), mime: dataUrl[1] };
-  // 3) A hosted image URL — download it.
-  const urlMatch = txt.match(/https?:\/\/[^\s"'\\)}\]]+/g)?.find((u) => /\.(png|jpe?g|webp)(\?|$)/i.test(u)) ?? txt.match(/https?:\/\/[^\s"'\\)}\]]+/)?.[0];
-  if (urlMatch) {
-    try {
-      const res = await fetch(urlMatch, { signal: AbortSignal.timeout(45000) });
-      const mime = (res.headers.get("content-type") ?? "").split(";")[0];
-      if (res.ok && mime.startsWith("image/")) return { ok: true, bytes: Buffer.from(await res.arrayBuffer()), mime };
-    } catch { /* fall through */ }
+async function viaEngine(ws: string | null, prompt: string): Promise<{ ok: boolean; bytes?: Buffer; mime?: string; error?: string }> {
+  const creds = await getHfxCreds(ws);
+  if (!hfxConfigured(creds)) return { ok: false, error: "Marketing engine not configured." };
+
+  // 1) Native ALWAYS-ON generators (no toolkit connection needed). generate_image
+  //    auto-picks the best backend; nano_banana is the Gemini "nano" model; then
+  //    the other named models as fallbacks.
+  const native = ["generate_image", "nano_banana_image_generation", "seedream_image_generation", "openai_image_generation"];
+  const errs: string[] = [];
+  for (const t of native) {
+    const r = await runImageTool(creds, t, prompt);
+    if (r.ok) return r;
+    if (r.error && !/unknown tool|not (found|available|enabled)|no such tool/i.test(r.error)) errs.push(`${t}: ${r.error}`);
   }
-  return { ok: false, error: "The engine's image tool returned no readable image." };
+
+  // 2) Fallback: discover an image toolkit and use its generation tool.
+  const cat = await hfxCall("discover_toolkits", { query: "image generation" }, creds);
+  let toolName = "";
+  if (cat.ok && Array.isArray(cat.data)) {
+    const tk = (cat.data as any[]).find((t) => t?.id === "image_gen") ?? (cat.data as any[]).find((t) => /image/i.test(String(t?.id)));
+    const names: string[] = (tk?.tools ?? []).map(String);
+    toolName = names.find((n) => /generat|create|text_to/i.test(n) && /image/i.test(n)) ?? names.find((n) => /image/i.test(n)) ?? "";
+  }
+  if (toolName) {
+    const r = await runImageTool(creds, toolName, prompt);
+    if (r.ok) return r;
+    if (r.error) errs.push(`${toolName}: ${r.error}`);
+  }
+
+  return { ok: false, error: errs.length ? errs.join(" · ") : "No image tool available on the engine." };
 }
 
 async function viaOpenAI(key: string, prompt: string): Promise<{ ok: boolean; bytes?: Buffer; mime?: string; error?: string }> {

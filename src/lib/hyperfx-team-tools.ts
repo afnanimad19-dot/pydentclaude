@@ -128,13 +128,44 @@ const AGENT_WRITE_TOOLS: Record<string, Set<string>> = {
   ]),
 };
 
+// Hyperfx's NATIVE tools are always-on (no external account) — but the agents
+// can't reach them unless we allow them past the platform-lane gate. We expose
+// only the safe, on-purpose ones. Deliberately NOT exposed to chat agents:
+// shell / python / javascript / sandbox_* / browser_execute_code (arbitrary
+// code + remote control) and any delete/file-write — too broad and off-task.
+const NATIVE_READ_TOOLS = new Set([
+  "web_search",      // live web/competitor/trend research (date/domain/category filters)
+  "web_fetch_page",  // read any URL's full text
+  "transcribe_video", // meeting/call recording → text
+]);
+// Image + creative generation — the creative-capable agent (Helena) only.
+const NATIVE_IMAGE_TOOLS = new Set([
+  "generate_image",
+  "nano_banana_image_generation",
+  "nano_banana_image_edit",
+  "nano_banana_multi_turn",
+  "openai_image_generation",
+  "openai_image_edit",
+  "seedream_image_generation",
+  "create_product_photoshoot",
+  "create_marketplace_cards",
+]);
+
+// Which always-on native tools this agent may use, regardless of platform lanes.
+function nativeAllowed(agent: string, tool: string): boolean {
+  if (NATIVE_READ_TOOLS.has(tool)) return true;              // research for everyone
+  if (NATIVE_IMAGE_TOOLS.has(tool)) return agent === "helena"; // creatives = Helena
+  return false;
+}
+
 function agentMayRun(agent: string, tool: string): boolean {
+  if (nativeAllowed(agent, tool)) return true;
   if (hfxToolIsSafe(tool)) return true;
   return AGENT_WRITE_TOOLS[agent]?.has(tool) ?? false;
 }
 
-function inLane(tool: string, prefixes: string[]): boolean {
-  return prefixes.some((p) => tool.startsWith(p));
+function inLaneOrNative(agent: string, tool: string, prefixes: string[]): boolean {
+  return nativeAllowed(agent, tool) || prefixes.some((p) => tool.startsWith(p));
 }
 
 function schemaBrief(schema: any): string {
@@ -166,7 +197,7 @@ export async function execHyperfxTool(
     if (!r.ok && !cat.ok) return `Hyperfx isn't reachable: ${r.error ?? cat.error}`;
     const q = String(args?.query ?? "").toLowerCase();
     const enabled = (r.tools ?? [])
-      .filter((t) => inLane(t.name, lanes) && agentMayRun(agent, t.name))
+      .filter((t) => inLaneOrNative(agent, t.name, lanes) && agentMayRun(agent, t.name))
       .filter((t) => !q || `${t.name} ${t.description ?? ""}`.toLowerCase().includes(q))
       .slice(0, 60);
     const enabledNames = new Set(enabled.map((t) => t.name));
@@ -176,7 +207,7 @@ export async function execHyperfxTool(
         if (!tk?.authenticated && tk?.requires_auth) continue; // not connected yet
         for (const tn of tk?.tools ?? []) {
           const toolName = String(tn);
-          if (enabledNames.has(toolName) || !inLane(toolName, lanes) || !agentMayRun(agent, toolName)) continue;
+          if (enabledNames.has(toolName) || !inLaneOrNative(agent, toolName, lanes) || !agentMayRun(agent, toolName)) continue;
           if (q && !toolName.toLowerCase().includes(q)) continue;
           pending.push(toolName);
         }
@@ -195,7 +226,7 @@ export async function execHyperfxTool(
   // hyperfx_run_tool
   const tool = String(args?.tool ?? "").trim();
   if (!tool) return "Provide the tool name (from hyperfx_list_tools).";
-  if (!inLane(tool, lanes)) return `"${tool}" is outside your area — pick one from hyperfx_list_tools.`;
+  if (!inLaneOrNative(agent, tool, lanes)) return `"${tool}" is outside your area — pick one from hyperfx_list_tools.`;
   if (!agentMayRun(agent, tool)) return `"${tool}" is a write action you can't run — draft the plan and point the user to the Ads page instead.`;
   let toolArgs: Record<string, unknown> = {};
   if (args?.args) {
@@ -220,7 +251,12 @@ export function hyperfxSystemNote(agent: keyof typeof HFX_LANES): string {
     kai: "Google-review and Reddit scraping for reputation monitoring, Instagram/X/TikTok/LinkedIn comments, mentions and post insights, plus CMO brand reports — you can reply to comments after user confirmation",
     angela: "Google Maps lead scraping (find local audiences), HubSpot CRM (contacts, companies, deals, notes, tasks), clinic email via Gmail/Outlook, Google & Outlook Calendar plus Calendly scheduling, Google Sheets exports, and CMO brand reports — you can send emails, create events and CRM records after user confirmation",
   };
-  return `You also have Hyperfx marketing tools for ${what[agent] ?? "marketing research"}: call hyperfx_list_tools to discover them (optionally with a keyword), then hyperfx_run_tool to run one with JSON args.
+  const nativeNote =
+    agent === "helena"
+      ? "ALWAYS-ON engine tools (no connection needed, use freely): web_search (live web research — competitors, prices, trends; supports date/domain/category filters), web_fetch_page (read any URL's full text), and image generation — generate_image / create_product_photoshoot / create_marketplace_cards for on-brand ad creatives (describe the creative and the engine renders it; this is how you make ad images). Use web_search whenever the user asks about current/competitor/market info and cite what you find."
+      : "ALWAYS-ON engine tools (no connection needed, use freely): web_search (live web research — competitors, prices, trends; supports date/domain/category filters) and web_fetch_page (read any URL's full text). Use them whenever the user asks about current or competitor information, and cite what you find.";
+  return `${nativeNote}
+You also have Hyperfx marketing tools for ${what[agent] ?? "marketing research"}: call hyperfx_list_tools to discover them (optionally with a keyword), then hyperfx_run_tool to run one with JSON args.
 RESEARCH LIKE A MEDIA BUYER — drill down the hierarchy instead of guessing, and answer from REAL fetched data, never from assumption:
 • Meta: meta_business_list_ad_accounts → meta_business_search_campaigns(account_id) → meta_business_get_ad_sets(campaign_id) → meta_business_get_ads(ad_set_id) → meta_business_get_ad_details / meta_business_get_ad_creative / meta_business_get_ad_previews. Performance for ANY level in ONE call: meta_business_ad_insights(object_id, object_type: account|campaign|adset|ad, date_preset or time_range{since,until}, include_actions:true). Deeper detail: meta_business_get_campaign_details / get_adset_details. Targeting research: meta_business_targeting_search. Account alerts: meta_business_get_health_check (run_health_check first if empty). Audiences: list_custom_audiences / list_lookalike_audiences. Assets: list_ad_images / list_ad_videos / list_ad_creatives.
 • Google Ads: google_ads_list_accounts → list_campaigns → list_ad_groups → list_ads / list_keywords; metrics via google_ads_get_campaign_performance / get_ad_group_performance / get_keyword_performance / get_search_terms_report, or google_ads_query (GAQL) for anything custom; keyword research via google_ads_keyword_ideas.

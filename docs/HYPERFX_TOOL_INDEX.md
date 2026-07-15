@@ -130,6 +130,40 @@ Deliberate scope choices:
 catalog (`discover_toolkits`) and shows each platform's real connected status;
 newly connected platforms beyond the curated list appear automatically.
 
+## Native (always-on) engine tools — no account connection needed
+
+Hyperfx ships ~67 built-in tools that work without connecting any external
+platform. Pydent exposes the safe, on-purpose ones to the agents; the rest stay
+available to the engine itself but are intentionally NOT handed to chat agents.
+
+Exposed to agents (`NATIVE_READ_TOOLS` / `NATIVE_IMAGE_TOOLS` in
+`hyperfx-team-tools.ts`):
+- **web_search** — live web search; multiple queries, date/domain/category
+  filters (news, research, financial, github, company). All agents.
+- **web_fetch_page** — read any URL's full text. All agents.
+- **transcribe_video** — audio/video file → text. All agents.
+- **Image generation (Helena)** — `generate_image` (auto-picks backend),
+  `nano_banana_image_generation`/`_edit`/`_multi_turn` (Gemini "nano", 4K, text
+  rendering), `seedream_image_generation` (photoreal product), `openai_image_*`,
+  `create_product_photoshoot`, `create_marketplace_cards`. `src/lib/image-gen.ts`
+  calls the native generators FIRST (generate_image → nano_banana → seedream →
+  openai), then falls back to an image toolkit.
+
+Deliberately NOT exposed to chat agents (available to the engine directly, e.g.
+when the user talks to Hyperfx): `shell`, `python`, `javascript`, `sandbox_*`
+(arbitrary code / VM), `browser_*` incl. `browser_execute_code` (full remote
+browser control), file writes/deletes (`create_file`, `edit_file`,
+`delete_file`, `move_files`), and the Hyper Database / dashboard builders. These
+are powerful but too broad and off-task for a confirmation-gated clinic chat
+agent, and some (shell/python/browser control) are a security surface. Revisit
+per-tool if a concrete workflow needs one.
+
+Other native categories (engine-side): full file reading (`read_file`, all
+formats incl. PDF OCR, images via vision, docx/xlsx/pptx/eml), planning
+(`create_plan`, `todo_write`), memory (`search_thread_history`), and the skills
+system (the engine reads a skill before a complex task). Pydent's agents follow
+the research hierarchy above rather than the engine's skill files.
+
 ## Where this maps into Pydent
 
 - MCP client + envelope parsing: `src/lib/hyperfx.ts`
