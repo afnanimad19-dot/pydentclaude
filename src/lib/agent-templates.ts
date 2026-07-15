@@ -328,6 +328,78 @@ AGENT_TEMPLATES.push(
   }
 );
 
+// ─────────────────────────────── third wave — always-on native engine tools
+// (web_search, web_fetch_page, native image generation). These need NO platform
+// connection, so they work as soon as the engine credentials are set.
+AGENT_TEMPLATES.push(
+  // Helena — live web research + image generation
+  {
+    id: "helena-price-scan",
+    agent: "helena",
+    title: "Live competitor price scan",
+    description: "Web-search what nearby clinics charge and position our offers.",
+    apps: ["Web search"],
+    prompt:
+      "Use live web search to find what dental clinics near us charge for our main treatments (use my brand knowledge for the city and services). Pull real prices from their websites and listings. Then give me:\n1. A price comparison table (treatment → competitor range → where we'd sit)\n2. Which treatments we're over/under-priced on\n3. Two offer angles that look like a deal without a race to the bottom\nCite the sources you used.",
+  },
+  {
+    id: "helena-trend-brief",
+    agent: "helena",
+    title: "This week's dental marketing trends",
+    description: "Fresh, web-searched trends turned into post ideas we can use now.",
+    apps: ["Web search"],
+    prompt:
+      "Web-search for what's trending in dental marketing and dental treatments this month (filter to recent results). Summarize the 5 most relevant trends for our clinic, and for each give one concrete post or ad idea we could run this week. Cite your sources.",
+  },
+  {
+    id: "helena-generate-creatives",
+    agent: "helena",
+    title: "Generate 3 ad creatives now",
+    description: "Make three on-brand ad images with the engine, plus the copy.",
+    apps: ["Image generation"],
+    prompt:
+      "Generate 3 ad creative images for our clinic using the image engine — three distinct concepts (for example: a bright confident smile, a calm modern clinic, a limited-time offer). Use my brand knowledge for tone and services, and keep them photographic with no text baked into the image. For each image, also give me the primary text (under 125 characters), a headline (under 40) and the audience it suits best. Show me the images so I can pick.",
+  },
+  {
+    id: "helena-page-teardown",
+    agent: "helena",
+    title: "Competitor landing-page teardown",
+    description: "Fetch a competitor URL and turn it into what we should do better.",
+    apps: ["Web fetch"],
+    prompt:
+      "I'll give you a competitor's URL. Fetch the page and read it, then tell me: their offer and hook, how they build trust (reviews, guarantees, before/after), their call-to-action, and the 5 things we should copy or beat on our own landing page. If I didn't paste a URL yet, ask me for it first.",
+  },
+  // Sam — SEO research grounded in live web data
+  {
+    id: "sam-serp-scan",
+    agent: "sam",
+    title: "Who ranks for 'dentist near me' (live)",
+    description: "Web-search the live results and reverse-engineer why they win.",
+    apps: ["Web search"],
+    prompt:
+      "Web-search the live results for the key dental searches in our city (e.g. 'dentist near me', 'Invisalign [city]', 'teeth whitening [city]' — use my brand knowledge). For the clinics ranking on page one:\n1. Why are they winning (content depth, reviews, backlinks, GBP)?\n2. Where are the gaps we can exploit fastest?\n3. A prioritized 30-day action list to climb.\nCite the pages you looked at.",
+  },
+  {
+    id: "sam-source-check",
+    agent: "sam",
+    title: "Fact-check & source a blog topic",
+    description: "Web-research a topic so our content is accurate and citable.",
+    apps: ["Web search", "Web fetch"],
+    prompt:
+      "I want to write about a dental topic (I'll name it, or pick a high-interest one). Web-search current, credible sources, fetch the best 2–3, and give me: the key facts we can state safely (with sources), any claims we must avoid for compliance, and a fact-checked outline for a patient-friendly blog post. Cite everything.",
+  },
+  // Kai — live listening
+  {
+    id: "kai-live-mentions",
+    agent: "kai",
+    title: "Live mentions of our clinic",
+    description: "Web-search the open web for anything said about us lately.",
+    apps: ["Web search"],
+    prompt:
+      "Web-search the open web for recent mentions of our clinic by name (use my brand knowledge), plus our city + 'dentist reviews'. Summarize: where we're being talked about, overall sentiment, anything that needs a response, and one reputation action for this week. Cite what you found.",
+  },
+);
+
 export function templatesFor(agentKey: string): AgentTemplate[] {
   return AGENT_TEMPLATES.filter((t) => t.agent === agentKey);
 }
