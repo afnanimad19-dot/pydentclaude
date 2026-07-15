@@ -16,13 +16,13 @@ const HIDDEN = new Set([
 ]);
 
 const CATEGORY: [RegExp, string][] = [
-  [/ads|meta_business|tiktok_marketing/, "Advertising"],
-  [/instagram|tiktok$|linkedin_toolkit|pinterest_toolkit|x_toolkit|youtube|twitter|reddit_scraper|telegram/, "Social media"],
-  [/gmail|outlook|zoho|klaviyo|beehiiv|instantly|attentive|sendblue|twilio/, "Email · SMS · Messaging"],
+  [/ads|meta_business|tiktok_marketing|snapchat|amazon_ads|linkedin_ads/, "Advertising"],
+  [/instagram|tiktok|linkedin|pinterest_toolkit|x_toolkit|youtube|twitter|reddit|telegram/, "Social media"],
+  [/gmail|outlook|zoho|klaviyo|beehiiv|instantly|attentive|sendblue|twilio|microsoft_teams|teams/, "Email · SMS · Messaging"],
   [/hubspot|salesforce|leadconnector|apollo|mindbody|calendly|whop|stripe/, "CRM · Sales · Booking"],
   [/scraper|outscraper|firecrawl|web_scraper|search_scraper|trends|ecommerce/, "Research & scraping"],
-  [/hyperseo|search_console|analytics|tag_manager|appsflyer|website_analyzer/, "SEO & Analytics"],
-  [/wordpress|webflow|wix|ghost|shopify|google_docs|google_drive|google_sheets|notion|slack|teams|air|image_gen|video_generation|unipile|hightouch|calendar/, "Content · Docs · Other"],
+  [/hyperseo|search_console|analytics|tag_manager|google_tag|appsflyer|website_analyzer/, "SEO & Analytics"],
+  [/wordpress|webflow|wix|ghost|shopify|google_docs|google_drive|google_sheets|notion|slack|air|image_gen|video_generation|unipile|hightouch|calendar/, "Content · Docs · Other"],
 ];
 
 function categorize(id: string): string {

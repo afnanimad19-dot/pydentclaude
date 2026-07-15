@@ -23,8 +23,9 @@ export const HFX_LANES: Record<string, string[]> = {
   sam: ["hyperseo_", "cmo_", "google_ads_", "google_search_console_", "google_analytics_", "wordpress_", "notion_", "google_docs_", "gtm_"],
   // Kai — reputation + community: reviews, comments, mentions across social.
   kai: ["outscraper_", "scrape_reddit", "cmo_", "instagram_", "x_", "tiktok_", "linkedin_"],
-  // Angela — front desk: CRM, email, calendars, scheduling links, spreadsheets.
-  angela: ["outscraper_", "cmo_", "hubspot_", "calendly_", "google_calendar_", "gmail_", "outlook_", "teams_", "google_sheets_", "google_docs_"],
+  // Angela — front desk: CRM, email, calendars, scheduling links, spreadsheets,
+  // and billing lookups (Stripe is read-only here — payments stay a future rail).
+  angela: ["outscraper_", "cmo_", "hubspot_", "calendly_", "google_calendar_", "gmail_", "outlook_", "teams_", "google_sheets_", "google_docs_", "stripe_"],
 };
 
 // OpenAI function-calling tool definitions to append to a team agent's TOOLS.

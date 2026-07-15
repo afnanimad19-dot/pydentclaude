@@ -110,9 +110,25 @@ Result action types seen live: `onsite_conversion.total_messaging_connection`
 
 Agent access: lanes in `HFX_LANES` (Helena = all ads + social + commerce, Sam =
 SEO/content/docs/GTM, Kai = reputation/comments, Angela = CRM/email/calendar/
-sheets). Writes are whitelisted per agent in `AGENT_WRITE_TOOLS` and always
-confirmation-gated in chat; deletes are never exposed to agents. Unknown
-toolkits self-enable via catalog lookup (`resolveToolkitFromCatalog`).
+sheets + Stripe read). Writes are whitelisted per agent in `AGENT_WRITE_TOOLS`
+and always confirmation-gated in chat; deletes are never exposed to agents.
+Unknown toolkits self-enable via catalog lookup (`resolveToolkitFromCatalog`).
+
+Deliberate scope choices:
+- **Agent ad WRITES are Meta-only.** Every ads platform (TikTok, Snapchat,
+  Reddit, Amazon, LinkedIn) is fully READ + reporting through the agents, but
+  creating/launching live campaigns via chat is enabled only for Meta (which
+  has the review-and-confirm wizard UI). Add other platforms to
+  `AGENT_WRITE_TOOLS.helena` when each gets its own review surface.
+- **Stripe is READ-only** for agents (customers, invoices, balance, MRR) —
+  payments remain a future rail, so no charge/refund/invoice-create via chat.
+- **GitHub is intentionally unassigned** to any chat agent (no clinic workflow
+  uses it) and hidden from the Apps grid; it stays in the auto-enable map so it
+  works if ever called directly.
+
+"Connected" is per-clinic on the Hyperfx portal. Settings → Apps reads the live
+catalog (`discover_toolkits`) and shows each platform's real connected status;
+newly connected platforms beyond the curated list appear automatically.
 
 ## Where this maps into Pydent
 
