@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { HFX_TEAM_TOOLS, execHyperfxTool, hyperfxSystemNote, hfxMetaPerformance, hfxGoogleAdsPerformance } from "@/lib/hyperfx-team-tools";
 import { wpPublishPost, wpUploadMedia } from "@/lib/wp-publish";
 import { generateImage } from "@/lib/image-gen";
-import { runAnalyticsReport, runSearchConsoleReport, getGoogleAdsPerformance } from "@/lib/google-api";
-import { postToFacebookPage, postToInstagram, getMetaAdsPerformance } from "@/lib/meta-api";
+import { runAnalyticsReport, runSearchConsoleReport } from "@/lib/google-api";
+import { postToFacebookPage, postToInstagram } from "@/lib/meta-api";
 import { saveReport } from "@/lib/report-render";
 import { logActivity } from "@/lib/activity";
 import { firecrawlScrape } from "@/lib/firecrawl";
@@ -179,15 +179,15 @@ export async function POST(req: NextRequest) {
     if (name === "get_search_console_report") { await logActivity(workspaceId, "helena", "Pulled Search Console report"); return runSearchConsoleReport(workspaceId, Number(args.days) || 28); }
     if (name === "get_meta_ads_performance") {
       await logActivity(workspaceId, "helena", "Pulled Meta Ads performance");
+      // ENGINE-ONLY: all Meta data flows through the marketing engine — there is
+      // no separate Pydent-side Meta integration anymore.
       const viaEngine = await hfxMetaPerformance(workspaceId);
-      if (viaEngine) return viaEngine;
-      return getMetaAdsPerformance(workspaceId);
+      return viaEngine ?? "Couldn't reach the marketing engine for Meta data — check the Marketing engine card in Settings → Connections (or /api/hyperfx/diag for the exact reason).";
     }
     if (name === "get_google_ads_performance") {
       await logActivity(workspaceId, "helena", "Pulled Google Ads performance");
       const viaEngine = await hfxGoogleAdsPerformance(workspaceId);
-      if (viaEngine) return viaEngine;
-      return getGoogleAdsPerformance(workspaceId);
+      return viaEngine ?? "Couldn't reach the marketing engine for Google Ads data — connect Google Ads in the engine (Settings → Connections shows the status).";
     }
     if (name === "research_url") return firecrawlScrape(String(args.url || ""));
     if (name === "post_to_facebook") {

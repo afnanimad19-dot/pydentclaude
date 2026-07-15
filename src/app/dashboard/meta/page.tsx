@@ -29,6 +29,7 @@ interface MetaData {
   account?: string;
   campaigns?: MetaCampaign[];
   insights?: MetaInsights | null;
+  autoRecommendations?: boolean;
   insightsError?: string | null;
   campaignsError?: string | null;
 }
@@ -216,6 +217,21 @@ export default function MetaAdsPage() {
             <select value={account} onChange={(e) => { setAccount(e.target.value); load(e.target.value); }} className="rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-sm text-ink-700 outline-none" title="Ad account">
               {data!.accounts!.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
+          )}
+          {data?.connected && (
+            <button
+              onClick={async () => {
+                const next = !data.autoRecommendations;
+                if (await manage("set_auto_recommendations", { enabled: next }, next ? "Auto-recommendations ON — Meta's creative suggestions are handled by Helena automatically." : "Auto-recommendations off — you'll still see alerts in the table.")) fetchData(account);
+              }}
+              title="When ON, Meta's creative-fatigue recommendations are sent to Helena automatically: she generates a fresh creative and prepares a paused replacement ad for your review."
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium ${data.autoRecommendations ? "border-emerald-500 bg-emerald-500/10 text-emerald-600" : "border-ink-200 text-ink-700 hover:bg-ink-50"}`}
+            >
+              <Lightbulb className="h-4 w-4" /> Auto-recommendations
+              <span className={`relative ml-0.5 h-4 w-7 rounded-full transition-colors ${data.autoRecommendations ? "bg-emerald-500" : "bg-ink-200"}`}>
+                <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${data.autoRecommendations ? "left-3.5" : "left-0.5"}`} />
+              </span>
+            </button>
           )}
           <button onClick={() => load(account || undefined)} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-ink-50">
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh

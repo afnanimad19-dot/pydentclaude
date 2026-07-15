@@ -114,6 +114,20 @@ export async function POST(req: NextRequest) {
 
   const action = String(body.action ?? "");
 
+  // Per-clinic autopilot toggle (stored on hyperfx_config; empty mcp_url rows
+  // still fall back to env credentials, so this never breaks the connection).
+  if (action === "set_auto_recommendations") {
+    const ws = String(body.ws ?? "");
+    if (!ws) return NextResponse.json({ error: "ws required." }, { status: 400 });
+    const { supabaseAdmin } = await import("@/lib/supabase-admin");
+    const { data: existing } = await supabaseAdmin.from("hyperfx_config").select("workspace_id").eq("workspace_id", ws).maybeSingle();
+    const { error } = existing
+      ? await supabaseAdmin.from("hyperfx_config").update({ auto_recommendations: !!body.enabled }).eq("workspace_id", ws)
+      : await supabaseAdmin.from("hyperfx_config").insert({ workspace_id: ws, mcp_url: "", api_key: "", auto_recommendations: !!body.enabled });
+    if (error) return NextResponse.json({ error: /auto_recommendations/.test(error.message) ? "Run migration 0053_ads_autopilot.sql in Supabase first." : error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, enabled: !!body.enabled });
+  }
+
   // The strategy executor is a multi-step flow, handled separately.
   if (action === "create_campaign_strategy") {
     const r = await createCampaignStrategy(creds, body);

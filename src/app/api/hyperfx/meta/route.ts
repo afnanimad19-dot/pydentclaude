@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 
 // The Meta Ads tab's data: ad accounts, campaigns (with Meta's issues +
 // recommendations), and REAL performance for a Meta-style date range — spend,
@@ -150,11 +151,21 @@ export async function GET(req: NextRequest) {
       })
     : [];
 
+  let autoRecommendations = false;
+  const wsParam = req.nextUrl.searchParams.get("ws");
+  if (wsParam) {
+    try {
+      const { data: cfg } = await supabaseAdmin.from("hyperfx_config").select("auto_recommendations").eq("workspace_id", wsParam).maybeSingle();
+      autoRecommendations = !!cfg?.auto_recommendations;
+    } catch { /* column may not exist yet */ }
+  }
+
   return NextResponse.json({
     configured: true,
     connected: true,
     accounts,
     account: account.id,
+    autoRecommendations,
     campaigns,
     insights: totals
       ? { ...totals, ctr: totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0, cpc: totals.clicks > 0 ? totals.spend / totals.clicks : 0 }
