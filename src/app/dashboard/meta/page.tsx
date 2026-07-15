@@ -18,7 +18,8 @@ interface MetaAccount { id: string; name: string; status: string; currency: stri
 interface MetaCampaign { id: string; name: string; status: string; objective: string; dailyBudget: number | null; lifetimeBudget: number | null; startTime: string | null; spend: number | null; clicks: number | null; impressions: number | null; results: number | null; resultLabel: string; costPerResult: number | null; issues: string[]; recommendations: string[] }
 interface MetaInsights { spend: number; impressions: number; clicks: number; ctr: number; cpc: number }
 interface AdRow { id: string; name: string; status: string }
-interface AdSetRow { id: string; name: string; status: string; dailyBudget: number | null; lifetimeBudget: number | null; optimization: string | null; ads: AdRow[] }
+interface AdSetPerf { spend: number; impressions: number; clicks: number; results: number; ctr: number }
+interface AdSetRow { id: string; name: string; status: string; dailyBudget: number | null; lifetimeBudget: number | null; optimization: string | null; perf?: AdSetPerf | null; ads: AdRow[] }
 interface DailyRow { date: string; spend: number; impressions: number; clicks: number }
 
 interface MetaData {
@@ -29,6 +30,8 @@ interface MetaData {
   account?: string;
   campaigns?: MetaCampaign[];
   insights?: MetaInsights | null;
+  adsCount?: number | null;
+  accountAlerts?: string[];
   autoRecommendations?: boolean;
   insightsError?: string | null;
   campaignsError?: string | null;
@@ -119,6 +122,16 @@ export default function MetaAdsPage() {
     active: (data?.campaigns ?? []).filter((c) => isActive(c.status)).length,
     paused: (data?.campaigns ?? []).filter((c) => isPaused(c.status)).length,
   }), [data?.campaigns]);
+  // Account-wide results total (conversions/leads/messages…), labeled by the
+  // most common result type among campaigns that actually delivered.
+  const resultsTotal = useMemo(() => {
+    const list = data?.campaigns ?? [];
+    const value = list.reduce((s, c) => s + (c.results ?? 0), 0);
+    const tally = new Map<string, number>();
+    for (const c of list) if ((c.results ?? 0) > 0) tally.set(c.resultLabel, (tally.get(c.resultLabel) ?? 0) + c.results!);
+    const label = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "Results";
+    return { value, label };
+  }, [data?.campaigns]);
 
   async function manage(action: string, params: Record<string, unknown>, okMsg: string) {
     const res = await fetch("/api/hyperfx/meta/manage", {
@@ -261,12 +274,14 @@ export default function MetaAdsPage() {
       {data && data.configured && data.connected && (
         <>
           {data.insights && (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               {[
                 [DollarSign, `Spend — ${rangeLabel}`, money(data.insights.spend, cur)],
+                [Users, resultsTotal.label, resultsTotal.value.toLocaleString()],
                 [Eye, "Impressions", data.insights.impressions.toLocaleString()],
                 [MousePointerClick, "Clicks", data.insights.clicks.toLocaleString()],
                 [Percent, "CTR / CPC", `${data.insights.ctr.toFixed(2)}% · ${money(data.insights.cpc, cur)}`],
+                [Megaphone, "Campaigns / ads", `${counts.active} active${data.adsCount != null ? ` · ${data.adsCount} ads` : ` of ${counts.all}`}`],
               ].map(([Icon, label, value], i) => {
                 const I = Icon as typeof DollarSign;
                 return (
@@ -276,6 +291,15 @@ export default function MetaAdsPage() {
                   </Card>
                 );
               })}
+            </div>
+          )}
+
+          {(data.accountAlerts?.length ?? 0) > 0 && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+              <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700"><Lightbulb className="h-3.5 w-3.5" /> Meta recommendations for this account</p>
+              <ul className="mt-1.5 space-y-1 text-sm text-amber-800">
+                {data.accountAlerts!.map((a, i) => <li key={i}>• {a}</li>)}
+              </ul>
             </div>
           )}
 
@@ -443,6 +467,23 @@ function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, 
   const [openSet, setOpenSet] = useState<string | null>(null);
   const [busySet, setBusySet] = useState<string | null>(null);
 
+  // Which ad set is performing best: share of results (fallback: clicks) each
+  // set contributes, so the drawer can rank them like Meta's breakdown view.
+  const perfShares = useMemo(() => {
+    const withPerf = (adsets ?? []).filter((s) => s.perf);
+    const totalResults = withPerf.reduce((t, s) => t + (s.perf!.results || 0), 0);
+    const totalClicks = withPerf.reduce((t, s) => t + (s.perf!.clicks || 0), 0);
+    const basis = totalResults > 0 ? "results" : totalClicks > 0 ? "clicks" : null;
+    const share = new Map<string, number>();
+    if (basis) {
+      const total = basis === "results" ? totalResults : totalClicks;
+      for (const s of withPerf) share.set(s.id, (((basis === "results" ? s.perf!.results : s.perf!.clicks) || 0) / total) * 100);
+    }
+    let bestId: string | null = null, bestV = 0;
+    for (const [id, v] of share) if (v > bestV) { bestV = v; bestId = id; }
+    return { share, bestId, basis };
+  }, [adsets]);
+
   const load = useCallback(() => {
     fetch(`/api/hyperfx/meta/campaign?ws=${ws}&id=${encodeURIComponent(campaign.id)}&account=${encodeURIComponent(account)}${rangeQs}`)
       .then((r) => r.json())
@@ -480,6 +521,22 @@ function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, 
         </div>
 
         <div className="space-y-5 p-6">
+          {(campaign.issues.length > 0 || campaign.recommendations.length > 0) && (
+            <div className="space-y-2">
+              {campaign.issues.length > 0 && (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-rose-600"><AlertTriangle className="h-3.5 w-3.5" /> Issues</p>
+                  <ul className="mt-1 space-y-1 text-sm text-rose-700">{campaign.issues.map((t, i) => <li key={i}>• {t}</li>)}</ul>
+                </div>
+              )}
+              {campaign.recommendations.length > 0 && (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700"><Lightbulb className="h-3.5 w-3.5" /> Meta&apos;s recommendations</p>
+                  <ul className="mt-1 space-y-1 text-sm text-amber-800">{campaign.recommendations.map((t, i) => <li key={i}>• {t}</li>)}</ul>
+                </div>
+              )}
+            </div>
+          )}
           {totals && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
@@ -520,6 +577,9 @@ function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, 
                         {openSet === s.id ? <ChevronDown className="h-4 w-4 shrink-0 text-ink-400" /> : <ChevronRight className="h-4 w-4 shrink-0 text-ink-400" />}
                         <span className="truncate text-sm font-medium text-ink-900">{s.name}</span>
                         <StatusBadge status={s.status} tone={statusTone(s.status)} />
+                        {perfShares.bestId === s.id && (
+                          <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600">Top performer</span>
+                        )}
                       </button>
                       <span className="shrink-0 text-xs text-ink-500">{s.dailyBudget != null ? `${money(s.dailyBudget, currency)}/day` : s.lifetimeBudget != null ? `${money(s.lifetimeBudget, currency)} lifetime` : "—"}</span>
                       <button
@@ -547,6 +607,22 @@ function CampaignDrawer({ campaign, ws, account, currency, rangeQs, rangeLabel, 
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
+                    {s.perf && (
+                      <div className="flex flex-wrap items-center gap-2 px-3.5 pb-2.5 text-xs text-ink-500">
+                        <span>
+                          {money(s.perf.spend, currency)} · {s.perf.impressions.toLocaleString()} impr · {s.perf.clicks.toLocaleString()} clicks · CTR {s.perf.ctr.toFixed(2)}%
+                          {s.perf.results > 0 ? ` · ${s.perf.results.toLocaleString()} results` : ""}
+                        </span>
+                        {perfShares.share.has(s.id) && (
+                          <span className="ml-auto flex items-center gap-1.5" title={`Share of campaign ${perfShares.basis}`}>
+                            <span className="h-1.5 w-20 overflow-hidden rounded-full bg-ink-100">
+                              <span className="block h-full rounded-full bg-brand-500" style={{ width: `${Math.min(100, perfShares.share.get(s.id)!)}%` }} />
+                            </span>
+                            <span className="font-semibold text-ink-700">{perfShares.share.get(s.id)!.toFixed(0)}%</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
                     {openSet === s.id && (
                       <div className="border-t border-ink-100 px-3.5 py-2">
                         {s.optimization && <p className="mb-1.5 text-[11px] text-ink-400">Optimisation: {s.optimization.replaceAll("_", " ").toLowerCase()}</p>}

@@ -36,13 +36,44 @@ export async function GET(req: NextRequest) {
     hfxCall("meta_business_ad_insights", { object_id: id, object_type: "campaign", time_increment: "1", include_actions: false, include_video_metrics: false, ...rangeArgs(req) }, creds),
   ]);
 
-  // Ad sets (budget often lives here, not on the campaign) + their ads.
+  // Ad sets (budget often lives here, not on the campaign) + their ads +
+  // each set's own performance so the drawer can rank which performs best.
   const rawSets: any[] = adsetsRes.ok
     ? (Array.isArray(adsetsRes.data) ? adsetsRes.data : (adsetsRes.data as any)?.ad_sets ?? (adsetsRes.data as any)?.adsets ?? (adsetsRes.data as any)?.data ?? [])
     : [];
+
+  // The engine's object_type naming for ad sets isn't documented — try both
+  // spellings once and remember which one the server accepts.
+  let adsetObjType: string | null = null;
+  const rangeArgsMemo = rangeArgs(req);
+  const RESULT_TYPES = ["lead", "onsite_conversion.lead_grouped", "onsite_conversion.messaging_conversation_started_7d", "purchase", "omni_purchase", "link_click"];
+  async function adsetPerf(sid: string) {
+    for (const t of adsetObjType ? [adsetObjType] : ["adset", "ad_set"]) {
+      const r = await hfxCall("meta_business_ad_insights", { object_id: sid, object_type: t, include_actions: true, include_video_metrics: false, ...rangeArgsMemo }, creds);
+      if (!r.ok) continue;
+      adsetObjType = t;
+      let spend = 0, impressions = 0, clicks = 0;
+      const byType = new Map<string, number>();
+      for (const row of hfxRows(r.data).filter((x: any) => x && (x.spend !== undefined || x.impressions !== undefined))) {
+        spend += num(row.spend); impressions += num(row.impressions); clicks += num(row.clicks);
+        for (const a of Array.isArray(row.actions) ? row.actions : []) {
+          const k = String(a?.action_type ?? "");
+          byType.set(k, (byType.get(k) ?? 0) + num(a?.value));
+        }
+      }
+      let results = 0;
+      for (const rt of RESULT_TYPES) { const v = byType.get(rt); if (v && v > 0) { results = v; break; } }
+      return { spend, impressions, clicks, results, ctr: impressions > 0 ? (clicks / impressions) * 100 : 0 };
+    }
+    return null;
+  }
+
   const adsets = await Promise.all(
     rawSets.slice(0, 10).map(async (s: any) => {
-      const adsRes = await hfxCall("meta_business_get_ads", { ad_set_id: String(s.id), limit: 25 }, creds);
+      const [adsRes, perf] = await Promise.all([
+        hfxCall("meta_business_get_ads", { ad_set_id: String(s.id), limit: 25 }, creds),
+        adsetPerf(String(s.id)),
+      ]);
       const rawAds: any[] = adsRes.ok
         ? (Array.isArray(adsRes.data) ? adsRes.data : (adsRes.data as any)?.ads ?? (adsRes.data as any)?.data ?? [])
         : [];
@@ -53,6 +84,7 @@ export async function GET(req: NextRequest) {
         dailyBudget: s.daily_budget != null ? num(s.daily_budget) / 100 : null,
         lifetimeBudget: s.lifetime_budget != null ? num(s.lifetime_budget) / 100 : null,
         optimization: s.optimization_goal ?? null,
+        perf,
         ads: rawAds.map((a: any) => ({ id: String(a.id ?? ""), name: a.name ?? "Ad", status: a.effective_status ?? a.status ?? "—" })),
       };
     })

@@ -182,7 +182,22 @@ export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d
     if (!accountsRes.ok) return null;
     const accounts: any[] = (accountsRes.data as any)?.accounts ?? [];
     if (accounts.length === 0) return "The Meta connection works, but no ad accounts are visible on it.";
-    const acct = accounts[0];
+    // With several ad accounts, report on the one that actually has campaigns
+    // (prefer active) — not blindly the first, which may be empty.
+    let acct = accounts[0];
+    if (accounts.length > 1) {
+      const probes = await Promise.all(
+        accounts.slice(0, 5).map((a: any) =>
+          hfxCall("meta_business_search_campaigns", { account_id: String(a.id), detail: "summary", limit: 25 }, creds).then((r) => ({
+            a,
+            camps: (r.ok ? ((r.data as any)?.campaigns ?? []) : []) as any[],
+          }))
+        )
+      );
+      const withActive = probes.find((p) => p.camps.some((c: any) => /ACTIVE/i.test(String(c.effective_status ?? c.status ?? ""))));
+      const withAny = probes.find((p) => p.camps.length > 0);
+      acct = (withActive ?? withAny)?.a ?? accounts[0];
+    }
     const actId = String(acct.id ?? "").startsWith("act_") ? String(acct.id) : `act_${acct.id}`;
     const ins = await hfxCall(
       "meta_business_ad_insights",

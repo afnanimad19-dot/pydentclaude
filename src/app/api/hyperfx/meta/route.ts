@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getHfxCreds, hfxCall, hfxConfigured, hfxRows } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxConfigured, hfxListTools, hfxRows } from "@/lib/hyperfx";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 // The Meta Ads tab's data: ad accounts, campaigns (with Meta's issues +
@@ -91,19 +91,48 @@ export async function GET(req: NextRequest) {
   }
 
   const requested = req.nextUrl.searchParams.get("account");
-  const account = accounts.find((a: any) => a.id === requested) ?? accounts[0];
+  let account = accounts.find((a: any) => a.id === requested) ?? null;
+
+  // No explicit choice: don't blindly take the first ad account — with several
+  // accounts (e.g. an old/empty one first) that shows a blank page while the
+  // real campaigns live on another. Probe each and pick the one with campaigns,
+  // preferring one that has an ACTIVE campaign.
+  if (!account) {
+    if (accounts.length === 1) {
+      account = accounts[0];
+    } else {
+      const probes = await Promise.all(
+        accounts.slice(0, 5).map((a: any) =>
+          hfxCall("meta_business_search_campaigns", { account_id: a.id, detail: "summary", limit: 25 }, creds).then((r) => ({
+            a,
+            camps: (r.ok ? ((r.data as any)?.campaigns ?? []) : []) as any[],
+          }))
+        )
+      );
+      const withActive = probes.find((p) => p.camps.some((c: any) => /ACTIVE/i.test(String(c.effective_status ?? c.status ?? ""))));
+      const withAny = probes.find((p) => p.camps.length > 0);
+      account = (withActive ?? withAny)?.a ?? accounts[0];
+    }
+  }
   const actId = account.id.startsWith("act_") ? account.id : `act_${account.id}`;
 
   // "full" detail so campaigns carry Meta's issues_info + recommendations;
   // include_actions so results (leads/messages/purchases) come back.
-  const [campaignsRes, insightsRes] = await Promise.all([
+  const [campaignsRes, insightsRes, adLevelRes] = await Promise.all([
     hfxCall("meta_business_search_campaigns", { account_id: account.id, detail: "full", limit: 50 }, creds),
     hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", level: "campaign", include_actions: true, include_video_metrics: false, ...rangeArgs(req) }, creds),
+    // ad-level breakdown: counts how many ads actually delivered in the range
+    hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", level: "ad", include_actions: false, include_video_metrics: false, ...rangeArgs(req) }, creds),
   ]);
 
   const perf = new Map<string, { spend: number; impressions: number; clicks: number; reach: number; actions: any[] }>();
   let totals: { spend: number; impressions: number; clicks: number } | null = null;
   let insightsNote: string | null = null;
+  let adsCount: number | null = null;
+  if (adLevelRes.ok) {
+    const adIds = new Set(hfxRows(adLevelRes.data).map((r: any) => String(r?.ad_id ?? "")).filter(Boolean));
+    if (adIds.size > 0) adsCount = adIds.size;
+  }
 
   const addRow = (cid: string, r: any) => {
     const row = { spend: num(r.spend), impressions: num(r.impressions), clicks: num(r.clicks), reach: num(r.reach), actions: r.actions ?? [] };
@@ -135,14 +164,32 @@ export async function GET(req: NextRequest) {
   const campaignRowsRaw: any[] = campaignsRes.ok ? ((campaignsRes.data as any)?.campaigns ?? []) : [];
   if ((!totals || (totals.spend === 0 && totals.impressions === 0)) && campaignRowsRaw.length > 0) {
     const ids = campaignRowsRaw.map((c: any) => String(c.id ?? "")).filter(Boolean).slice(0, 12);
+    // Two variants per campaign, in one parallel batch: ad-level rows (also
+    // yield the delivering-ads count) with a plain no-level query as safety net.
     const per = await Promise.all(
-      ids.map((cid) => hfxCall("meta_business_ad_insights", { object_id: cid, object_type: "campaign", include_actions: true, include_video_metrics: false, ...rangeArgs(req) }, creds).then((r) => ({ cid, r })))
+      ids.flatMap((cid) => [
+        hfxCall("meta_business_ad_insights", { object_id: cid, object_type: "campaign", level: "ad", include_actions: true, include_video_metrics: false, ...rangeArgs(req) }, creds).then((r) => ({ cid, r, mode: "ad" as const })),
+        hfxCall("meta_business_ad_insights", { object_id: cid, object_type: "campaign", include_actions: true, include_video_metrics: false, ...rangeArgs(req) }, creds).then((r) => ({ cid, r, mode: "plain" as const })),
+      ])
     );
+    const byCid = new Map<string, { ad?: any[]; plain?: any[] }>();
+    for (const { cid, r, mode } of per) {
+      if (!r.ok) continue;
+      const rows = hfxRows(r.data).filter((x: any) => x && (x.spend !== undefined || x.impressions !== undefined));
+      const e = byCid.get(cid) ?? {};
+      e[mode] = rows;
+      byCid.set(cid, e);
+    }
     let any = false;
     const t = { spend: 0, impressions: 0, clicks: 0 };
-    for (const { cid, r } of per) {
-      if (!r.ok) continue;
-      for (const row of hfxRows(r.data).filter((x: any) => x && (x.spend !== undefined || x.impressions !== undefined))) {
+    const adIds = new Set<string>();
+    for (const [cid, e] of byCid) {
+      const rows = (e.ad?.length ? e.ad : e.plain) ?? [];
+      for (const r of e.ad ?? []) {
+        const aid = String(r?.ad_id ?? "");
+        if (aid) adIds.add(aid);
+      }
+      for (const row of rows) {
         const added = addRow(cid, row);
         t.spend += added.spend; t.impressions += added.impressions; t.clicks += added.clicks;
         any = true;
@@ -150,6 +197,7 @@ export async function GET(req: NextRequest) {
     }
     if (any) {
       totals = t;
+      if (adsCount == null && adIds.size > 0) adsCount = adIds.size;
       insightsNote = "per-campaign fallback used (account-level rollup returned no rows)";
     }
   }
@@ -175,11 +223,42 @@ export async function GET(req: NextRequest) {
           results: havePerf ? picked.results : null,
           resultLabel: picked.label,
           costPerResult: havePerf && picked.results > 0 && spend != null ? spend / picked.results : null,
-          issues: (Array.isArray(c.issues_info) ? c.issues_info : []).map((i: any) => String(i?.error_summary ?? i?.error_message ?? i?.message ?? "Issue")).slice(0, 5),
-          recommendations: (Array.isArray(c.recommendations) ? c.recommendations : []).map((r: any) => String(r?.title ?? r?.message ?? r?.code ?? "Recommendation")).slice(0, 5),
+          issues: (Array.isArray(c.issues_info) ? c.issues_info : Array.isArray(c.issues) ? c.issues : []).map((i: any) => String(i?.error_summary ?? i?.error_message ?? i?.message ?? i ?? "Issue")).slice(0, 5),
+          recommendations: (Array.isArray(c.recommendations) ? c.recommendations : Array.isArray(c.recommendation_data) ? c.recommendation_data : []).map((r: any) => String(r?.title ?? r?.message ?? r?.recommendation ?? r?.code ?? r ?? "Recommendation")).slice(0, 5),
         };
       })
     : [];
+
+  // When campaign details carry NO issues/recommendations at all (some engine
+  // versions strip them), hunt for a dedicated health/recommendations tool and
+  // surface whatever it returns as account-level alerts. Fully tolerant: any
+  // failure here just means no banner.
+  let accountAlerts: string[] = [];
+  const noInlineAlerts = campaigns.length > 0 && campaigns.every((c: any) => c.issues.length === 0 && c.recommendations.length === 0);
+  if (noInlineAlerts) {
+    try {
+      const tl = await hfxListTools(creds);
+      const candidates = (tl.tools ?? [])
+        .filter((t) => t.name.startsWith("meta_business_") && /health|recommend|alert|diagnos|issue/i.test(t.name))
+        .slice(0, 2);
+      for (const cand of candidates) {
+        const r = await hfxCall(cand.name, { account_id: account.id }, creds);
+        if (!r.ok) continue;
+        const items = hfxRows(r.data)
+          .map((row: any) => {
+            if (typeof row === "string") return row;
+            const what = row?.title ?? row?.message ?? row?.recommendation ?? row?.error_summary ?? row?.summary ?? row?.description ?? null;
+            const who = row?.campaign_name ?? row?.ad_name ?? row?.adset_name ?? row?.name ?? null;
+            return what ? (who ? `${who}: ${what}` : String(what)) : null;
+          })
+          .filter(Boolean) as string[];
+        if (items.length > 0) {
+          accountAlerts = items.slice(0, 10);
+          break;
+        }
+      }
+    } catch { /* alerts stay empty */ }
+  }
 
   let autoRecommendations = false;
   const wsParam = req.nextUrl.searchParams.get("ws");
@@ -197,6 +276,8 @@ export async function GET(req: NextRequest) {
     account: account.id,
     autoRecommendations,
     campaigns,
+    adsCount,
+    accountAlerts,
     insights: totals
       ? { ...totals, ctr: totals.impressions > 0 ? (totals.clicks / totals.impressions) * 100 : 0, cpc: totals.clicks > 0 ? totals.spend / totals.clicks : 0 }
       : null,
