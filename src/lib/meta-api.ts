@@ -81,6 +81,19 @@ export async function postToFacebookPage(ws: string, message: string, link?: str
   return `Posted to your Facebook Page. Post id: ${json.id}`;
 }
 
+// A photo post to the Facebook Page (image + caption) using a public image URL.
+export async function postFacebookPhoto(ws: string, caption: string, imageUrl: string): Promise<string> {
+  const page = await getPage(ws);
+  if (!page) return "Facebook isn't connected, or no Page is available on this account.";
+  const res = await fetch(`${GRAPH}/${page.pageId}/photos`, {
+    method: "POST",
+    body: new URLSearchParams({ url: imageUrl, caption, access_token: page.pageToken }),
+  });
+  const json = await res.json();
+  if (!res.ok) return `Facebook photo post failed: ${json?.error?.message ?? res.status}`;
+  return `Posted to your Facebook Page. Post id: ${json.post_id ?? json.id}`;
+}
+
 // Meta (Facebook/Instagram) ad performance for the connected ad account.
 export async function getMetaAdsPerformance(ws: string): Promise<string> {
   const token = await getMetaToken(ws);

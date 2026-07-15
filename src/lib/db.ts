@@ -848,10 +848,15 @@ export interface IgPost {
   id: string;
   caption: string;
   mediaName: string;
-  scheduledFor: string; // YYYY-MM-DD
+  mediaUrl: string;      // public URL of the uploaded/chosen media
+  platforms: string[];   // e.g. ["instagram","facebook"]
+  scheduledFor: string;  // YYYY-MM-DD
   time: string;
   status: "Draft" | "Scheduled" | "Publishing" | "Published" | "Failed";
 }
+
+const parsePlatforms = (v: unknown): string[] =>
+  Array.isArray(v) ? v.map(String) : String(v ?? "instagram").split(",").map((s) => s.trim()).filter(Boolean);
 
 export async function fetchIgPosts(): Promise<IgPost[]> {
   try {
@@ -861,6 +866,8 @@ export async function fetchIgPosts(): Promise<IgPost[]> {
       id: r.id,
       caption: r.caption,
       mediaName: r.media_name ?? "",
+      mediaUrl: r.media_url ?? "",
+      platforms: parsePlatforms(r.platforms),
       scheduledFor: r.scheduled_for,
       time: r.time ?? "10:00",
       status: r.status,
@@ -871,25 +878,33 @@ export async function fetchIgPosts(): Promise<IgPost[]> {
 }
 
 export async function createIgPost(p: Omit<IgPost, "id">): Promise<{ ok: boolean; message: string }> {
-  const { error } = await supabase.from("ig_posts").insert({
+  const base: Record<string, unknown> = {
     caption: p.caption,
     media_name: p.mediaName,
     scheduled_for: p.scheduledFor,
     time: p.time,
     status: p.status,
-  });
+  };
+  const full = { ...base, media_url: p.mediaUrl, platforms: (p.platforms ?? ["instagram"]).join(",") };
+  let { error } = await supabase.from("ig_posts").insert(full);
+  // media_url / platforms columns may not exist yet (migration 0055 not run).
+  if (error && /media_url|platforms|column/i.test(error.message)) ({ error } = await supabase.from("ig_posts").insert(base));
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Post scheduled." };
 }
 
 export async function updateIgPost(id: string, p: Partial<Omit<IgPost, "id">>): Promise<{ ok: boolean; message: string }> {
   const row: Record<string, unknown> = {};
+  const optional: Record<string, unknown> = {};
+  if (p.mediaUrl !== undefined) optional.media_url = p.mediaUrl;
+  if (p.platforms !== undefined) optional.platforms = p.platforms.join(",");
   if (p.caption !== undefined) row.caption = p.caption;
   if (p.mediaName !== undefined) row.media_name = p.mediaName;
   if (p.scheduledFor !== undefined) row.scheduled_for = p.scheduledFor;
   if (p.time !== undefined) row.time = p.time;
   if (p.status !== undefined) row.status = p.status;
-  const { error } = await supabase.from("ig_posts").update(row).eq("id", id);
+  let { error } = await supabase.from("ig_posts").update({ ...row, ...optional }).eq("id", id);
+  if (error && /media_url|platforms|column/i.test(error.message)) ({ error } = await supabase.from("ig_posts").update(row).eq("id", id));
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Post updated." };
 }
