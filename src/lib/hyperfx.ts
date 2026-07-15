@@ -152,6 +152,9 @@ const TOOLKIT_BY_PREFIX: [string, string][] = [
   ["scrape_reddit", "reddit_scraper"],
   ["cmo_", "cmo"],
   ["instagram_scraper", "instagram_scraper"],
+  ["instagram_", "instagram_toolkit"],
+  ["wordpress_", "wordpress_org_toolkit"],
+  ["google_search_console_", "google_search_console_toolkit"],
 ];
 
 function toolkitForTool(tool: string): string | null {

@@ -14,9 +14,9 @@ import { getHfxCreds, hfxCall, hfxFlatRow, hfxListTools, hfxMetric, hfxRowHasMet
 
 // Which slice of the Hyperfx catalog each team member may touch.
 export const HFX_LANES: Record<string, string[]> = {
-  helena: ["meta_business_", "search_facebook_", "scrape_facebook", "cmo_", "google_ads_", "tiktok_", "linkedin_ads_"],
-  sam: ["hyperseo_", "cmo_", "google_ads_"],
-  kai: ["outscraper_", "scrape_reddit", "cmo_"],
+  helena: ["meta_business_", "search_facebook_", "scrape_facebook", "cmo_", "google_ads_", "tiktok_", "linkedin_ads_", "instagram_", "google_analytics_"],
+  sam: ["hyperseo_", "cmo_", "google_ads_", "google_search_console_", "google_analytics_", "wordpress_"],
+  kai: ["outscraper_", "scrape_reddit", "cmo_", "instagram_"],
   angela: ["outscraper_", "cmo_"],
 };
 
@@ -62,6 +62,7 @@ const HELENA_WRITE_TOOLS = new Set([
   "meta_business_create_ad_set",
   "meta_business_update_ad_set",
   "meta_business_create_ad",
+  "meta_business_update_ad",
   "meta_business_create_ad_creative",
   "meta_business_upload_ad_image",
   "meta_business_preview_blueprint",
@@ -155,12 +156,21 @@ export async function execHyperfxTool(
 export function hyperfxSystemNote(agent: keyof typeof HFX_LANES): string {
   const what: Record<string, string> = {
     helena:
-      "live Meta/Google/TikTok/LinkedIn ads data (accounts, campaigns, insights), Meta Ads-Library competitor research, CMO brand reports — and you can RUN Meta ads: create/update campaigns, ad sets, ads and creatives, and upload ad images",
-    sam: "HyperSEO keyword/SERP research, AI-search visibility, competitor SEO analysis, and Google Ads keyword insights",
-    kai: "Google-review and Reddit scraping for reputation monitoring, plus CMO brand reports",
+      "live Meta/Google/TikTok/LinkedIn ads data (accounts, campaigns, ad sets, ads, creatives, insights), Instagram account/post insights, Google Analytics reports, Meta Ads-Library competitor research, CMO brand reports — and you can RUN Meta ads: create/update campaigns, ad sets, ads and creatives, and upload ad images",
+    sam: "HyperSEO keyword/SERP research, AI-search visibility, competitor SEO analysis, Google Search Console data (queries, clicks, positions, indexing), Google Analytics reports, WordPress content, and Google Ads keyword insights",
+    kai: "Google-review and Reddit scraping for reputation monitoring, Instagram comments/mentions and post insights, plus CMO brand reports",
     angela: "Google Maps lead scraping (find local audiences) and CMO brand reports",
   };
-  return `You also have Hyperfx marketing tools for ${what[agent] ?? "marketing research"}: call hyperfx_list_tools to discover them (optionally with a keyword), then hyperfx_run_tool to run one with JSON args. RULES FOR WRITE ACTIONS (Helena only): before ANY create/update call that touches live ads, present the complete plan — objective, daily budget, audience, placement, creative/copy — and wait for the user's explicit confirmation ("yes", "launch", "go ahead") in this chat. Create campaigns with status PAUSED unless the user explicitly says go live. Never delete anything. Budget values are in CENTS on Meta tools (e.g. $20 = 2000). Other agents are read-only: draft the plan and point the user to the Ads page. If Hyperfx says it isn't configured, tell the user to add their Hyperfx credentials in Settings → Connections (or connect the platform on hyperfx.ai).`;
+  return `You also have Hyperfx marketing tools for ${what[agent] ?? "marketing research"}: call hyperfx_list_tools to discover them (optionally with a keyword), then hyperfx_run_tool to run one with JSON args.
+RESEARCH LIKE A MEDIA BUYER — drill down the hierarchy instead of guessing, and answer from REAL fetched data, never from assumption:
+• Meta: meta_business_list_ad_accounts → meta_business_search_campaigns(account_id) → meta_business_get_ad_sets(campaign_id) → meta_business_get_ads(ad_set_id) → meta_business_get_ad_details / meta_business_get_ad_creative / meta_business_get_ad_previews. Performance for ANY level in ONE call: meta_business_ad_insights(object_id, object_type: account|campaign|adset|ad, date_preset or time_range{since,until}, include_actions:true). Deeper detail: meta_business_get_campaign_details / get_adset_details. Targeting research: meta_business_targeting_search. Account alerts: meta_business_get_health_check (run_health_check first if empty). Audiences: list_custom_audiences / list_lookalike_audiences. Assets: list_ad_images / list_ad_videos / list_ad_creatives.
+• Google Ads: google_ads_list_accounts → list_campaigns → list_ad_groups → list_ads / list_keywords; metrics via google_ads_get_campaign_performance / get_ad_group_performance / get_keyword_performance / get_search_terms_report, or google_ads_query (GAQL) for anything custom; keyword research via google_ads_keyword_ideas.
+• Google Analytics: google_analytics_list_accounts → list_properties → run_report / run_realtime_report / run_funnel_report.
+• Search Console: google_search_console_list_sites → query_search_analytics (clicks, impressions, CTR, position) / inspect_url.
+• Instagram: instagram_get_user_profile / get_account_insights → list_media → get_media_insights; comments via list_comments.
+• WordPress: wordpress_list_posts / list_pages / list_media, create/update for content.
+When a tool answers with an envelope (summary_metrics + detailed_insights), read detailed_insights for per-row data and summary_metrics for totals.
+RULES FOR WRITE ACTIONS (Helena only): before ANY create/update call that touches live ads, present the complete plan — objective, daily budget, audience, placement, creative/copy — and wait for the user's explicit confirmation ("yes", "launch", "go ahead") in this chat. Create campaigns with status PAUSED unless the user explicitly says go live. Never delete anything. Budget values are in CENTS on Meta tools (e.g. $20 = 2000). Other agents are read-only: draft the plan and point the user to the Ads page. If Hyperfx says it isn't configured, tell the user to add their Hyperfx credentials in Settings → Connections (or connect the platform on hyperfx.ai).`;
 }
 
 /* ------------------------------------------------------------------ */
