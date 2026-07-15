@@ -6,7 +6,7 @@ import { Card, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { getWorkspaceId } from "@/lib/db";
-import { META_OBJECTIVES, strategiesFor, type MetaStrategy } from "@/lib/meta-strategies";
+import { META_OBJECTIVES, strategiesFor, conversionsFor, MESSAGING_APPS, PLACEMENTS, type MetaStrategy } from "@/lib/meta-strategies";
 
 // Meta Ads — live campaigns with full management, Meta-style:
 // campaign → ad sets → ads. Filter by status (active first by default), edit /
@@ -170,12 +170,13 @@ export default function MetaAdsPage() {
       {createOpen && (
         <CreateCampaignWizard
           currency={cur}
+          ws={ws}
           onClose={() => setCreateOpen(false)}
           onCreate={async (payload) => {
             const res = await fetch("/api/hyperfx/meta/manage", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ws, action: "create_campaign_strategy", account_id: account, ...payload }),
+              body: JSON.stringify({ ws, action: "create_campaign_advanced", account_id: account, ...payload }),
             });
             const d = await res.json().catch(() => ({}));
             if (!res.ok) { toast(d.error ?? "Campaign creation failed", "info"); return false; }
@@ -776,8 +777,16 @@ function SpendChart({ daily, currency }: { daily: DailyRow[]; currency: string }
 // audience/age/interest recipes with an ad-set plan. Step 3: name, location,
 // number of ad sets, budget per ad set, live/paused — then everything is created
 // on Meta automatically (ad sets paused; creatives come next via Helena).
-function CreateCampaignWizard({ currency, onClose, onCreate }: {
+interface WizardAd { name: string; primaryText: string; headline: string; description: string; imageUrl: string }
+interface WizardAdSet { name: string; ageMin: number; ageMax: number; interests: string; budget: number; ads: WizardAd[] }
+interface GeoArea { key: string; name: string; type: string; region?: string | null; supportsRadius?: boolean; radius?: number }
+
+const blankAd = (n: number): WizardAd => ({ name: `Ad ${n}`, primaryText: "", headline: "", description: "", imageUrl: "" });
+const STEPS = ["Objective", "Strategy", "Conversion & budget", "Locations", "Ad sets & ads", "Review"];
+
+function CreateCampaignWizard({ currency, ws, onClose, onCreate }: {
   currency: string;
+  ws: string | null;
   onClose: () => void;
   onCreate: (payload: Record<string, unknown>) => Promise<boolean>;
 }) {
@@ -785,15 +794,62 @@ function CreateCampaignWizard({ currency, onClose, onCreate }: {
   const [objective, setObjective] = useState<string>("");
   const [strategy, setStrategy] = useState<MetaStrategy | null>(null);
   const [name, setName] = useState("");
-  const [city, setCity] = useState("");
-  const [country, setCountry] = useState("AE");
-  const [numAdSets, setNumAdSets] = useState(2);
+  // conversion + budget
+  const [conversion, setConversion] = useState("");
+  const [messagingApp, setMessagingApp] = useState("whatsapp");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [budgetMode, setBudgetMode] = useState<"CBO" | "ABO">("ABO");
+  const [budgetType, setBudgetType] = useState<"daily" | "lifetime">("daily");
   const [budget, setBudget] = useState(15);
+  const [endDate, setEndDate] = useState("");
+  const [placements, setPlacements] = useState<string[]>(["facebook", "instagram"]);
+  // locations
+  const [geoIncluded, setGeoIncluded] = useState<GeoArea[]>([]);
+  const [geoExcluded, setGeoExcluded] = useState<GeoArea[]>([]);
+  const [geoQuery, setGeoQuery] = useState("");
+  const [geoResults, setGeoResults] = useState<GeoArea[]>([]);
+  const [geoSearching, setGeoSearching] = useState(false);
+  // ad sets
+  const [adSets, setAdSets] = useState<WizardAdSet[]>([]);
   const [status, setStatus] = useState<"ACTIVE" | "PAUSED">("PAUSED");
   const [creating, setCreating] = useState(false);
 
   const strategies = objective ? strategiesFor(objective) : [];
   const selObj = META_OBJECTIVES.find((o) => o.key === objective);
+  const conversions = objective ? conversionsFor(objective) : [];
+  const selConv = conversions.find((c) => c.id === conversion);
+
+  // Apply a strategy: prefill name, ad sets (name/age/interests/budget) and ads.
+  function applyStrategy(st: MetaStrategy | null) {
+    setStrategy(st);
+    if (st) {
+      setName(st.name);
+      setBudget(st.suggestedDailyBudget);
+      setAdSets(st.adSets.map((a) => ({ name: a.name, ageMin: a.ageMin, ageMax: a.ageMax, interests: a.interests.join(", "), budget: st.suggestedDailyBudget, ads: [blankAd(1)] })));
+    } else {
+      setName("");
+      setAdSets([{ name: "Ad set 1", ageMin: 22, ageMax: 55, interests: "", budget: 15, ads: [blankAd(1)] }]);
+    }
+  }
+
+  async function searchGeo() {
+    if (geoQuery.trim().length < 2) return;
+    setGeoSearching(true);
+    const res = await fetch(`/api/hyperfx/meta/geo?ws=${ws ?? ""}&q=${encodeURIComponent(geoQuery.trim())}`);
+    const d = await res.json().catch(() => ({}));
+    setGeoResults((d.results ?? []).slice(0, 15));
+    setGeoSearching(false);
+  }
+  const addGeo = (g: GeoArea, list: "in" | "ex") => {
+    const item = { ...g, radius: g.supportsRadius ? 15 : undefined };
+    if (list === "in") setGeoIncluded((p) => (p.some((x) => x.key === g.key) ? p : [...p, item]));
+    else setGeoExcluded((p) => (p.some((x) => x.key === g.key) ? p : [...p, item]));
+    setGeoResults([]); setGeoQuery("");
+  };
+
+  const setAdSet = (i: number, patch: Partial<WizardAdSet>) => setAdSets((p) => p.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+  const setAd = (si: number, ai: number, patch: Partial<WizardAd>) =>
+    setAdSets((p) => p.map((a, j) => (j === si ? { ...a, ads: a.ads.map((ad, k) => (k === ai ? { ...ad, ...patch } : ad)) } : a)));
 
   async function create() {
     if (!name.trim()) { toast("Give the campaign a name.", "info"); return; }
@@ -802,47 +858,60 @@ function CreateCampaignWizard({ currency, onClose, onCreate }: {
       objective,
       strategy_key: strategy?.key ?? null,
       name: name.trim(),
-      city: city.trim(),
-      country_code: country.trim().toUpperCase() || "AE",
-      num_ad_sets: numAdSets,
-      daily_budget: budget,
+      conversionLocation: conversion,
+      messagingApp: selConv?.needsMessagingApp ? messagingApp : undefined,
+      websiteUrl: selConv?.needsUrl ? websiteUrl.trim() : undefined,
+      budgetMode, budgetType,
+      budget,
+      endDate: budgetType === "lifetime" ? endDate : undefined,
+      placements,
+      countryCode: "AE",
+      geoIncluded: geoIncluded.map((g) => ({ key: g.key, type: g.type, radius: g.radius })),
+      geoExcluded: geoExcluded.map((g) => ({ key: g.key, type: g.type })),
+      adSets: adSets.map((a) => ({
+        name: a.name, ageMin: a.ageMin, ageMax: a.ageMax,
+        interests: a.interests.split(",").map((s) => s.trim()).filter(Boolean),
+        budget: budgetMode === "ABO" ? a.budget : undefined,
+        ads: a.ads.map((ad) => ({ name: ad.name, primaryText: ad.primaryText, headline: ad.headline, description: ad.description, imageUrl: ad.imageUrl, linkUrl: websiteUrl })),
+      })),
       status,
     });
     setCreating(false);
   }
 
+  const canNext =
+    (step === 1 && !!objective) ||
+    (step === 2 && (strategy !== null || name !== "" || adSets.length > 0)) ||
+    (step === 3 && (!!conversion || conversions.length === 0) && (!selConv?.needsUrl || websiteUrl.trim() !== "")) ||
+    step === 4 ||
+    step === 5;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-surface shadow-2xl">
+      <div className="relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-surface shadow-2xl">
         <div className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
           <div>
-            <p className="font-semibold text-ink-900">
-              {step === 1 ? "Choose your objective" : step === 2 ? "Choose a strategy" : "Set up & launch"}
-            </p>
+            <p className="font-semibold text-ink-900">{STEPS[step - 1]}</p>
             <p className="text-xs text-ink-400">
-              {step === 1 ? "What should this campaign achieve?" : step === 2 ? `Pre-made ${selObj?.label ?? ""} strategies — pick one and it applies automatically.` : "Everything is created on Meta for you — ad sets start paused."}
+              {step === 1 ? "What should this campaign achieve?" : step === 2 ? `Pre-made ${selObj?.label ?? ""} strategies — pick one to prefill everything, or go custom.` : step === 3 ? "Where conversions happen, and how the budget works." : step === 4 ? "Pick exactly the areas to target (and any to exclude)." : step === 5 ? "Fine-tune ad sets and write the ad creatives." : "Review and create — everything is built on Meta, paused."}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-ink-400">Step {step} / 3</span>
+            <span className="text-xs text-ink-400">Step {step} / {STEPS.length}</span>
             <button onClick={onClose} className="rounded-lg p-1.5 text-ink-400 hover:bg-ink-100"><X className="h-5 w-5" /></button>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
+          {/* STEP 1 — objective */}
           {step === 1 && (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {META_OBJECTIVES.map((o) => {
                 const I = OBJ_ICONS[o.icon] ?? Megaphone;
                 const sel = objective === o.key;
                 return (
-                  <button
-                    key={o.key}
-                    onClick={() => { setObjective(o.key); setStrategy(null); }}
-                    title={`${o.details}\n\nGood for: ${o.goodFor}`}
-                    className={`flex flex-col rounded-xl border p-4 text-left transition-colors ${sel ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:border-brand-300 hover:bg-ink-50"}`}
-                  >
+                  <button key={o.key} onClick={() => { setObjective(o.key); applyStrategy(null); setConversion(conversionsFor(o.key)[0]?.id ?? ""); }} title={`${o.details}\n\nGood for: ${o.goodFor}`} className={`flex flex-col rounded-xl border p-4 text-left transition-colors ${sel ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:border-brand-300 hover:bg-ink-50"}`}>
                     <I className={`h-5 w-5 ${sel ? "text-brand-600" : "text-ink-400"}`} />
                     <p className="mt-2 text-sm font-semibold text-ink-900">{o.label}</p>
                     <p className="mt-1 text-xs leading-relaxed text-ink-500">{o.description}</p>
@@ -854,69 +923,228 @@ function CreateCampaignWizard({ currency, onClose, onCreate }: {
             </div>
           )}
 
+          {/* STEP 2 — strategy */}
           {step === 2 && (
             <div className="space-y-3">
               {strategies.map((st) => {
                 const sel = strategy?.key === st.key;
                 return (
-                  <button key={st.key} onClick={() => { setStrategy(st); setName(st.name); setNumAdSets(Math.min(2, st.adSets.length)); setBudget(st.suggestedDailyBudget); }} className={`w-full rounded-xl border p-4 text-left transition-colors ${sel ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:border-brand-300 hover:bg-ink-50"}`}>
+                  <button key={st.key} onClick={() => applyStrategy(st)} className={`w-full rounded-xl border p-4 text-left transition-colors ${sel ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:border-brand-300 hover:bg-ink-50"}`}>
                     <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-ink-900">{st.name}</p>
-                        <p className="mt-0.5 text-xs text-ink-600">{st.tagline}</p>
-                      </div>
+                      <div><p className="text-sm font-semibold text-ink-900">{st.name}</p><p className="mt-0.5 text-xs text-ink-600">{st.tagline}</p></div>
                       <span className="shrink-0 rounded-full bg-ink-100 px-2.5 py-1 text-[10px] font-medium text-ink-600">~{money(st.suggestedDailyBudget, currency)}/day per ad set</span>
                     </div>
                     <p className="mt-1.5 text-[11px] text-emerald-600">{st.projection}</p>
                     <p className="text-[11px] text-ink-400">Best for: {st.bestFor}</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
-                      {st.adSets.map((a) => (
-                        <span key={a.name} title={`${a.angle} · age ${a.ageMin}–${a.ageMax} · ${a.interests.join(", ")}`} className="cursor-help rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-medium text-brand-600 dark:text-brand-300">
-                          {a.name}
-                        </span>
-                      ))}
+                      {st.adSets.map((a) => <span key={a.name} title={`${a.angle} · age ${a.ageMin}–${a.ageMax} · ${a.interests.join(", ")}`} className="cursor-help rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-medium text-brand-600 dark:text-brand-300">{a.name}</span>)}
                     </div>
                   </button>
                 );
               })}
-              <button onClick={() => { setStrategy(null); setName(""); setNumAdSets(1); }} className={`w-full rounded-xl border border-dashed p-3.5 text-left text-sm ${strategy === null && name === "" ? "border-brand-400 text-brand-600" : "border-ink-300 text-ink-500 hover:border-brand-300"}`}>
-                Custom — no strategy, one blank ad set (you set everything yourself)
+              <button onClick={() => applyStrategy(null)} className={`w-full rounded-xl border border-dashed p-3.5 text-left text-sm ${strategy === null ? "border-brand-400 text-brand-600" : "border-ink-300 text-ink-500 hover:border-brand-300"}`}>
+                Custom — start from one blank ad set and set everything yourself
               </button>
             </div>
           )}
 
+          {/* STEP 3 — conversion & budget */}
           {step === 3 && (
-            <div className="space-y-4">
-              {strategy && (
-                <div className="rounded-xl border border-brand-200 bg-brand-50/50 px-3.5 py-2.5 text-xs text-ink-600">
-                  <strong className="text-ink-900">{strategy.name}</strong> — will create {numAdSets} ad set{numAdSets > 1 ? "s" : ""}: {strategy.adSets.slice(0, numAdSets).map((a) => a.name).join(" · ")} (targeting & interests applied automatically).
+            <div className="space-y-5">
+              <Field label="Campaign name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="New Patient Acquisition — July" /></Field>
+
+              {conversions.length > 0 && (
+                <div>
+                  <p className="mb-2 text-sm font-medium text-ink-700">Conversion location — where do the results happen?</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {conversions.map((c) => (
+                      <button key={c.id} onClick={() => setConversion(c.id)} className={`rounded-xl border p-3 text-left ${conversion === c.id ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:bg-ink-50"}`}>
+                        <p className="text-sm font-semibold text-ink-900">{c.label}</p>
+                        <p className="mt-0.5 text-[11px] leading-snug text-ink-500">{c.description}</p>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
-              <Field label="Campaign name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="New Patient Acquisition — July" /></Field>
-              <div className="grid gap-4 md:grid-cols-2">
-                <Field label="City (15 km radius; blank = whole country)"><input className={inputCls} value={city} onChange={(e) => setCity(e.target.value)} placeholder="Dubai" /></Field>
-                <Field label="Country code"><input className={inputCls} value={country} onChange={(e) => setCountry(e.target.value)} placeholder="AE" maxLength={2} /></Field>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Number of ad sets">
-                  <select className={inputCls} value={numAdSets} onChange={(e) => setNumAdSets(Number(e.target.value))}>
-                    {Array.from({ length: strategy?.adSets.length ?? 3 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
+
+              {selConv?.needsMessagingApp && (
+                <Field label="Which app should the conversation open in?">
+                  <div className="flex gap-2">
+                    {MESSAGING_APPS.map((m) => (
+                      <button key={m.id} onClick={() => setMessagingApp(m.id)} className={`flex-1 rounded-xl border px-3 py-2 text-sm font-medium ${messagingApp === m.id ? "border-brand-500 bg-brand-500/10 text-brand-600" : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}>{m.label}</button>
+                    ))}
+                  </div>
                 </Field>
-                <Field label={`Daily budget per ad set (${currency})`}>
-                  <input type="number" min={1} step="1" className={inputCls} value={budget || ""} onChange={(e) => setBudget(Number(e.target.value) || 0)} />
-                </Field>
+              )}
+              {selConv?.needsUrl && (
+                <Field label="Destination URL (booking / landing page)"><input className={inputCls} value={websiteUrl} onChange={(e) => setWebsiteUrl(e.target.value)} placeholder="https://clinic.com/book" /></Field>
+              )}
+
+              <div>
+                <p className="mb-2 text-sm font-medium text-ink-700">Budget setup</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <button onClick={() => setBudgetMode("CBO")} className={`rounded-xl border p-3 text-left ${budgetMode === "CBO" ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:bg-ink-50"}`}>
+                    <p className="text-sm font-semibold text-ink-900">Campaign budget (CBO)</p>
+                    <p className="mt-0.5 text-[11px] text-ink-500">One budget for the whole campaign — Meta splits it across ad sets automatically.</p>
+                  </button>
+                  <button onClick={() => setBudgetMode("ABO")} className={`rounded-xl border p-3 text-left ${budgetMode === "ABO" ? "border-brand-500 bg-brand-50/60 ring-1 ring-brand-500" : "border-ink-200 hover:bg-ink-50"}`}>
+                    <p className="text-sm font-semibold text-ink-900">Ad set budget (ABO)</p>
+                    <p className="mt-0.5 text-[11px] text-ink-500">Set the budget on each ad set yourself (in the next step).</p>
+                  </button>
+                </div>
               </div>
-              <Field label="Campaign status">
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Budget type">
+                  <div className="flex gap-2">
+                    {(["daily", "lifetime"] as const).map((t) => (
+                      <button key={t} onClick={() => setBudgetType(t)} className={`flex-1 rounded-xl border px-3 py-2 text-sm font-medium capitalize ${budgetType === t ? "border-brand-500 bg-brand-500/10 text-brand-600" : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}>{t}</button>
+                    ))}
+                  </div>
+                </Field>
+                {budgetMode === "CBO" ? (
+                  <Field label={`Campaign ${budgetType} budget (${currency})`}><input type="number" min={1} className={inputCls} value={budget || ""} onChange={(e) => setBudget(Number(e.target.value) || 0)} /></Field>
+                ) : (
+                  <Field label={`Default per-ad-set ${budgetType} budget (${currency})`}><input type="number" min={1} className={inputCls} value={budget || ""} onChange={(e) => setBudget(Number(e.target.value) || 0)} /></Field>
+                )}
+              </div>
+              {budgetType === "lifetime" && (
+                <Field label="End date (when the lifetime budget stops)"><input type="date" className={inputCls} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></Field>
+              )}
+
+              <Field label="Placements — where the ads show">
+                <div className="flex flex-wrap gap-2">
+                  {PLACEMENTS.map((p) => {
+                    const on = placements.includes(p.id);
+                    return (
+                      <button key={p.id} onClick={() => setPlacements((ps) => (on ? ps.filter((x) => x !== p.id) : [...ps, p.id]))} className={`rounded-xl border px-3 py-2 text-sm font-medium ${on ? "border-brand-500 bg-brand-500/10 text-brand-600" : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}>{p.label}</button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1 text-[11px] text-ink-400">Leave all on for Meta&apos;s automatic placements, or uncheck the ones you don&apos;t want.</p>
+              </Field>
+            </div>
+          )}
+
+          {/* STEP 4 — locations */}
+          {step === 4 && (
+            <div className="space-y-4">
+              <Field label="Search for areas to target (city, emirate/region, or neighbourhood)">
+                <div className="flex gap-2">
+                  <input className={inputCls} value={geoQuery} onChange={(e) => setGeoQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); searchGeo(); } }} placeholder="Dubai, Abu Dhabi, Dubai Marina…" />
+                  <button onClick={searchGeo} disabled={geoSearching} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">{geoSearching ? "…" : "Search"}</button>
+                </div>
+              </Field>
+              {geoResults.length > 0 && (
+                <div className="rounded-xl border border-ink-200 divide-y divide-ink-100">
+                  {geoResults.map((g) => (
+                    <div key={g.key} className="flex items-center gap-2 px-3 py-2 text-sm">
+                      <span className="min-w-0 flex-1 truncate"><span className="font-medium text-ink-900">{g.name}</span> <span className="text-xs text-ink-400">· {g.type}{g.region ? ` · ${g.region}` : ""}</span></span>
+                      <button onClick={() => addGeo(g, "in")} className="rounded-lg border border-emerald-500/40 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-500/10">Include</button>
+                      <button onClick={() => addGeo(g, "ex")} className="rounded-lg border border-rose-500/40 px-2.5 py-1 text-xs font-medium text-rose-500 hover:bg-rose-500/10">Exclude</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-600">Targeting ({geoIncluded.length})</p>
+                  {geoIncluded.length === 0 ? <p className="rounded-lg border border-dashed border-ink-200 px-3 py-4 text-center text-xs text-ink-400">Nothing yet — defaults to the whole country (AE).</p> : (
+                    <div className="space-y-1.5">
+                      {geoIncluded.map((g) => (
+                        <div key={g.key} className="flex items-center gap-2 rounded-lg border border-ink-100 px-2.5 py-1.5 text-sm">
+                          <span className="min-w-0 flex-1 truncate">{g.name} <span className="text-[10px] text-ink-400">{g.type}</span></span>
+                          {g.supportsRadius && <input type="number" min={1} max={80} value={g.radius ?? 15} onChange={(e) => setGeoIncluded((p) => p.map((x) => (x.key === g.key ? { ...x, radius: Number(e.target.value) || 15 } : x)))} className="w-14 rounded border border-ink-200 px-1.5 py-0.5 text-xs" title="Radius km" />}
+                          <button onClick={() => setGeoIncluded((p) => p.filter((x) => x.key !== g.key))} className="text-ink-400 hover:text-rose-500"><X className="h-3.5 w-3.5" /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-rose-500">Excluding ({geoExcluded.length})</p>
+                  {geoExcluded.length === 0 ? <p className="rounded-lg border border-dashed border-ink-200 px-3 py-4 text-center text-xs text-ink-400">No exclusions.</p> : (
+                    <div className="space-y-1.5">
+                      {geoExcluded.map((g) => (
+                        <div key={g.key} className="flex items-center gap-2 rounded-lg border border-ink-100 px-2.5 py-1.5 text-sm">
+                          <span className="min-w-0 flex-1 truncate">{g.name} <span className="text-[10px] text-ink-400">{g.type}</span></span>
+                          <button onClick={() => setGeoExcluded((p) => p.filter((x) => x.key !== g.key))} className="text-ink-400 hover:text-rose-500"><X className="h-3.5 w-3.5" /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* STEP 5 — ad sets & ads */}
+          {step === 5 && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-ink-500">{adSets.length} ad set{adSets.length !== 1 ? "s" : ""}{strategy ? ` · recommended ${strategy.adSets.length}` : ""}. Each can hold multiple ad creatives.</p>
+                <button onClick={() => setAdSets((p) => [...p, { name: `Ad set ${p.length + 1}`, ageMin: 22, ageMax: 55, interests: "", budget, ads: [blankAd(1)] }])} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-ink-50"><Plus className="h-4 w-4" /> Add ad set</button>
+              </div>
+              {adSets.map((as, si) => (
+                <div key={si} className="rounded-xl border border-ink-200 p-4">
+                  <div className="flex items-center gap-2">
+                    <input className={`${inputCls} font-medium`} value={as.name} onChange={(e) => setAdSet(si, { name: e.target.value })} placeholder={`Ad set ${si + 1} name`} />
+                    {adSets.length > 1 && <button onClick={() => setAdSets((p) => p.filter((_, j) => j !== si))} className="rounded-lg p-2 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>}
+                  </div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <Field label="Age min"><input type="number" min={13} max={65} className={inputCls} value={as.ageMin} onChange={(e) => setAdSet(si, { ageMin: Number(e.target.value) || 18 })} /></Field>
+                    <Field label="Age max"><input type="number" min={13} max={65} className={inputCls} value={as.ageMax} onChange={(e) => setAdSet(si, { ageMax: Number(e.target.value) || 65 })} /></Field>
+                    {budgetMode === "ABO" && <Field label={`Budget (${currency})`}><input type="number" min={1} className={inputCls} value={as.budget || ""} onChange={(e) => setAdSet(si, { budget: Number(e.target.value) || 0 })} /></Field>}
+                    <Field label="Interests (comma-separated)"><input className={inputCls} value={as.interests} onChange={(e) => setAdSet(si, { interests: e.target.value })} placeholder="Dentistry, Invisalign" /></Field>
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Ads ({as.ads.length})</p>
+                      <button onClick={() => setAdSet(si, { ads: [...as.ads, blankAd(as.ads.length + 1)] })} className="flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700"><Plus className="h-3.5 w-3.5" /> Add ad</button>
+                    </div>
+                    {as.ads.map((ad, ai) => (
+                      <div key={ai} className="rounded-lg border border-ink-100 bg-ink-50/40 p-3">
+                        <div className="flex items-center gap-2">
+                          <input className={`${inputCls} text-sm`} value={ad.name} onChange={(e) => setAd(si, ai, { name: e.target.value })} placeholder={`Ad ${ai + 1} name`} />
+                          {as.ads.length > 1 && <button onClick={() => setAdSet(si, { ads: as.ads.filter((_, k) => k !== ai) })} className="rounded p-1.5 text-ink-400 hover:text-rose-500"><X className="h-3.5 w-3.5" /></button>}
+                        </div>
+                        <div className="mt-2 grid gap-2">
+                          <textarea rows={2} className={inputCls} value={ad.primaryText} onChange={(e) => setAd(si, ai, { primaryText: e.target.value })} placeholder="Primary text — the main body of the ad" />
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <input className={inputCls} value={ad.headline} onChange={(e) => setAd(si, ai, { headline: e.target.value })} placeholder="Headline (under 40 chars)" />
+                            <input className={inputCls} value={ad.description} onChange={(e) => setAd(si, ai, { description: e.target.value })} placeholder="Description (optional)" />
+                          </div>
+                          <input className={inputCls} value={ad.imageUrl} onChange={(e) => setAd(si, ai, { imageUrl: e.target.value })} placeholder="Image URL (paste a public link, or leave blank to add later)" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* STEP 6 — review */}
+          {step === 6 && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-ink-200 p-4 text-sm">
+                <p className="font-semibold text-ink-900">{name || "(unnamed campaign)"}</p>
+                <ul className="mt-2 space-y-1 text-ink-600">
+                  <li>Objective: <strong>{selObj?.label}</strong>{selConv ? ` · ${selConv.label}` : ""}{selConv?.needsMessagingApp ? ` (${MESSAGING_APPS.find((m) => m.id === messagingApp)?.label})` : ""}</li>
+                  <li>Budget: <strong>{budgetMode}</strong> · {budgetType} · {money(budget, currency)}{budgetType === "lifetime" && endDate ? ` until ${endDate}` : ""}</li>
+                  <li>Placements: {placements.length ? placements.map((p) => PLACEMENTS.find((x) => x.id === p)?.label).join(", ") : "automatic"}</li>
+                  <li>Targeting: {geoIncluded.length ? geoIncluded.map((g) => g.name).join(", ") : "whole country (AE)"}{geoExcluded.length ? ` · excluding ${geoExcluded.map((g) => g.name).join(", ")}` : ""}</li>
+                  <li>Ad sets: {adSets.length} · ads: {adSets.reduce((n, a) => n + a.ads.length, 0)}</li>
+                </ul>
+              </div>
+              <Field label="Create as">
                 <div className="flex gap-2">
                   {(["PAUSED", "ACTIVE"] as const).map((st) => (
-                    <button key={st} onClick={() => setStatus(st)} className={`flex-1 rounded-xl border px-3 py-2 text-sm font-medium ${status === st ? (st === "ACTIVE" ? "border-emerald-500 bg-emerald-500/10 text-emerald-600" : "border-amber-500 bg-amber-500/10 text-amber-600") : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}>
-                      {st === "ACTIVE" ? "Live" : "Draft (paused)"}
-                    </button>
+                    <button key={st} onClick={() => setStatus(st)} className={`flex-1 rounded-xl border px-3 py-2 text-sm font-medium ${status === st ? (st === "ACTIVE" ? "border-emerald-500 bg-emerald-500/10 text-emerald-600" : "border-amber-500 bg-amber-500/10 text-amber-600") : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}>{st === "ACTIVE" ? "Live (spending)" : "Draft (paused)"}</button>
                   ))}
                 </div>
               </Field>
-              <p className="text-xs text-ink-400">Ad sets are always created paused. Creatives come next: ask Helena to generate images + copy for each ad set, or add them yourself — then activate.</p>
+              <p className="text-xs text-ink-400">Ad sets and ads are always created paused. Everything is built on Meta through the marketing engine; review it in the Ads tab, then activate.</p>
             </div>
           )}
         </div>
@@ -925,14 +1153,8 @@ function CreateCampaignWizard({ currency, onClose, onCreate }: {
           <button onClick={() => (step === 1 ? onClose() : setStep(step - 1))} className="flex items-center gap-1.5 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50">
             <ArrowLeft className="h-4 w-4" /> {step === 1 ? "Cancel" : "Back"}
           </button>
-          {step < 3 ? (
-            <button
-              onClick={() => setStep(step + 1)}
-              disabled={(step === 1 && !objective) || (step === 2 && strategies.length > 0 && !strategy && name !== "")}
-              className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
-            >
-              Continue
-            </button>
+          {step < STEPS.length ? (
+            <button onClick={() => setStep(step + 1)} disabled={!canNext} className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">Continue</button>
           ) : (
             <button onClick={create} disabled={creating} className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
               {creating ? "Creating on Meta…" : status === "ACTIVE" ? "Create & go live" : "Create as draft"}

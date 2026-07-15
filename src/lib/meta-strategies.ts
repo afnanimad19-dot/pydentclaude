@@ -457,3 +457,77 @@ export function strategiesFor(objective: string): MetaStrategy[] {
 export function objectiveFor(key: string): MetaObjective | undefined {
   return META_OBJECTIVES.find((o) => o.key === key);
 }
+
+/* ---------------------------------------------------------------------------
+ * Advanced campaign creation config — conversion location, messaging apps,
+ * placements. Shared by the wizard UI and the server create path so both agree
+ * on how a choice maps onto Meta's ad-set fields.
+ * ------------------------------------------------------------------------- */
+
+export interface ConversionLocation {
+  id: string;
+  label: string;
+  description: string;
+  optimization: string;       // ad set optimization_goal
+  fallbackOptimization: string;
+  destinationType?: string;   // Meta destination_type (messaging/website/…)
+  needsMessagingApp?: boolean;
+  needsUrl?: boolean;
+  needsPage?: boolean;
+}
+
+// Which conversion locations Meta offers under each objective.
+export const CONVERSION_LOCATIONS: Record<string, ConversionLocation[]> = {
+  OUTCOME_LEADS: [
+    { id: "instant_form", label: "Instant form", description: "Collect leads in a form that opens inside Facebook/Instagram — no website needed.", optimization: "LEAD_GENERATION", fallbackOptimization: "LINK_CLICKS", destinationType: "ON_AD", needsPage: true },
+    { id: "messaging", label: "Messaging", description: "People start a chat on WhatsApp, Messenger or Instagram.", optimization: "CONVERSATIONS", fallbackOptimization: "LINK_CLICKS", needsMessagingApp: true, needsPage: true },
+    { id: "website", label: "Website", description: "Send people to a booking or landing page on your site.", optimization: "LINK_CLICKS", fallbackOptimization: "LINK_CLICKS", destinationType: "WEBSITE", needsUrl: true },
+    { id: "calls", label: "Calls", description: "People tap to call the clinic directly.", optimization: "QUALITY_CALL", fallbackOptimization: "LINK_CLICKS", destinationType: "PHONE_CALL", needsPage: true },
+  ],
+  OUTCOME_SALES: [
+    { id: "website", label: "Website", description: "Optimise for bookings/purchases on your site (needs the Meta pixel).", optimization: "OFFSITE_CONVERSIONS", fallbackOptimization: "LINK_CLICKS", destinationType: "WEBSITE", needsUrl: true },
+    { id: "messaging", label: "Messaging", description: "Drive purchases via chat on WhatsApp/Messenger/Instagram.", optimization: "CONVERSATIONS", fallbackOptimization: "LINK_CLICKS", needsMessagingApp: true, needsPage: true },
+    { id: "calls", label: "Calls", description: "Optimise for people who call.", optimization: "QUALITY_CALL", fallbackOptimization: "LINK_CLICKS", destinationType: "PHONE_CALL", needsPage: true },
+  ],
+  OUTCOME_TRAFFIC: [
+    { id: "website", label: "Website", description: "Cheap, high-quality clicks to a page on your site.", optimization: "LINK_CLICKS", fallbackOptimization: "LANDING_PAGE_VIEWS", destinationType: "WEBSITE", needsUrl: true },
+    { id: "messaging", label: "Messaging", description: "Send clicks into a chat instead of a page.", optimization: "LINK_CLICKS", fallbackOptimization: "LINK_CLICKS", needsMessagingApp: true, needsPage: true },
+    { id: "calls", label: "Calls", description: "Drive calls to the clinic.", optimization: "QUALITY_CALL", fallbackOptimization: "LINK_CLICKS", destinationType: "PHONE_CALL", needsPage: true },
+  ],
+  OUTCOME_ENGAGEMENT: [
+    { id: "messaging", label: "Messaging", description: "Start conversations on WhatsApp/Messenger/Instagram.", optimization: "CONVERSATIONS", fallbackOptimization: "POST_ENGAGEMENT", needsMessagingApp: true, needsPage: true },
+    { id: "video_views", label: "Video views", description: "Maximise cheap video views to warm up audiences.", optimization: "THRUPLAY", fallbackOptimization: "POST_ENGAGEMENT" },
+    { id: "post_engagement", label: "Post engagement", description: "Likes, comments and shares on your posts.", optimization: "POST_ENGAGEMENT", fallbackOptimization: "POST_ENGAGEMENT" },
+  ],
+  OUTCOME_AWARENESS: [
+    { id: "reach", label: "Reach", description: "Show the ad to the most people near the clinic.", optimization: "REACH", fallbackOptimization: "REACH" },
+  ],
+  OUTCOME_APP_PROMOTION: [
+    { id: "app", label: "App installs", description: "Get installs of the clinic app.", optimization: "APP_INSTALLS", fallbackOptimization: "LINK_CLICKS", needsUrl: true },
+  ],
+};
+
+export interface MessagingApp { id: string; label: string; destinationType: string }
+export const MESSAGING_APPS: MessagingApp[] = [
+  { id: "whatsapp", label: "WhatsApp", destinationType: "WHATSAPP" },
+  { id: "messenger", label: "Messenger", destinationType: "MESSENGER" },
+  { id: "instagram", label: "Instagram", destinationType: "INSTAGRAM_DIRECT" },
+];
+
+// Meta publisher platforms (Threads is delivered via the instagram platform +
+// the 'threads' position on supported placements).
+export interface Placement { id: string; label: string; platform: string }
+export const PLACEMENTS: Placement[] = [
+  { id: "facebook", label: "Facebook", platform: "facebook" },
+  { id: "instagram", label: "Instagram", platform: "instagram" },
+  { id: "audience_network", label: "Audience Network", platform: "audience_network" },
+  { id: "messenger", label: "Messenger", platform: "messenger" },
+  { id: "threads", label: "Threads", platform: "threads" },
+];
+
+export function conversionsFor(objective: string): ConversionLocation[] {
+  return CONVERSION_LOCATIONS[objective] ?? [];
+}
+export function conversionById(objective: string, id: string): ConversionLocation | undefined {
+  return conversionsFor(objective).find((c) => c.id === id);
+}
