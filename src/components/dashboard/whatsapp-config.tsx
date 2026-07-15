@@ -23,6 +23,7 @@ const SETUP_STEPS = [
   { title: "Get API credentials", body: "WhatsApp → API Setup: copy the Phone Number ID and WhatsApp Business Account ID. Generate a permanent Access Token from Business Settings → System Users." },
   { title: "Configure the webhook", body: "WhatsApp → Configuration → Edit. Paste the Webhook Callback URL below, enter the same Verify Token you set here, and subscribe to the “messages” field." },
   { title: "Set the two-step PIN", body: "Business Manager → WhatsApp Accounts → Phone Numbers → Two-step verification. Enter that 6-digit PIN below the first time you connect a number." },
+  { title: "Publish the app (required for real replies)", body: "While the Meta app is in Development mode, Meta does NOT deliver real inbound messages to your webhook — even your own. Add a Privacy Policy URL (your /privacy page) in Settings → Basic, then flip the App Mode toggle at the top of the App Dashboard from Development to Live. Complete Business Verification too. Test numbers work while unpublished; a real registered number needs the app Live." },
 ];
 
 export function WhatsAppConfigForm() {
