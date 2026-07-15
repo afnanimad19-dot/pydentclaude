@@ -8,7 +8,7 @@
 // Uses the clinic's OWN Hyperfx account when saved (Settings → Connections),
 // else the app-level env credentials — Option 1 of the multi-clinic model.
 
-import { getHfxCreds, hfxCall, hfxListTools, hfxToolIsSafe } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxListTools, hfxToolIsSafe, hfxRows } from "@/lib/hyperfx";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -186,8 +186,7 @@ export async function hfxMetaPerformance(workspaceId: string, preset = "last_30d
       creds
     );
     if (!ins.ok) return `Meta ad account "${acct.name ?? acct.id}" is connected, but insights failed: ${ins.error}`;
-    const raw = ins.data as any;
-    const rows: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
+    const rows: any[] = hfxRows(ins.data).filter((r) => r && (r.spend !== undefined || r.impressions !== undefined));
     if (rows.length === 0) return `Meta ad account "${acct.name ?? acct.id}" (${preset.replaceAll("_", " ")}): no delivery in this period — $0 spend.`;
     let spend = 0, impressions = 0, clicks = 0;
     const perCampaign: string[] = [];

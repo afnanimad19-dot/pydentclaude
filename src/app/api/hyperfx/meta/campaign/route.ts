@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxConfigured, hfxRows } from "@/lib/hyperfx";
 
 // One campaign's full picture, Meta-style: the campaign → its ad sets → their
 // ads, plus a last-30-days daily performance series for the overview graph.
@@ -59,9 +59,7 @@ export async function GET(req: NextRequest) {
   );
 
   // Daily series for the graph + totals.
-  const rawDaily: any[] = dailyRes.ok
-    ? (Array.isArray(dailyRes.data) ? dailyRes.data : (dailyRes.data as any)?.data ?? [])
-    : [];
+  const rawDaily: any[] = dailyRes.ok ? hfxRows(dailyRes.data) : [];
   const daily = rawDaily
     .map((r: any) => ({
       date: String(r.date_start ?? r.date ?? "").slice(0, 10),

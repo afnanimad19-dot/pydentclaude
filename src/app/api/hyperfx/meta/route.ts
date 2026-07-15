@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxConfigured, hfxRows } from "@/lib/hyperfx";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 // The Meta Ads tab's data: ad accounts, campaigns (with Meta's issues +
@@ -104,8 +104,7 @@ export async function GET(req: NextRequest) {
   const perf = new Map<string, { spend: number; impressions: number; clicks: number; reach: number; actions: any[] }>();
   let totals: { spend: number; impressions: number; clicks: number } | null = null;
   if (insightsRes.ok) {
-    const raw = insightsRes.data as any;
-    const rows: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : raw && typeof raw === "object" ? [raw] : [];
+    const rows: any[] = hfxRows(insightsRes.data);
     totals = { spend: 0, impressions: 0, clicks: 0 };
     for (const r of rows) {
       const row = { spend: num(r.spend), impressions: num(r.impressions), clicks: num(r.clicks), reach: num(r.reach), actions: r.actions ?? [] };

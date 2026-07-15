@@ -47,13 +47,54 @@ export async function GET(req: NextRequest) {
   // 4 — the REAL test: fetch ad accounts (auto-enables the toolkit if needed).
   const live = await hfxCall("meta_business_list_ad_accounts", { detail: "core" }, creds);
   out.metaLiveCall = live.ok ? "OK" : "FAILED";
+  const accounts: any[] = live.ok ? ((live.data as any)?.accounts ?? []) : [];
   if (live.ok) {
-    const accounts = (live.data as any)?.accounts ?? [];
     out.metaAdAccounts = accounts.map((a: any) => a.name ?? a.id);
     out.verdict = "Everything works — agents and the Ads tabs can fetch Meta data with these credentials.";
   } else {
     out.metaLiveError = live.error;
     out.verdict = "Engine reachable but the Meta data call failed — see metaLiveError for the exact reason.";
+  }
+
+  // 5 — DEEP mode (?deep=1): show exactly what Meta returns for insights and
+  // recommendations on EVERY ad account, so "no data showing" stops being a
+  // mystery — either Meta returns zeros (real) or the shape/params are off.
+  if (req.nextUrl.searchParams.get("deep") && accounts.length) {
+    const { hfxRows } = await import("@/lib/hyperfx");
+    const deep: Record<string, unknown> = {};
+    for (const acct of accounts.slice(0, 3)) {
+      const id = String(acct.id ?? "");
+      const actId = id.startsWith("act_") ? id : `act_${id}`;
+      const entry: Record<string, unknown> = {};
+
+      const camp = await hfxCall("meta_business_search_campaigns", { account_id: id, detail: "full", limit: 15 }, creds);
+      const camps: any[] = camp.ok ? ((camp.data as any)?.campaigns ?? []) : [];
+      entry.campaigns = camp.ok ? camps.length : `ERROR: ${camp.error}`;
+      entry.campaignsWithIssues = camps.filter((c) => Array.isArray(c.issues_info) && c.issues_info.length).length;
+      entry.campaignsWithRecommendations = camps.filter((c) => Array.isArray(c.recommendations) && c.recommendations.length).length;
+      if (camps[0]) entry.sampleCampaignFields = Object.keys(camps[0]).slice(0, 30);
+
+      for (const preset of ["last_30d", "last_90d"]) {
+        const ins = await hfxCall("meta_business_ad_insights", { object_id: actId, object_type: "account", level: "campaign", include_actions: true, date_preset: preset }, creds);
+        if (!ins.ok) {
+          entry[preset] = `ERROR: ${ins.error}`;
+          continue;
+        }
+        const rows = hfxRows(ins.data).filter((r: any) => r && (r.spend !== undefined || r.impressions !== undefined));
+        const sample = rows[0];
+        entry[preset] = {
+          rows: rows.length,
+          totalSpend: rows.reduce((s: number, r: any) => s + (Number(r.spend) || 0), 0),
+          totalImpressions: rows.reduce((s: number, r: any) => s + (Number(r.impressions) || 0), 0),
+          sampleRow: sample
+            ? { campaign: sample.campaign_name ?? sample.campaign_id, spend: sample.spend, impressions: sample.impressions, clicks: sample.clicks, actionTypes: (sample.actions ?? []).map((a: any) => a.action_type).slice(0, 8) }
+            : null,
+          rawShape: Array.isArray(ins.data) ? "array" : Object.keys((ins.data as any) ?? {}).slice(0, 8),
+        };
+      }
+      deep[acct.name ?? id] = entry;
+    }
+    out.deep = deep;
   }
 
   return NextResponse.json(out);

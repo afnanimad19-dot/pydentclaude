@@ -259,6 +259,21 @@ export async function hfxListTools(
 // proper per-action confirmation UI exists.
 const SAFE_TOOL = /(_(list|get|search|query|insights?|report|preview|overview|results?|volume|ideas|difficulty|competitors?|history|intent|intersection|pagespeed|mentions|traffic|rank|benchmarks?|details)($|_))|^(hyperseo_|search_facebook_|scrape_|outscraper_search|outscraper_get)/;
 
+// Tool results wrap tabular rows differently across toolkits — accept every
+// shape we've seen: bare array, {data|insights|results|rows: [...]}, or a
+// single row object.
+export function hfxRows(data: unknown): any[] {
+  if (Array.isArray(data)) return data;
+  const d = data as any;
+  if (d && typeof d === "object") {
+    for (const k of ["data", "insights", "results", "rows"]) {
+      if (Array.isArray(d[k])) return d[k];
+    }
+    return [d];
+  }
+  return [];
+}
+
 export function hfxToolIsSafe(tool: string): boolean {
   return SAFE_TOOL.test(tool);
 }
