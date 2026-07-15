@@ -115,7 +115,19 @@ async function resolvePageId(creds: HfxCreds): Promise<string> {
   return "";
 }
 
+// Best-effort: an Instagram Business account id linked to the ad account, so
+// creatives can also run on Instagram placements.
+async function resolveInstagramId(creds: HfxCreds, accountId: string): Promise<string> {
+  const r = await hfxCall("meta_business_list_instagram_accounts", { account_id: accountId }, creds);
+  if (!r.ok) return "";
+  const rows: any[] = Array.isArray(r.data) ? r.data : ((r.data as any)?.instagram_accounts ?? (r.data as any)?.data ?? (r.data as any)?.accounts ?? []);
+  return String(rows[0]?.id ?? rows[0]?.instagram_user_id ?? "");
+}
+
 // Build Meta geo targeting from the wizard's include/exclude area lists.
+// Radius defaults to 25 km — Meta rejects small city radii ("radius isn't within
+// the specified bounds"); 15 km failed live for Dubai, 25 km passed.
+const clampRadius = (v: unknown, min: number) => Math.min(80, Math.max(min, Number(v) || min));
 function buildGeo(areas: any[], countryCode: string): Record<string, unknown> {
   const geo: Record<string, unknown> = {};
   const add = (bucket: string, val: unknown) => {
@@ -128,13 +140,23 @@ function buildGeo(areas: any[], countryCode: string): Record<string, unknown> {
     if (!key) continue;
     if (type === "country") add("countries", key.length === 2 ? key.toUpperCase() : key);
     else if (type === "region") add("regions", { key });
-    else if (type === "city") add("cities", { key, radius: Number(a.radius) || 15, distance_unit: "kilometer" });
+    else if (type === "city") add("cities", { key, radius: clampRadius(a.radius, 25), distance_unit: "kilometer" });
     else if (type === "zip") add("zips", { key });
-    else add("places", { key, radius: Number(a.radius) || 10, distance_unit: "kilometer" }); // neighborhood/subcity/place
+    else add("places", { key, radius: clampRadius(a.radius, 20), distance_unit: "kilometer" }); // neighborhood/subcity/place
   }
   if (!Object.keys(geo).length) geo.countries = [countryCode];
   return geo;
 }
+
+// Widen every radius (capped at 80 km) — retry fodder when Meta rejects a radius.
+function widenGeo(geo: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...geo };
+  for (const bucket of ["cities", "places"]) {
+    if (Array.isArray(out[bucket])) out[bucket] = (out[bucket] as any[]).map((c) => ({ ...c, radius: Math.min(80, (Number(c.radius) || 25) + 20) }));
+  }
+  return out;
+}
+const isRadiusError = (msg?: string) => /radius|geographical|bounds|target location/i.test(String(msg ?? ""));
 
 // The full campaign builder used by the wizard: campaign (CBO budget) → ad sets
 // (ABO budget, geo, placements, conversion-based optimization + messaging
@@ -180,14 +202,23 @@ async function createCampaignAdvanced(creds: HfxCreds, body: any): Promise<{ sta
   const destinationType = messagingApp?.destinationType ?? conv?.destinationType;
   const cache = new Map<string, { id: string; name: string } | null>();
 
+  const instagramId = (placements.length === 0 || placements.includes("instagram")) ? await resolveInstagramId(creds, accountId) : "";
+
   // 2 — ad sets, each with its own ads.
   const results: any[] = [];
   for (const as of adSetsIn) {
     const asName = `${name} — ${String(as.name ?? "Ad set").slice(0, 60)}`;
-    const targeting: Record<string, unknown> = { geo_locations: geoIncluded, age_min: Number(as.ageMin) || 20, age_max: Number(as.ageMax) || 60 };
-    if (geoExcluded) targeting.excluded_geo_locations = geoExcluded;
-    if (placements.length) targeting.publisher_platforms = placements.filter((p) => p !== "threads").concat(placements.includes("threads") ? ["threads"] : []);
     const interests = await resolveInterests(creds, Array.isArray(as.interests) ? as.interests : [], cache);
+    // Build ONE targeting object (the tool accepts flat fields OR a targeting
+    // object — excluded_geo_locations is only supported inside the object).
+    const targeting: Record<string, unknown> = {
+      geo_locations: geoIncluded,
+      age_min: Number(as.ageMin) || 20,
+      age_max: Number(as.ageMax) || 60,
+      ...(geoExcluded ? { excluded_geo_locations: geoExcluded } : {}),
+      ...(placements.length ? { publisher_platforms: placements } : {}),
+      ...(interests.length ? { interests } : {}),
+    };
 
     const base: Record<string, unknown> = {
       mode: "manual",
@@ -196,12 +227,7 @@ async function createCampaignAdvanced(creds: HfxCreds, body: any): Promise<{ sta
       name: asName,
       billing_event: objective.billing,
       status: "PAUSED",
-      age_min: targeting.age_min,
-      age_max: targeting.age_max,
-      geo_locations: geoIncluded,
-      ...(geoExcluded ? { excluded_geo_locations: geoExcluded } : {}),
-      ...(placements.length ? { publisher_platforms: targeting.publisher_platforms } : {}),
-      ...(interests.length ? { interests } : {}),
+      targeting,
       ...(destinationType ? { destination_type: destinationType } : {}),
       ...(pageId && (conv?.needsPage || conv?.needsMessagingApp) ? { promoted_object: { page_id: pageId } } : {}),
     };
@@ -215,38 +241,55 @@ async function createCampaignAdvanced(creds: HfxCreds, body: any): Promise<{ sta
     }
 
     let r = await hfxCall("meta_business_create_ad_set", { ...base, optimization_goal: optimization }, creds);
-    if (!r.ok && fallbackOpt !== optimization) r = await hfxCall("meta_business_create_ad_set", { ...base, optimization_goal: fallbackOpt }, creds);
+    // LEAD_GENERATION/CONVERSATIONS etc. need a page/pixel we may not have → fall back to clicks.
+    if (!r.ok && fallbackOpt !== optimization && !isRadiusError(r.error)) r = await hfxCall("meta_business_create_ad_set", { ...base, optimization_goal: fallbackOpt }, creds);
+    // Meta rejected the radius → widen every radius and retry once.
+    if (!r.ok && isRadiusError(r.error)) {
+      const widened = { ...base, targeting: { ...targeting, geo_locations: widenGeo(geoIncluded), ...(geoExcluded ? { excluded_geo_locations: widenGeo(geoExcluded) } : {}) } };
+      r = await hfxCall("meta_business_create_ad_set", { ...widened, optimization_goal: optimization }, creds);
+      if (!r.ok && fallbackOpt !== optimization) r = await hfxCall("meta_business_create_ad_set", { ...widened, optimization_goal: fallbackOpt }, creds);
+    }
     const adSetId = r.ok ? String((r.data as any)?.id ?? (r.data as any)?.ad_set_id ?? "") : "";
     const adResults: any[] = [];
 
-    // 3 — ads/creatives for this ad set (best-effort — needs a Page).
+    // 3 — ads/creatives for this ad set (best-effort — needs a Page). Uses the
+    // real tool shapes: object_story_spec on the creative, input_data on the ad.
     if (adSetId) {
       const creativePage = pageId || (await resolvePageId(creds));
+      const ctaType = destinationType === "PHONE_CALL" ? "CALL_NOW" : conv?.id === "instant_form" ? "SIGN_UP" : /WHATSAPP|MESSENGER|INSTAGRAM_DIRECT/.test(String(destinationType)) ? "MESSAGE_PAGE" : "BOOK_TRAVEL";
+      const link = websiteUrl || `https://facebook.com/${creativePage}`;
       for (const ad of (Array.isArray(as.ads) ? as.ads : [])) {
         const adName = String(ad.name ?? "Ad").slice(0, 60);
-        if (!creativePage) { adResults.push({ name: adName, ok: false, error: "no Facebook Page found for the creative" }); continue; }
+        if (!creativePage) { adResults.push({ name: adName, ok: false, error: "ad set created, but the ad creative needs a Facebook Page — this Meta connection has no Page access. Grant Page access (pages_show_list / a connected Page) on the engine, then add creatives in the Ads tab." }); continue; }
         try {
           let imageHash = "";
           if (ad.imageUrl) {
-            const up = await hfxCall("meta_business_upload_ad_image", { account_id: accountId, url: String(ad.imageUrl) }, creds);
+            const up = await hfxCall("meta_business_upload_ad_image", { account_id: accountId, image_url: String(ad.imageUrl) }, creds);
             if (up.ok) {
               const d: any = up.data;
-              imageHash = String(d?.hash ?? d?.image_hash ?? (d?.images && Object.values(d.images)[0] && (Object.values(d.images)[0] as any).hash) ?? "");
+              const first = Array.isArray(d?.images) ? d.images[0] : (d?.images && typeof d.images === "object" ? Object.values(d.images)[0] : null);
+              imageHash = String(d?.hash ?? d?.image_hash ?? (first as any)?.hash ?? "");
             }
           }
+          const linkData: Record<string, unknown> = {
+            link,
+            message: String(ad.primaryText ?? ""),
+            ...(ad.headline ? { name: String(ad.headline) } : {}),
+            ...(ad.description ? { description: String(ad.description) } : {}),
+            ...(imageHash ? { image_hash: imageHash } : {}),
+            call_to_action: { type: ctaType, value: { link } },
+          };
+          const objectStorySpec: Record<string, unknown> = { page_id: creativePage, ...(instagramId ? { instagram_user_id: instagramId } : {}), link_data: linkData };
           const creative = await hfxCall("meta_business_create_ad_creative", {
             account_id: accountId,
             name: `${adName} creative`,
-            page_id: creativePage,
-            message: String(ad.primaryText ?? ""),
-            headline: String(ad.headline ?? ""),
-            description: String(ad.description ?? ""),
-            ...(websiteUrl ? { link_url: websiteUrl } : {}),
-            ...(imageHash ? { image_hash: imageHash } : {}),
+            object_story_spec: objectStorySpec,
           }, creds);
           const creativeId = creative.ok ? String((creative.data as any)?.id ?? (creative.data as any)?.creative_id ?? "") : "";
           if (!creativeId) { adResults.push({ name: adName, ok: false, error: `creative failed: ${creative.error ?? "no id"}` }); continue; }
-          const adRes = await hfxCall("meta_business_create_ad", { account_id: accountId, ad_set_id: adSetId, name: adName, creative_id: creativeId, status: "PAUSED" }, creds);
+          const adRes = await hfxCall("meta_business_create_ad", {
+            input_data: { account_id: accountId, name: adName, adset_id: adSetId, creative: { creative_id: creativeId }, status: "PAUSED" },
+          }, creds);
           adResults.push({ name: adName, ok: adRes.ok, error: adRes.ok ? undefined : String(adRes.error ?? "").slice(0, 200) });
         } catch (e) {
           adResults.push({ name: adName, ok: false, error: e instanceof Error ? e.message : "ad failed" });

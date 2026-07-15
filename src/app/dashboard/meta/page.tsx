@@ -841,7 +841,7 @@ function CreateCampaignWizard({ currency, ws, onClose, onCreate }: {
     setGeoSearching(false);
   }
   const addGeo = (g: GeoArea, list: "in" | "ex") => {
-    const item = { ...g, radius: g.supportsRadius ? 15 : undefined };
+    const item = { ...g, radius: g.supportsRadius ? 25 : undefined };
     if (list === "in") setGeoIncluded((p) => (p.some((x) => x.key === g.key) ? p : [...p, item]));
     else setGeoExcluded((p) => (p.some((x) => x.key === g.key) ? p : [...p, item]));
     setGeoResults([]); setGeoQuery("");
@@ -1054,7 +1054,7 @@ function CreateCampaignWizard({ currency, ws, onClose, onCreate }: {
                       {geoIncluded.map((g) => (
                         <div key={g.key} className="flex items-center gap-2 rounded-lg border border-ink-100 px-2.5 py-1.5 text-sm">
                           <span className="min-w-0 flex-1 truncate">{g.name} <span className="text-[10px] text-ink-400">{g.type}</span></span>
-                          {g.supportsRadius && <input type="number" min={1} max={80} value={g.radius ?? 15} onChange={(e) => setGeoIncluded((p) => p.map((x) => (x.key === g.key ? { ...x, radius: Number(e.target.value) || 15 } : x)))} className="w-14 rounded border border-ink-200 px-1.5 py-0.5 text-xs" title="Radius km" />}
+                          {g.supportsRadius && <input type="number" min={17} max={80} value={g.radius ?? 25} onChange={(e) => setGeoIncluded((p) => p.map((x) => (x.key === g.key ? { ...x, radius: Number(e.target.value) || 25 } : x)))} className="w-14 rounded border border-ink-200 px-1.5 py-0.5 text-xs" title="Radius km (min 17)" />}
                           <button onClick={() => setGeoIncluded((p) => p.filter((x) => x.key !== g.key))} className="text-ink-400 hover:text-rose-500"><X className="h-3.5 w-3.5" /></button>
                         </div>
                       ))}
