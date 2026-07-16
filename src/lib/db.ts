@@ -648,6 +648,66 @@ export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiA
   return { ok: true, message: "Agent updated." };
 }
 
+// ------------------------------------------------------------ Phoenix (outbound)
+// Phoenix is the clinic's OUTBOUND agent — it reaches out first. Built in two
+// bodies that share one brain: a voice Phoenix (places calls via Vapi) and a
+// chat Phoenix (starts WhatsApp/SMS conversations). ensurePhoenixAgents seeds
+// both, pre-configured, so the clinic doesn't have to build them by hand.
+
+const PHOENIX_IDENTITY =
+  "You are Phoenix, the clinic's friendly outbound assistant. You reach out to patients and leads on the clinic's behalf — recall reminders, reactivating lapsed patients, following up on enquiries and unbooked treatment plans, and confirming appointments. You are warm, respectful of people's time, and never pushy.";
+const PHOENIX_INSTRUCTIONS =
+  "Your job on each contact: greet them by name if known, say which clinic you're calling/messaging from, and state the reason clearly in one sentence (e.g. 'you're due for a check-up', 'we had a spot open for your whitening', 'just following up on your enquiry'). Offer to book them in and, if they're interested, collect the details and book. If they're busy or not interested, thank them warmly and offer to follow up later — never pressure. Keep it short.";
+const PHOENIX_BEHAVIOR =
+  "Speak naturally and briefly. Lead with the value to them, not the sale. One question at a time. If they ask something you don't know, offer to have the team follow up rather than guessing. Always give an easy way out (reply STOP / 'no thanks'). Match the clinic's tone from the knowledge base.";
+
+function phoenixBase(kind: "voice" | "chat"): Omit<AiAgent, "id" | "vapiAssistantId"> {
+  return {
+    name: "Phoenix",
+    kind,
+    role: kind === "voice" ? "Appointment setter" : "Follow-up",
+    status: "Draft",
+    model: kind === "voice" ? "gpt-4o-mini" : "openai/gpt-4o-mini",
+    voice: kind === "voice" ? "Warm female · US English" : "",
+    voiceId: null,
+    firstMessage: "Hi, this is Phoenix from the dental clinic — is now an okay time for a quick word?",
+    language: "English",
+    agentIdentity: PHOENIX_IDENTITY,
+    instructions: PHOENIX_INSTRUCTIONS,
+    behavior: PHOENIX_BEHAVIOR,
+    knowledgeBase: "",
+    canBook: true,
+    canReschedule: true,
+    canCancel: false,
+    channels: kind === "voice" ? ["voice"] : ["whatsapp", "sms"],
+    purpose: "outbound",
+    firstMessageMode: "assistant_first",
+    kbFiles: [],
+    voiceSettings: defaultVoiceSettings(),
+  };
+}
+
+// Create any missing Phoenix bodies (idempotent). Returns the current pair.
+export async function ensurePhoenixAgents(): Promise<{ ok: boolean; message: string; voice?: AiAgent; chat?: AiAgent }> {
+  const { agents } = await fetchAgents();
+  const has = (kind: "voice" | "chat") => agents.find((a) => a.kind === kind && /phoenix/i.test(a.name));
+  const created: string[] = [];
+  for (const kind of ["voice", "chat"] as const) {
+    if (!has(kind)) {
+      const res = await createAgent(phoenixBase(kind));
+      if (!res.ok) return { ok: false, message: `Couldn't create the ${kind} Phoenix: ${res.message}` };
+      created.push(kind);
+    }
+  }
+  const after = (await fetchAgents()).agents;
+  return {
+    ok: true,
+    message: created.length ? `Phoenix ${created.join(" + ")} created.` : "Phoenix is already set up.",
+    voice: after.find((a) => a.kind === "voice" && /phoenix/i.test(a.name)),
+    chat: after.find((a) => a.kind === "chat" && /phoenix/i.test(a.name)),
+  };
+}
+
 // ----------------------------------------------- agent hub (defaults/lines)
 
 export interface ChannelDefault {
