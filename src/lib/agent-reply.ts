@@ -40,9 +40,11 @@ function buildSystem(input: AgentReplyInput): string {
     agentIdentity && `AGENT IDENTITY (who you are, your tone and role):\n${agentIdentity}`,
     instructions && `TASKS (what you do — your goals and the actions to perform):\n${instructions}`,
     behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${behavior}`,
-    // Cap the knowledge base sent per message — a huge KB (e.g. a full website
-    // import) makes every reply slow and costly. ~12k chars is plenty of context.
-    knowledgeBase && `KNOWLEDGE BASE (answer only from this; if the answer isn't here, say you'll check with the team):\n${knowledgeBase.slice(0, 12000)}`,
+    // Send the knowledge base to the model. gpt-4o-mini has a 128k context, so a
+    // generous cap (~48k chars ≈ 12k tokens) keeps a clinic's full KB — uploaded
+    // doctor lists, price sheets, service docs — in scope rather than truncated
+    // away (a small doc added after a big website import used to fall past 12k).
+    knowledgeBase && `KNOWLEDGE BASE (answer ONLY from this; it contains the clinic's real facts — doctors, services, prices, hours. Read all of it. If the answer genuinely isn't here, say you'll check with the team):\n${knowledgeBase.slice(0, 48000)}`,
     abilities && `You are allowed to: ${abilities}.`,
     capabilities.canBook
       ? "BOOKING — read carefully: You can ONLY book by calling the book_appointment tool. Saying 'booked' in words does NOT book anything. " +

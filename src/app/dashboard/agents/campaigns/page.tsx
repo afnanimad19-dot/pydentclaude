@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Megaphone, Plus, Trash2, PhoneOutgoing, PhoneIncoming, Users, Bot, PhoneCall, Pencil } from "lucide-react";
+import { Megaphone, Plus, Trash2, PhoneOutgoing, PhoneIncoming, Users, Bot, PhoneCall, Pencil, UploadCloud, MessageCircle, Send, Loader2, RefreshCw } from "lucide-react";
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -18,6 +18,8 @@ import {
   fetchVoiceCalls,
   fetchPatients,
   fetchPatientFolderMap,
+  setAgentVapiId,
+  getWorkspaceId,
   type Campaign,
   type AiAgent,
   type VoiceNumber,
@@ -26,12 +28,23 @@ import {
 } from "@/lib/db";
 import type { Patient } from "@/lib/mock-data";
 
+// Pull phone-number-looking tokens out of any pasted text or uploaded sheet.
+function extractNumbers(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/\+?\d[\d\s().-]{6,}\d/g)) {
+    const d = m[0].replace(/[^\d+]/g, "").replace(/^\+/, "");
+    if (d.length >= 7 && d.length <= 15) out.add(d);
+  }
+  return [...out];
+}
+
 const statusTone = { active: "green", paused: "amber", draft: "gray" } as const;
 
 export default function CampaignsPage() {
   const router = useRouter();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [agents, setAgents] = useState<AiAgent[]>([]);
+  const [allAgents, setAllAgents] = useState<AiAgent[]>([]);
   const [numbers, setNumbers] = useState<VoiceNumber[]>([]);
   const [folders, setFolders] = useState<PatientFolder[]>([]);
   const [calls, setCalls] = useState<VoiceCallRecord[]>([]);
@@ -42,9 +55,10 @@ export default function CampaignsPage() {
   const [editing, setEditing] = useState<Campaign | null>(null);
 
   function refresh() { fetchCampaigns().then(setCampaigns); }
+  function refreshAgents() { fetchAgents().then((r) => { setAgents(r.agents.filter((a) => a.kind === "voice")); setAllAgents(r.agents); }); }
   useEffect(() => {
     refresh();
-    fetchAgents().then((r) => setAgents(r.agents.filter((a) => a.kind === "voice")));
+    fetchAgents().then((r) => { setAgents(r.agents.filter((a) => a.kind === "voice")); setAllAgents(r.agents); });
     fetchVoiceNumbers().then(setNumbers);
     fetchFolders().then(setFolders);
     fetchVoiceCalls().then(setCalls);
@@ -124,15 +138,18 @@ export default function CampaignsPage() {
         />
       )}
       <PageHeader
-        title="Campaigns"
-        subtitle="Group your calls into campaigns — pair a voice agent with a phone number and a contact list, then track every call under it."
+        title="Outbound Campaigns"
+        subtitle="Reach a list of people automatically — paste or upload numbers, pick the agent to talk to them, and it calls (voice) or messages (chat) each one."
         actions={
           <button onClick={() => setOpen(true)} className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
-            <Plus className="h-4 w-4" /> New campaign
+            <Plus className="h-4 w-4" /> New saved campaign
           </button>
         }
       />
 
+      <QuickOutreach agents={allAgents} numbers={numbers} onSynced={refreshAgents} />
+
+      <h2 className="mb-3 mt-8 font-semibold text-ink-900">Saved campaigns</h2>
       {campaigns.length === 0 ? (
         <Card className="p-10 text-center text-sm text-ink-500">
           <Megaphone className="mx-auto mb-2 h-6 w-6 text-ink-300" /> No campaigns yet — create one to organise your calling.
@@ -273,5 +290,126 @@ function CampaignModal({
       </div>
       <ModalFooter onClose={onClose} submitLabel={saving ? "Creating…" : "Create campaign"} onSubmit={submit} />
     </Modal>
+  );
+}
+
+// Ad-hoc outreach: paste/upload a number list, pick ANY agent, and launch —
+// voice agents call the list (Vapi), chat agents message it (WhatsApp) and then
+// handle the replies automatically.
+function QuickOutreach({ agents, numbers, onSynced }: { agents: AiAgent[]; numbers: VoiceNumber[]; onSynced: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [text, setText] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [numberId, setNumberId] = useState("");
+  const [opener, setOpener] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  const list = useMemo(() => extractNumbers(text), [text]);
+  const agent = agents.find((a) => a.id === agentId) ?? null;
+  const isVoice = agent?.kind === "voice";
+
+  function pickAgent(id: string) {
+    setAgentId(id);
+    const a = agents.find((x) => x.id === id);
+    if (a?.kind === "chat" && !opener.trim()) setOpener(a.firstMessage || `Hi! This is ${a.name} from the clinic — is now a good time?`);
+  }
+
+  async function onFile(f: File | undefined) {
+    if (!f) return;
+    if (/\.(csv|txt|tsv)$/i.test(f.name)) { const c = await f.text(); setText((t) => `${t}\n${c}`.trim()); return; }
+    // xlsx / other → extract text on the server, then scan for numbers.
+    const fd = new FormData(); fd.append("file", f, f.name);
+    const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+    const d = await res.json().catch(() => ({}));
+    if (d.text) setText((t) => `${t}\n${d.text}`.trim());
+    else toast("Couldn't read that file — paste the numbers or upload a CSV.", "info");
+  }
+
+  async function syncVoice() {
+    if (!agent) return;
+    setSyncing(true);
+    const res = await fetch("/api/vapi/assistants", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(agent) });
+    const d = await res.json().catch(() => ({}));
+    if (res.ok && d.id) { await setAgentVapiId(agent.id, d.id); onSynced(); toast(`${agent.name} synced to Vapi.`, "success"); }
+    else toast(d.error ?? d.message ?? "Vapi sync failed (check VAPI_API_KEY).", "info");
+    setSyncing(false);
+  }
+
+  async function launch() {
+    if (!agent) { toast("Choose an agent.", "info"); return; }
+    if (list.length === 0) { toast("Paste or upload some phone numbers first.", "info"); return; }
+    setBusy(true);
+    try {
+      if (isVoice) {
+        if (!agent.vapiAssistantId) { toast("Sync this voice agent to Vapi first.", "info"); return; }
+        const number = numbers.find((n) => n.id === numberId);
+        if (!number) { toast("Choose the number to call from.", "info"); return; }
+        const res = await fetch("/api/vapi/outbound", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assistantId: agent.vapiAssistantId, fromNumber: number.number, vapiPhoneNumberId: number.vapiPhoneNumberId, numbers: list }) });
+        const d = await res.json().catch(() => ({}));
+        toast(d.message ?? d.error ?? "Done.", d.ok ? "success" : "info");
+      } else {
+        if (!opener.trim()) { toast("Write the opening message.", "info"); return; }
+        const ws = await getWorkspaceId();
+        const res = await fetch("/api/agents/outbound-message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ws, agentId: agent.id, numbers: list, message: opener.trim() }) });
+        const d = await res.json().catch(() => ({}));
+        toast(d.message ?? d.error ?? "Done.", d.ok ? "success" : "info");
+        if (d.hint) setTimeout(() => toast(d.hint, "info"), 400);
+      }
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <Card className="p-5">
+      <h2 className="flex items-center gap-2 font-semibold text-ink-900"><PhoneOutgoing className="h-4 w-4 text-brand-500" /> Quick outreach — give it a list, pick an agent</h2>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Phone numbers</label>
+          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={5} className={`${inputCls} font-mono text-sm`} placeholder={"Paste numbers (or an Excel/CSV column)…\n+971581234567\n+971509876543"} />
+          <div className="mt-1.5 flex items-center justify-between">
+            <button onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-600 hover:text-brand-700"><UploadCloud className="h-3.5 w-3.5" /> Upload CSV / Excel</button>
+            <input ref={fileRef} type="file" accept=".csv,.txt,.tsv,.xlsx,.xls" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
+            <span className="text-xs text-ink-400">{list.length} number{list.length === 1 ? "" : "s"} found · up to 50/run</span>
+          </div>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-600">Talk to them with</label>
+            <select value={agentId} onChange={(e) => pickAgent(e.target.value)} className={inputCls}>
+              <option value="">Choose an agent…</option>
+              <optgroup label="Voice (calls)">{agents.filter((a) => a.kind === "voice").map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}</optgroup>
+              <optgroup label="Chat (messages)">{agents.filter((a) => a.kind === "chat").map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}</optgroup>
+            </select>
+          </div>
+          {isVoice && (
+            <>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Call from</label>
+                <select value={numberId} onChange={(e) => setNumberId(e.target.value)} className={inputCls}>
+                  <option value="">Choose number…</option>
+                  {numbers.map((n) => <option key={n.id} value={n.id}>{n.number}{n.nickname ? ` — ${n.nickname}` : ""}</option>)}
+                </select>
+              </div>
+              {agent && !agent.vapiAssistantId && (
+                <button onClick={syncVoice} disabled={syncing} className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-500/20 disabled:opacity-50">
+                  {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Sync {agent.name} to Vapi first
+                </button>
+              )}
+            </>
+          )}
+          {agent && !isVoice && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-ink-600">Opening message</label>
+              <textarea value={opener} onChange={(e) => setOpener(e.target.value)} rows={3} className={inputCls} placeholder="Hi! This is…" />
+            </div>
+          )}
+          <button onClick={launch} disabled={busy || !agent} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : isVoice ? <PhoneCall className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+            {isVoice ? "Start calls" : agent ? "Send messages" : "Choose an agent"}
+          </button>
+          {agent && !isVoice && <p className="flex items-center gap-1 text-xs text-ink-400"><MessageCircle className="h-3 w-3" /> Replies are handled automatically by the agent.</p>}
+        </div>
+      </div>
+    </Card>
   );
 }
