@@ -20,11 +20,13 @@ import {
   fetchPatientFolderMap,
   setAgentVapiId,
   getWorkspaceId,
+  fetchWaTemplates,
   type Campaign,
   type AiAgent,
   type VoiceNumber,
   type PatientFolder,
   type VoiceCallRecord,
+  type WaTemplate,
 } from "@/lib/db";
 import type { Patient } from "@/lib/mock-data";
 
@@ -302,8 +304,13 @@ function QuickOutreach({ agents, numbers, onSynced }: { agents: AiAgent[]; numbe
   const [agentId, setAgentId] = useState("");
   const [numberId, setNumberId] = useState("");
   const [opener, setOpener] = useState("");
+  const [channel, setChannel] = useState<"whatsapp" | "whatsapp_template" | "sms">("whatsapp");
+  const [templates, setTemplates] = useState<WaTemplate[]>([]);
+  const [templateName, setTemplateName] = useState("");
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
+
+  useEffect(() => { fetchWaTemplates().then((r) => setTemplates(r.templates.filter((t) => t.status === "Approved"))); }, []);
 
   const list = useMemo(() => extractNumbers(text), [text]);
   const agent = agents.find((a) => a.id === agentId) ?? null;
@@ -349,9 +356,11 @@ function QuickOutreach({ agents, numbers, onSynced }: { agents: AiAgent[]; numbe
         const d = await res.json().catch(() => ({}));
         toast(d.message ?? d.error ?? "Done.", d.ok ? "success" : "info");
       } else {
-        if (!opener.trim()) { toast("Write the opening message.", "info"); return; }
+        if (channel === "whatsapp_template" && !templateName) { toast("Pick an approved template for cold outreach.", "info"); return; }
+        if (channel !== "whatsapp_template" && !opener.trim()) { toast("Write the opening message.", "info"); return; }
         const ws = await getWorkspaceId();
-        const res = await fetch("/api/agents/outbound-message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ws, agentId: agent.id, numbers: list, message: opener.trim() }) });
+        const tpl = templates.find((t) => t.name === templateName);
+        const res = await fetch("/api/agents/outbound-message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ws, agentId: agent.id, numbers: list, channel, message: opener.trim(), templateName, templateLanguage: tpl?.language ?? "en" }) });
         const d = await res.json().catch(() => ({}));
         toast(d.message ?? d.error ?? "Done.", d.ok ? "success" : "info");
         if (d.hint) setTimeout(() => toast(d.hint, "info"), 400);
@@ -398,10 +407,34 @@ function QuickOutreach({ agents, numbers, onSynced }: { agents: AiAgent[]; numbe
             </>
           )}
           {agent && !isVoice && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-ink-600">Opening message</label>
-              <textarea value={opener} onChange={(e) => setOpener(e.target.value)} rows={3} className={inputCls} placeholder="Hi! This is…" />
-            </div>
+            <>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-ink-600">How to reach them</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {([["whatsapp", "WhatsApp"], ["whatsapp_template", "WhatsApp template"], ["sms", "SMS"]] as const).map(([c, label]) => (
+                    <button key={c} onClick={() => setChannel(c)} className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${channel === c ? "border-brand-500 bg-brand-500/10 text-brand-600" : "border-ink-200 text-ink-500 hover:bg-ink-50"}`}>{label}</button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[11px] text-ink-400">
+                  {channel === "whatsapp" ? "Free-form — only reaches people who messaged you in the last 24h." : channel === "whatsapp_template" ? "Approved template — works for cold, first contact." : "SMS via Twilio — works for cold contacts, no window."}
+                </p>
+              </div>
+              {channel === "whatsapp_template" ? (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-ink-600">Approved template</label>
+                  <select value={templateName} onChange={(e) => setTemplateName(e.target.value)} className={inputCls}>
+                    <option value="">Choose a template…</option>
+                    {templates.map((t) => <option key={t.id} value={t.name}>{t.name} ({t.language})</option>)}
+                  </select>
+                  {templates.length === 0 && <p className="mt-1 text-[11px] text-amber-600">No approved templates yet — create one in WhatsApp → Templates and get it approved by Meta.</p>}
+                </div>
+              ) : (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-ink-600">Opening message</label>
+                  <textarea value={opener} onChange={(e) => setOpener(e.target.value)} rows={3} className={inputCls} placeholder="Hi! This is…" />
+                </div>
+              )}
+            </>
           )}
           <button onClick={launch} disabled={busy || !agent} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand-600 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : isVoice ? <PhoneCall className="h-4 w-4" /> : <Send className="h-4 w-4" />}
