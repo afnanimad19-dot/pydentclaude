@@ -49,12 +49,19 @@ import {
   setChannelDefault,
   fetchClinicSettings,
   defaultVoiceSettings,
+  listTeamChats,
+  createTeamChat,
+  fetchTeamChatMessages,
+  appendTeamChatMessage,
+  deleteTeamChat,
   type AiAgent,
   type DataSource,
   type ChannelDefault,
   type VoiceSettings,
   type ExtractionField,
+  type TeamChat,
 } from "@/lib/db";
+import { History } from "lucide-react";
 
 const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4.1-mini"];
 const ANTHROPIC_MODELS = ["anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4", "anthropic/claude-opus-4.1"];
@@ -1452,11 +1459,25 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chats, setChats] = useState<TeamChat[]>([]);
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  // Test conversations are saved per agent under a namespaced key so they don't
+  // mix with the AI Marketing chats — history persists between sessions.
+  const key = `test:${agent.id}`;
+  const refreshChats = useCallback(() => { listTeamChats(key).then(setChats); }, [key]);
+  useEffect(() => { refreshChats(); }, [refreshChats]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  function newChat() { setChatId(null); setMessages([]); setError(null); setShowHistory(false); }
+  async function openChat(c: TeamChat) {
+    setChatId(c.id);
+    setMessages(await fetchTeamChatMessages(c.id));
+    setError(null);
+    setShowHistory(false);
+  }
 
   async function send() {
     const text = draft.trim();
@@ -1466,6 +1487,10 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
     const next = [...messages, { role: "user" as const, content: text }];
     setMessages(next);
     setBusy(true);
+    // Start (or reuse) a saved test conversation and record the patient's line.
+    let cid = chatId;
+    if (!cid) { cid = await createTeamChat(key, text.slice(0, 60)); setChatId(cid); refreshChats(); }
+    if (cid) appendTeamChatMessage(cid, "user", text);
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -1484,6 +1509,7 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "AI request failed");
       setMessages((m) => [...m, { role: "assistant", content: data.reply }]);
+      if (cid) { appendTeamChatMessage(cid, "assistant", data.reply); refreshChats(); }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -1493,46 +1519,57 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
 
   return (
     <Modal open onClose={onClose} title={`Test chat — ${agent.name}`} subtitle={`${agent.role} · ${agent.model} · answers only from its knowledge base`} wide>
-      <div className="flex h-80 flex-col gap-3 overflow-y-auto rounded-xl border border-ink-100 bg-ink-50/50 p-4">
-        {messages.length === 0 && (
-          <p className="m-auto max-w-xs text-center text-sm text-ink-400">
-            Pretend you&apos;re a patient — ask about hours, prices, insurance, or try to book an appointment.
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div
-              className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${
-                m.role === "user"
-                  ? "rounded-br-sm bg-brand-600 text-white"
-                  : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"
-              }`}
-            >
-              {m.content}
-            </div>
-          </div>
-        ))}
-        {busy && (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-ink-200 bg-surface px-3.5 py-2 text-sm text-ink-400">
-              <Bot className="h-4 w-4 animate-pulse" /> {agent.name} is typing…
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-      {error && <p className="mt-2 text-sm text-amber-600">{error}</p>}
-      <div className="mt-3 flex gap-2">
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Message as a patient…"
-          className={inputCls}
-        />
-        <button onClick={send} disabled={busy} className="rounded-xl bg-brand-600 px-4 text-white hover:bg-brand-700 disabled:opacity-50">
-          <Send className="h-5 w-5" />
+      <div className="mb-2 flex items-center justify-between">
+        <button onClick={() => setShowHistory((s) => !s)} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+          <History className="h-3.5 w-3.5" /> Previous tests{chats.length ? ` (${chats.length})` : ""}
         </button>
+        <button onClick={newChat} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+          <Plus className="h-3.5 w-3.5" /> New test
+        </button>
+      </div>
+
+      <div className="flex gap-3">
+        {showHistory && (
+          <div className="w-48 shrink-0 space-y-1 overflow-y-auto rounded-xl border border-ink-100 bg-ink-50/40 p-2" style={{ maxHeight: "20rem" }}>
+            {chats.length === 0 ? (
+              <p className="px-2 py-4 text-center text-xs text-ink-400">No saved tests yet.</p>
+            ) : chats.map((c) => (
+              <div key={c.id} className={`group flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs hover:bg-ink-100 ${c.id === chatId ? "bg-brand-50" : ""}`}>
+                <button onClick={() => openChat(c)} className="min-w-0 flex-1 text-left">
+                  <p className="truncate text-ink-800">{c.title}</p>
+                  <p className="text-[10px] text-ink-400">{(c.updatedAt ?? "").slice(0, 10)}</p>
+                </button>
+                <button onClick={async () => { await deleteTeamChat(c.id); if (c.id === chatId) newChat(); refreshChats(); }} className="rounded p-0.5 text-ink-300 opacity-0 hover:text-rose-500 group-hover:opacity-100"><Trash2 className="h-3 w-3" /></button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="min-w-0 flex-1">
+          <div className="flex h-80 flex-col gap-3 overflow-y-auto rounded-xl border border-ink-100 bg-ink-50/50 p-4">
+            {messages.length === 0 && (
+              <p className="m-auto max-w-xs text-center text-sm text-ink-400">
+                Pretend you&apos;re a patient — ask about hours, prices, insurance, or try to book an appointment. This test is saved so you can review it later.
+              </p>
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${m.role === "user" ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>{m.content}</div>
+              </div>
+            ))}
+            {busy && (
+              <div className="flex justify-start">
+                <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-ink-200 bg-surface px-3.5 py-2 text-sm text-ink-400"><Bot className="h-4 w-4 animate-pulse" /> {agent.name} is typing…</div>
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+          {error && <p className="mt-2 text-sm text-amber-600">{error}</p>}
+          <div className="mt-3 flex gap-2">
+            <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Message as a patient…" className={inputCls} />
+            <button onClick={send} disabled={busy} className="rounded-xl bg-brand-600 px-4 text-white hover:bg-brand-700 disabled:opacity-50"><Send className="h-5 w-5" /></button>
+          </div>
+        </div>
       </div>
     </Modal>
   );
