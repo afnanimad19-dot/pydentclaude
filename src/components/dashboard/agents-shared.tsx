@@ -1586,25 +1586,50 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<{ speaker: string; text: string }[]>([]);
   const [assistantSpeaking, setAssistantSpeaking] = useState(false);
+  const [chats, setChats] = useState<TeamChat[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [viewing, setViewing] = useState<{ role: "user" | "assistant"; content: string }[] | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const vapiRef = useRef<any>(null);
+  const transcriptRef = useRef<{ speaker: string; text: string }[]>([]);
+  const savedRef = useRef(false);
+
+  // Voice tests are saved into the SAME per-agent history as the chat tests, so
+  // "Previous tests" shows both as reviewable transcripts.
+  const key = `test:${agent.id}`;
+  const refreshChats = useCallback(() => { listTeamChats(key).then(setChats); }, [key]);
+  useEffect(() => { refreshChats(); }, [refreshChats]);
+
+  // Persist the call transcript once (on call end / modal close).
+  const saveTranscript = useCallback(async () => {
+    if (savedRef.current) return;
+    const lines = transcriptRef.current;
+    if (lines.length < 1) return;
+    savedRef.current = true;
+    const first = lines.find((l) => l.speaker === "You")?.text ?? "Voice test";
+    const cid = await createTeamChat(key, `🎙 ${first.slice(0, 55)}`);
+    if (cid) { for (const l of lines) await appendTeamChatMessage(cid, l.speaker === "You" ? "user" : "assistant", l.text); }
+    refreshChats();
+  }, [key, refreshChats]);
 
   useEffect(() => {
-    return () => {
-      vapiRef.current?.stop?.();
-    };
-  }, []);
+    return () => { void saveTranscript(); vapiRef.current?.stop?.(); };
+  }, [saveTranscript]);
 
   async function start() {
     setState("connecting");
     setError(null);
+    setViewing(null);
+    savedRef.current = false;
+    transcriptRef.current = [];
+    setTranscript([]);
     try {
       const { default: Vapi } = await import("@vapi-ai/web");
       const vapi = new Vapi(VAPI_PUBLIC_KEY);
       vapiRef.current = vapi;
 
       vapi.on("call-start", () => setState("live"));
-      vapi.on("call-end", () => setState("ended"));
+      vapi.on("call-end", () => { setState("ended"); void saveTranscript(); });
       vapi.on("speech-start", () => setAssistantSpeaking(true));
       vapi.on("speech-end", () => setAssistantSpeaking(false));
       vapi.on("error", (e: unknown) => {
@@ -1614,7 +1639,9 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vapi.on("message", (msg: any) => {
         if (msg.type === "transcript" && msg.transcriptType === "final") {
-          setTranscript((t) => [...t, { speaker: msg.role === "assistant" ? agent.name : "You", text: msg.transcript }]);
+          const line = { speaker: msg.role === "assistant" ? agent.name : "You", text: msg.transcript };
+          transcriptRef.current = [...transcriptRef.current, line];
+          setTranscript((t) => [...t, line]);
         }
       });
 
@@ -1672,7 +1699,10 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   function stop() {
     vapiRef.current?.stop?.();
     setState("ended");
+    void saveTranscript();
   }
+
+  async function openChat(c: TeamChat) { setViewing(await fetchTeamChatMessages(c.id)); setShowHistory(false); }
 
   return (
     <Modal
@@ -1685,6 +1715,33 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
       subtitle="Live web call through Vapi — allow microphone access when your browser asks."
       wide
     >
+      <div className="mb-1 flex items-center justify-between">
+        <button onClick={() => { setShowHistory((s) => !s); setViewing(null); }} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-medium text-ink-600 hover:bg-ink-50">
+          <History className="h-3.5 w-3.5" /> Previous tests{chats.length ? ` (${chats.length})` : ""}
+        </button>
+        {viewing && <button onClick={() => setViewing(null)} className="text-xs font-medium text-brand-600 hover:text-brand-700">← back to the call</button>}
+      </div>
+
+      {showHistory && (
+        <div className="mb-3 max-h-40 space-y-1 overflow-y-auto rounded-xl border border-ink-100 bg-ink-50/40 p-2">
+          {chats.length === 0 ? (
+            <p className="px-2 py-3 text-center text-xs text-ink-400">No saved tests yet — finish a call and it&apos;s saved here.</p>
+          ) : chats.map((c) => (
+            <div key={c.id} className="group flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs hover:bg-ink-100">
+              <button onClick={() => openChat(c)} className="min-w-0 flex-1 text-left"><span className="truncate text-ink-800">{c.title}</span> <span className="text-[10px] text-ink-400">· {(c.updatedAt ?? "").slice(0, 10)}</span></button>
+              <button onClick={async () => { await deleteTeamChat(c.id); refreshChats(); }} className="rounded p-0.5 text-ink-300 opacity-0 hover:text-rose-500 group-hover:opacity-100"><Trash2 className="h-3 w-3" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {viewing ? (
+        <div className="max-h-96 space-y-2 overflow-y-auto rounded-xl border border-ink-100 bg-ink-50/50 p-4">
+          {viewing.map((m, i) => (
+            <p key={i} className="text-sm text-ink-700"><span className="font-semibold text-ink-900">{m.role === "assistant" ? agent.name : "You"}:</span> {m.content}</p>
+          ))}
+        </div>
+      ) : (
       <div className="flex flex-col items-center gap-5 py-6">
         <div
           className={`flex h-24 w-24 items-center justify-center rounded-full transition-all ${
@@ -1735,6 +1792,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
           </div>
         )}
       </div>
+      )}
     </Modal>
   );
 }
