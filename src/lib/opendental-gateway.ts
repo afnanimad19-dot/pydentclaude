@@ -80,7 +80,7 @@ export async function odForward(
       method: init.method,
       headers: odHeaders(cfg),
       body: init.body ? JSON.stringify(init.body) : undefined,
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(20000),
     });
     const data = await res.json().catch(() => ({}));
     return { status: res.status, data };
