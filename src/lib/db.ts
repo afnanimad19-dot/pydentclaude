@@ -648,33 +648,43 @@ export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiA
   return { ok: true, message: "Agent updated." };
 }
 
-// ------------------------------------------------------------ Phoenix (outbound)
-// Phoenix is the clinic's OUTBOUND agent — it reaches out first. Built in two
-// bodies that share one brain: a voice Phoenix (places calls via Vapi) and a
-// chat Phoenix (starts WhatsApp/SMS conversations). ensurePhoenixAgents seeds
-// both, pre-configured, so the clinic doesn't have to build them by hand.
+// ------------------------------------------------------------ Nova (outbound sales closer)
+// Nova is the clinic's OUTBOUND agent and closer — same brain, two bodies: a
+// voice Nova (places calls via Vapi) and a chat Nova (WhatsApp/SMS). It sells the
+// outcome, closes the booking, and never hands the patient off to a human.
+// ensureNovaAgents seeds both and upgrades any older "Phoenix" build in place
+// (renaming it and applying the sales config) while keeping its knowledge base.
+const NOVA_NAME = "Nova";
 
-const PHOENIX_IDENTITY =
-  "You are Phoenix, the clinic's friendly outbound assistant. You reach out to patients and leads on the clinic's behalf — recall reminders, reactivating lapsed patients, following up on enquiries and unbooked treatment plans, and confirming appointments. You are warm, respectful of people's time, and never pushy.";
-const PHOENIX_INSTRUCTIONS =
-  "Your job on each contact: greet them by name if known, say which clinic you're calling/messaging from, and state the reason clearly in one sentence (e.g. 'you're due for a check-up', 'we had a spot open for your whitening', 'just following up on your enquiry'). Offer to book them in and, if they're interested, collect the details and book. If they're busy or not interested, thank them warmly and offer to follow up later — never pressure. Keep it short.";
-const PHOENIX_BEHAVIOR =
-  "Speak naturally and briefly. Lead with the value to them, not the sale. One question at a time. If they ask something you don't know, offer to have the team follow up rather than guessing. Always give an easy way out (reply STOP / 'no thanks'). Match the clinic's tone from the knowledge base.";
+const NOVA_IDENTITY =
+  "You are Nova, the clinic's senior treatment advisor and closer. You are warm, confident and genuinely helpful — the kind of advisor patients instantly trust. You understand what the patient needs, show them exactly how the clinic solves it, and get them booked. You OWN every conversation from the first hello to a confirmed booking — you never pass anyone to 'a human', 'the team' or 'another assistant'.";
 
-function phoenixBase(kind: "voice" | "chat"): Omit<AiAgent, "id" | "vapiAssistantId"> {
+const NOVA_INSTRUCTIONS =
+  "You are a sales closer. Follow this flow every time:\n" +
+  "1) CONNECT — open warmly and find the real need in one friendly question (what's bothering them, or what they're interested in).\n" +
+  "2) SELL THE OUTCOME — talk about the service and, above all, how it solves THEIR problem and the benefit to them. Be the best salesperson in the room: specific, confident, reassuring about comfort, results and value. Turn objections (price, pain, time) into value — never deflect them.\n" +
+  "3) ASK FOR THE BOOKING — once they're interested, move to close. Assume the sale.\n" +
+  "4) COLLECT DETAILS IN ONE MESSAGE — when you're ready to book, ask for EVERYTHING at once in a SINGLE message: full name, first name, email, and phone number — plus confirm the service and a preferred day/time. NEVER ask for these one at a time across several messages; send one clear message that lists exactly what you need. Only ask for details near the end, after you've built the value — not at the start.\n" +
+  "5) CLOSE — call the booking tool to actually book, then confirm the appointment.\n" +
+  "You NEVER say 'let me connect you to a human / a team member / another assistant'. You handle everything. If they hesitate, keep helping and guide them to book; if they truly can't now, offer to hold a slot and follow up.";
+
+const NOVA_BEHAVIOR =
+  "Speak like a confident, friendly human closer — short, warm messages, never robotic and never annoyingly pushy. Always lead with the benefit to them. Ask for personal details (full name, first name, email, phone) TOGETHER in one message near the end, never one by one. If the conversation has been quiet for a few minutes and the patient comes back, briefly welcome them back and offer three simple choices — (1) continue where we left off, (2) start fresh, or (3) just ask a question about a service — then carry on. Match the clinic's tone and use only the knowledge base for facts (doctors, services, prices, hours).";
+
+function novaBase(kind: "voice" | "chat"): Omit<AiAgent, "id" | "vapiAssistantId"> {
   return {
-    name: "Phoenix",
+    name: NOVA_NAME,
     kind,
-    role: kind === "voice" ? "Appointment setter" : "Follow-up",
+    role: kind === "voice" ? "Sales" : "Sales",
     status: "Draft",
     model: kind === "voice" ? "gpt-4o-mini" : "openai/gpt-4o-mini",
     voice: kind === "voice" ? "Warm female · US English" : "",
     voiceId: null,
-    firstMessage: "Hi, this is Phoenix from the dental clinic — is now an okay time for a quick word?",
+    firstMessage: "Hi, this is Nova from the dental clinic — is now an okay time for a quick word?",
     language: "English",
-    agentIdentity: PHOENIX_IDENTITY,
-    instructions: PHOENIX_INSTRUCTIONS,
-    behavior: PHOENIX_BEHAVIOR,
+    agentIdentity: NOVA_IDENTITY,
+    instructions: NOVA_INSTRUCTIONS,
+    behavior: NOVA_BEHAVIOR,
     knowledgeBase: "",
     canBook: true,
     canReschedule: true,
@@ -687,24 +697,32 @@ function phoenixBase(kind: "voice" | "chat"): Omit<AiAgent, "id" | "vapiAssistan
   };
 }
 
-// Create any missing Phoenix bodies (idempotent). Returns the current pair.
-export async function ensurePhoenixAgents(): Promise<{ ok: boolean; message: string; voice?: AiAgent; chat?: AiAgent }> {
+// Create missing Nova bodies, and upgrade any legacy "Phoenix" build in place —
+// rename to Nova and apply the sales config, KEEPING its uploaded knowledge base
+// and files (so the doctors/services docs stay). Idempotent: once an agent is
+// named Nova it's left alone, so later manual edits are preserved.
+export async function ensureNovaAgents(): Promise<{ ok: boolean; message: string; voice?: AiAgent; chat?: AiAgent }> {
   const { agents } = await fetchAgents();
-  const has = (kind: "voice" | "chat") => agents.find((a) => a.kind === kind && /phoenix/i.test(a.name));
-  const created: string[] = [];
+  const changed: string[] = [];
   for (const kind of ["voice", "chat"] as const) {
-    if (!has(kind)) {
-      const res = await createAgent(phoenixBase(kind));
-      if (!res.ok) return { ok: false, message: `Couldn't create the ${kind} Phoenix: ${res.message}` };
-      created.push(kind);
+    const existing = agents.find((a) => a.kind === kind && /phoenix|nova/i.test(a.name));
+    if (!existing) {
+      const res = await createAgent(novaBase(kind));
+      if (!res.ok) return { ok: false, message: `Couldn't create the ${kind} Nova: ${res.message}` };
+      changed.push(`created ${kind}`);
+    } else if (existing.name !== NOVA_NAME) {
+      // Legacy Phoenix → Nova: rename + sales config, keep knowledge/files/voice.
+      const { id, vapiAssistantId, ...rest } = existing; // eslint-disable-line @typescript-eslint/no-unused-vars
+      const res = await updateAgent(id, { ...rest, name: NOVA_NAME, role: "Sales", agentIdentity: NOVA_IDENTITY, instructions: NOVA_INSTRUCTIONS, behavior: NOVA_BEHAVIOR });
+      if (res.ok) changed.push(`upgraded ${kind}`);
     }
   }
   const after = (await fetchAgents()).agents;
   return {
     ok: true,
-    message: created.length ? `Phoenix ${created.join(" + ")} created.` : "Phoenix is already set up.",
-    voice: after.find((a) => a.kind === "voice" && /phoenix/i.test(a.name)),
-    chat: after.find((a) => a.kind === "chat" && /phoenix/i.test(a.name)),
+    message: changed.length ? `Nova ${changed.join(" + ")}.` : "Nova is ready.",
+    voice: after.find((a) => a.kind === "voice" && /nova/i.test(a.name)),
+    chat: after.find((a) => a.kind === "chat" && /nova/i.test(a.name)),
   };
 }
 
@@ -1649,13 +1667,14 @@ export async function saveHyperfxConfig(c: HyperfxConfig): Promise<{ ok: boolean
 
 export interface OpenDentalConfig {
   clinicApiUrl: string;
-  clinicApiKey: string;
-  clinicUsername: string; // HTTP Basic auth, if the middleware provider requires it
+  clinicApiKey: string;       // the Customer API Key (per-clinic)
+  developerKey: string;       // the Developer API Key (Open Dental API uses ODFHIR Developer/Customer)
+  clinicUsername: string;     // HTTP Basic auth, if the middleware provider requires it
   clinicPassword: string;
   enabled: boolean;
 }
 
-export const emptyOpenDentalConfig: OpenDentalConfig = { clinicApiUrl: "", clinicApiKey: "", clinicUsername: "", clinicPassword: "", enabled: false };
+export const emptyOpenDentalConfig: OpenDentalConfig = { clinicApiUrl: "", clinicApiKey: "", developerKey: "", clinicUsername: "", clinicPassword: "", enabled: false };
 
 export async function fetchOpenDentalConfig(): Promise<OpenDentalConfig> {
   try {
@@ -1665,6 +1684,7 @@ export async function fetchOpenDentalConfig(): Promise<OpenDentalConfig> {
     return {
       clinicApiUrl: data.clinic_api_url ?? "",
       clinicApiKey: data.clinic_api_key ?? "",
+      developerKey: data.developer_key ?? "",
       clinicUsername: data.clinic_username ?? "",
       clinicPassword: data.clinic_password ?? "",
       enabled: !!data.enabled,
@@ -1684,6 +1704,7 @@ export async function saveOpenDentalConfig(c: OpenDentalConfig): Promise<{ ok: b
   const row: Record<string, unknown> = {
     clinic_api_url: url,
     clinic_api_key: c.clinicApiKey.trim(),
+    developer_key: c.developerKey.trim(),
     clinic_username: c.clinicUsername.trim(),
     clinic_password: c.clinicPassword.trim(),
     enabled: c.enabled,
@@ -1695,6 +1716,12 @@ export async function saveOpenDentalConfig(c: OpenDentalConfig): Promise<{ ok: b
       ? supabase.from("opendental_config").update(r).eq("workspace_id", ws)
       : supabase.from("opendental_config").insert({ workspace_id: ws, ...r });
   let { error } = await write(row);
+  // developer_key column arrives with migration 0056 — retry without it if it's missing.
+  if (error && /developer_key/.test(error.message)) {
+    delete row.developer_key;
+    ({ error } = await write(row));
+    if (!error) return { ok: true, message: "Saved — but the Developer API Key was NOT stored: run migration 0056_opendental_developer_key.sql in Supabase first, then save again." };
+  }
   // Username/password columns arrive with migration 0051 — retry without them
   // so the rest still saves, and say clearly that the migration is needed.
   if (error && /clinic_username|clinic_password/.test(error.message)) {

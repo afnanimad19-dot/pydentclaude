@@ -7,7 +7,8 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 
 export interface OdGatewayConfig {
   url: string;
-  key: string;
+  key: string;          // Customer API Key
+  developerKey: string; // Developer API Key (Open Dental API: ODFHIR Developer/Customer)
   username: string;
   password: string;
   enabled: boolean;
@@ -24,6 +25,7 @@ export async function getOdConfig(workspaceId: string | null): Promise<OdGateway
     return {
       url: String(data.clinic_api_url).replace(/\/$/, ""),
       key: data.clinic_api_key ?? "",
+      developerKey: data.developer_key ?? "",
       username: data.clinic_username ?? "",
       password: data.clinic_password ?? "",
       enabled: !!data.enabled,
@@ -33,11 +35,17 @@ export async function getOdConfig(workspaceId: string | null): Promise<OdGateway
   }
 }
 
-// Headers for every middleware call: the shared-secret x-api-key, plus HTTP
-// Basic auth when the clinic's middleware is protected by a username/password.
+// Headers for every call. Open Dental's own API authenticates with
+// `Authorization: ODFHIR {DeveloperKey}/{CustomerKey}` — used when a Developer
+// API Key is set. Otherwise we fall back to a custom middleware's scheme:
+// the shared-secret x-api-key plus optional HTTP Basic (username/password).
 export function odHeaders(cfg: OdGatewayConfig): Record<string, string> {
-  const h: Record<string, string> = { "Content-Type": "application/json", "x-api-key": cfg.key };
-  if (cfg.username || cfg.password) {
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (cfg.key) h["x-api-key"] = cfg.key; // harmless for OD; needed by custom middleware
+  if (cfg.developerKey) {
+    // Open Dental API standard: ODFHIR <developer>/<customer>.
+    h.Authorization = `ODFHIR ${cfg.developerKey}/${cfg.key}`;
+  } else if (cfg.username || cfg.password) {
     h.Authorization = `Basic ${Buffer.from(`${cfg.username}:${cfg.password}`).toString("base64")}`;
   }
   return h;

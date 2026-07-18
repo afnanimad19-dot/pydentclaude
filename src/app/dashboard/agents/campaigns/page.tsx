@@ -21,6 +21,7 @@ import {
   setAgentVapiId,
   getWorkspaceId,
   fetchWaTemplates,
+  ensureNovaAgents,
   type Campaign,
   type AiAgent,
   type VoiceNumber,
@@ -60,6 +61,8 @@ export default function CampaignsPage() {
   function refreshAgents() { fetchAgents().then((r) => { setAgents(r.agents.filter((a) => a.kind === "voice")); setAllAgents(r.agents); }); }
   useEffect(() => {
     refresh();
+    // Seed / upgrade the Nova sales agent automatically (renames a legacy Phoenix).
+    ensureNovaAgents().then(() => refreshAgents()).catch(() => {});
     fetchAgents().then((r) => { setAgents(r.agents.filter((a) => a.kind === "voice")); setAllAgents(r.agents); });
     fetchVoiceNumbers().then(setNumbers);
     fetchFolders().then(setFolders);

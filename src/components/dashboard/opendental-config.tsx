@@ -63,9 +63,17 @@ export function OpenDentalConfigCard() {
           <Field label="Clinic middleware URL (Cloudflare Tunnel)">
             <input className={inputCls} placeholder="https://clinic-api.yourdomain.com" value={cfg.clinicApiUrl} onChange={(e) => set("clinicApiUrl", e.target.value)} />
           </Field>
-          <Field label="Middleware API key (shared secret)">
-            <input className={inputCls} type="password" placeholder="your private clinic API key" value={cfg.clinicApiKey} onChange={(e) => set("clinicApiKey", e.target.value)} />
-          </Field>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Customer API Key">
+              <input className={inputCls} type="password" placeholder="the clinic's Open Dental API key" value={cfg.clinicApiKey} onChange={(e) => set("clinicApiKey", e.target.value)} />
+            </Field>
+            <Field label="Developer API Key">
+              <input className={inputCls} type="password" placeholder="your Open Dental Developer API Key" value={cfg.developerKey} onChange={(e) => set("developerKey", e.target.value)} />
+            </Field>
+          </div>
+          <p className="-mt-2 text-xs text-ink-400">
+            Open Dental&apos;s API authenticates as <code>ODFHIR DeveloperKey/CustomerKey</code>. Add both when connecting to an Open Dental API server. For a custom middleware, the Customer API Key doubles as its shared secret and the Developer key can be left blank.
+          </p>
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Middleware username (if your provider gave one)">
               <input className={inputCls} autoComplete="off" placeholder="username from your middleware provider" value={cfg.clinicUsername} onChange={(e) => set("clinicUsername", e.target.value)} />

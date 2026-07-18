@@ -369,19 +369,20 @@ async function storeInbound(
   const history = (historyRows ?? []).slice().reverse();
 
   // A returning contact (existing conversation, idle past the session window) gets
-  // a "welcome back" with a choice instead of starting cold. Default 15 minutes.
-  const sessionMin = Number(process.env.RETURNING_SESSION_MIN ?? 15);
+  // a short "welcome back" with a choice instead of starting cold. Default 5
+  // minutes — a quiet chat is treated as ended and re-opened on their next reply.
+  const sessionMin = Number(process.env.RETURNING_SESSION_MIN ?? 5);
   const RETURNING_MS = sessionMin * 60 * 1000;
   let sessionNote = "";
   if (convo?.last_time) {
     const gap = Date.now() - new Date(convo.last_time).getTime();
     if (gap > RETURNING_MS) {
       sessionNote =
-        `FOR THIS REPLY ONLY (this overrides other instructions for this one message): the patient is RETURNING after a gap ` +
-        `(their previous chat was a while ago). Whatever they just typed, do NOT continue the old topic yet. Instead: greet them ` +
-        `warmly by name, say it's good to hear from them again, then offer exactly these four choices and ask them to reply with the number — ` +
-        `1) Start a new chat, 2) Continue our previous conversation, 3) Follow up or change an existing appointment, 4) Just ask questions / learn about the clinic (hours, services, prices). ` +
-        `If they later say they want to book, begin booking and collect: first name, last name, email, phone, the service, and a date and time. Keep it short and friendly.`;
+        `FOR THIS REPLY ONLY (this overrides other instructions for this one message): the chat went quiet for a few minutes, so the ` +
+        `previous session is treated as ended and the patient is now RETURNING. Whatever they just typed, do NOT continue the old topic yet. ` +
+        `Instead: greet them warmly by name, say it's good to hear from them again, then offer exactly these THREE choices and ask them to reply with the number — ` +
+        `1) Continue where we left off, 2) Start a new chat, 3) Just ask a question about a service (or hours/prices). ` +
+        `If they then want to book, collect their details in ONE message — full name, email, phone number, the service, and a preferred day/time — not one at a time. Keep it short and friendly.`;
     }
   }
 
