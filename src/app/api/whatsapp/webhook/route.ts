@@ -4,6 +4,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { generateAgentReply, generateAgentReplyWithTools } from "@/lib/agent-reply";
 import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPageId } from "@/lib/wa-send";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
+import { sendAgentEmail } from "@/lib/email-send";
 import { triggerWorkflows } from "@/lib/workflow-runner";
 
 // Meta calls this endpoint:
@@ -233,6 +234,23 @@ async function handleMessaging(channel: string, ev: any, pageId?: string): Promi
 }
 
 
+// Explain a rejected send in plain terms. THE classic "it replies to my phone but
+// not to another number": a test/unpublished app can only message a short list of
+// allowed recipients, so the very first message from any other number is rejected.
+function sendFailureHint(error: string | undefined, channel: string): string {
+  const e = (error ?? "").toLowerCase();
+  if (channel === "whatsapp" && (/#131030/.test(e) || /not in allowed list|recipient phone number not/.test(e))) {
+    return "CAUSE: this number is running as a TEST/unpublished WhatsApp app, so Meta only delivers to numbers on the allowed-recipients list — that's exactly why it replies to your phone but NOT to a different number. FIX: switch to a real registered WhatsApp number and set the Meta app to LIVE (App Dashboard → top toggle → Live), or, to keep testing, add each tester's number under WhatsApp → API Setup → 'To' → Manage phone number list. Also make sure the Access Token is a permanent System-User token.";
+  }
+  if (/#131047|re-?engagement|24 ?hour|outside.*window/.test(e)) {
+    return "CAUSE: the 24-hour customer-service window is closed (the patient hasn't messaged in the last 24h), so free-form text can't be delivered — you must open with an approved TEMPLATE. FIX: send an approved template message first; once they reply, normal messages work for 24h.";
+  }
+  if (/#?190|access token|expired|oauth|session has been invalidated/.test(e)) {
+    return "CAUSE: the access token is expired/invalid. FIX: paste a permanent System-User token in Settings → WhatsApp config.";
+  }
+  return "Most common causes: (1) the app is still a TEST number so only allowed recipients get replies — publish it Live or add the number to the allowed list; (2) the access token expired — paste a permanent token in Settings → WhatsApp config.";
+}
+
 // Did the agent defer / not know the answer? (Heuristic on the reply text.)
 function looksLikeDefer(reply: string): boolean {
   const r = reply.toLowerCase();
@@ -432,6 +450,8 @@ async function storeInbound(
     if (toolName === "book_appointment") return bookAppointment(bookingCtx, args);
     if (toolName === "reschedule_appointment") return rescheduleAppt(bookingCtx, args);
     if (toolName === "cancel_appointment") return cancelAppt(bookingCtx, args);
+    if (toolName === "send_email")
+      return sendAgentEmail({ to: String(args.to ?? ""), subject: String(args.subject ?? ""), body: String(args.body ?? ""), ws: ws ?? undefined, fromName: agent.name });
     return "Unsupported tool.";
   };
 
@@ -451,7 +471,7 @@ async function storeInbound(
   if (!sent.ok) {
     // Do NOT store it as a delivered reply — that's why the inbox showed a message
     // the patient never received. Surface the real reason instead.
-    await logEvent(`⚠️ ${agent.name} drafted a reply but WhatsApp/Meta REJECTED the send: ${sent.error}. (Most common: the access token expired — paste a permanent token in Settings → WhatsApp config. Also confirm the recipient number is allowed for a test number.)`);
+    await logEvent(`⚠️ ${agent.name} drafted a reply but WhatsApp/Meta REJECTED the send: ${sent.error}. ${sendFailureHint(sent.error, channel)}`);
     return;
   }
   await supabase.from("wa_messages").insert({

@@ -973,8 +973,8 @@ export function AgentModal({
       let text = "";
       if (/\.(txt|md|csv|json)$/i.test(file.name)) {
         text = await file.text();
-      } else if (/\.(pdf|docx|doc)$/i.test(file.name)) {
-        // Read the real text out of PDF / Word on the server.
+      } else if (/\.(pdf|docx|doc|png|jpe?g|webp|tiff?|gif|bmp)$/i.test(file.name)) {
+        // Read the real text out of PDF / Word / scanned images on the server.
         setExtracting((p) => [...p, file.name]);
         try {
           const fd = new FormData();
@@ -1343,7 +1343,7 @@ export function AgentModal({
               ref={fileInputRef}
               type="file"
               multiple
-              accept=".txt,.md,.csv,.json,.pdf,.doc,.docx"
+              accept=".txt,.md,.csv,.json,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,.tif,.tiff,.gif,.bmp"
               className="hidden"
               onChange={(e) => onFiles(e.target.files)}
             />
@@ -1351,7 +1351,7 @@ export function AgentModal({
               onClick={() => fileInputRef.current?.click()}
               className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-ink-300 py-4 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600 disabled:opacity-50 dark:hover:text-brand-300"
             >
-              <Upload className="h-4 w-4" /> Upload documents (.txt, .md, .csv, .pdf, .docx — text is read automatically)
+              <Upload className="h-4 w-4" /> Upload documents (.txt, .md, .csv, .pdf, .docx, or a scanned image — text is read automatically)
             </button>
             {extracting.length > 0 && (
               <p className="mt-2 text-xs text-brand-600">Reading {extracting.join(", ")}…</p>

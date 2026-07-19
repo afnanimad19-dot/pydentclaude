@@ -222,6 +222,26 @@ function bookingTools(
       },
     });
   }
+  // Always available: email the caller a confirmation / the details they ask for
+  // during the call ("can you send that to my email?").
+  tools.push({
+    type: "function",
+    server,
+    messages: msgs("Sure, sending that to your email now."),
+    function: {
+      name: "send_email",
+      description: "Email the caller a confirmation or the information they asked for during the call. Only use an email address the caller gave you; read it back to confirm the spelling first.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "The caller's email address (confirm the spelling by reading it back first)" },
+          subject: { type: "string", description: "Short email subject line" },
+          body: { type: "string", description: "The email body as friendly plain text (include booking details when confirming an appointment)" },
+        },
+        required: ["to", "subject", "body"],
+      },
+    },
+  });
   return tools;
 }
 

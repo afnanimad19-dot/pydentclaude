@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { generateAgentReply, generateAgentReplyWithTools } from "@/lib/agent-reply";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
+import { sendAgentEmail } from "@/lib/email-send";
 import { sendSms } from "@/lib/sms-send";
 
 // Twilio inbound SMS webhook. Set this URL as the Twilio number's "A message comes
@@ -60,6 +61,8 @@ async function autoReply(ws: string, conversationId: string, from: string, name:
     if (toolName === "book_appointment") return bookAppointment(bookingCtx, args);
     if (toolName === "reschedule_appointment") return rescheduleAppt(bookingCtx, args);
     if (toolName === "cancel_appointment") return cancelAppt(bookingCtx, args);
+    if (toolName === "send_email")
+      return sendAgentEmail({ to: String(args.to ?? ""), subject: String(args.subject ?? ""), body: String(args.body ?? ""), ws: ws ?? undefined, fromName: agent.name });
     return "Unsupported tool.";
   };
 

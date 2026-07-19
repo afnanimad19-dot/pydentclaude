@@ -56,6 +56,22 @@ async function sendViaGmail(ws: string, input: { to: string; subject: string; ht
   return `Gmail send failed (${res.status}): ${(await res.text()).slice(0, 200)}`;
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Agents (Nova, etc.) call this when a patient asks to be emailed a confirmation
+// or the details they discussed. Takes a plain-text body from the model and
+// wraps it in a simple, safe HTML shell, then routes through the same Gmail/Brevo
+// chain as everything else. Returns a short human-readable result string.
+export async function sendAgentEmail(input: { to: string; subject: string; body: string; ws?: string; fromName?: string }): Promise<string> {
+  const to = (input.to || "").trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return "That doesn't look like a valid email address, so I didn't send it.";
+  const bodyHtml = escapeHtml(input.body || "").replace(/\n/g, "<br>");
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#111;line-height:1.6">${bodyHtml}</div>`;
+  return sendEmail({ to, subject: (input.subject || "Message from your dental clinic").slice(0, 200), html, ws: input.ws, fromName: input.fromName });
+}
+
 export async function sendEmail(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string; ws?: string }): Promise<string> {
   try {
     // 1) the clinic's own Brevo key (connected in-app, per workspace)

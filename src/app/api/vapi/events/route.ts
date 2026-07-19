@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
+import { sendAgentEmail } from "@/lib/email-send";
 
 // Vapi server webhook. Set this URL as the assistant's Server URL in Vapi.
 // Handles status updates (live state) and the end-of-call report (transcript,
@@ -122,6 +123,8 @@ async function runVoiceTool(ctx: BookingCtx, name: string, args: any): Promise<s
       return rescheduleAppt(ctx, args);
     case "cancel_appointment":
       return cancelAppt(ctx, args);
+    case "send_email":
+      return sendAgentEmail({ to: String(args?.to ?? ""), subject: String(args?.subject ?? ""), body: String(args?.body ?? ""), ws: ctx.ws ?? undefined, fromName: ctx.bookedBy });
     default:
       return "Unsupported tool.";
   }

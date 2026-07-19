@@ -120,7 +120,17 @@ export async function sendWhatsAppText(to: string, body: string, override?: { ph
       body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body } }),
     });
     const data = await res.json();
-    if (!res.ok) return { ok: false, error: data?.error?.message ?? `Graph error ${res.status}` };
+    if (!res.ok) {
+      const err = data?.error ?? {};
+      // Include Meta's numeric code + details — the webhook uses these to tell
+      // the clinic exactly why a reply to a NEW number was rejected (e.g. the
+      // number isn't on a test app's allowed-recipients list, or the app is
+      // still in Development mode).
+      const code = err.code ?? err.error_subcode;
+      const detail = err.error_data?.details;
+      const parts = [err.message, code != null ? `#${code}` : "", detail].filter(Boolean);
+      return { ok: false, error: parts.length ? parts.join(" ") : `Graph error ${res.status}` };
+    }
     return { ok: true, id: data?.messages?.[0]?.id };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "send failed" };

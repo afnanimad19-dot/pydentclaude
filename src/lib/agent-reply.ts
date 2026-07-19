@@ -53,6 +53,7 @@ function buildSystem(input: AgentReplyInput): string {
       : "You cannot book appointments yourself. If the patient wants to book, collect their preferred date/time and say the team will confirm — NEVER claim an appointment is already booked.",
     capabilities.canReschedule && "To move an existing appointment, confirm the new time then call reschedule_appointment.",
     capabilities.canCancel && "To cancel an existing appointment, confirm with the patient then call cancel_appointment.",
+    "EMAIL — you can email the patient when they ask (e.g. 'can you send me this in an email', 'email me the confirmation/details'). Call the send_email tool with `to` = the email address the patient gave you, a short `subject`, and a `body` written as a friendly plain-text message (for a booking, include the service, date, time, doctor if known, and the clinic name). NEVER invent an email address — only send to one the patient actually provided. After a booking, if the patient asked for it in writing, proactively offer to email the confirmation. Saying 'I've emailed you' does NOT send anything — you must call send_email.",
     patientContext && `PATIENT CONTEXT:\n${patientContext}`,
     sessionNote && `SESSION NOTE:\n${sessionNote}`,
     "Keep replies short (1-3 sentences), warm and professional. Never invent medical advice or diagnosis.",
@@ -153,6 +154,24 @@ function toolsFor(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?
       },
     });
   }
+  // Always available alongside the booking tools: email the patient a
+  // confirmation / summary when they ask for it in writing.
+  tools.push({
+    type: "function",
+    function: {
+      name: "send_email",
+      description: "Email the patient a confirmation or the information they asked for (e.g. after booking, or when they say 'send me this in an email'). Only use an email address the patient actually gave you.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "The patient's email address (must be one they provided)" },
+          subject: { type: "string", description: "Short email subject line" },
+          body: { type: "string", description: "The email body as friendly plain text (include booking details when confirming an appointment)" },
+        },
+        required: ["to", "subject", "body"],
+      },
+    },
+  });
   return tools;
 }
 
