@@ -27,6 +27,7 @@ import {
   Mic,
   PhoneOff,
   Play,
+  Square,
   SlidersHorizontal,
   ChevronDown,
   ShieldCheck,
@@ -118,6 +119,98 @@ const CHANNEL_ICONS: Record<string, typeof MessageCircle> = {
   sms: MessageSquareText,
   email: Mail,
 };
+
+// xAI voice picker with audible previews — tap ▶ on any Grok voice to hear a
+// sample line (synthesized live through /api/xai/tts), click the row to select.
+function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [playing, setPlaying] = useState<string | null>(null);
+  const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const urlsRef = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    const urls = urlsRef.current;
+    return () => {
+      audioRef.current?.pause();
+      for (const u of Object.values(urls)) URL.revokeObjectURL(u);
+    };
+  }, []);
+
+  async function preview(id: string) {
+    audioRef.current?.pause();
+    if (playing === id) {
+      setPlaying(null);
+      return;
+    }
+    setPreviewError(null);
+    setLoadingVoice(id);
+    try {
+      let url = urlsRef.current[id];
+      if (!url) {
+        const res = await fetch(`/api/xai/tts?voice=${id}`);
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error ?? "Preview failed.");
+        }
+        url = URL.createObjectURL(await res.blob());
+        urlsRef.current[id] = url;
+      }
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => setPlaying(null);
+      await audio.play();
+      setPlaying(id);
+    } catch (e) {
+      setPreviewError(e instanceof Error ? e.message : "Could not play the preview.");
+      setPlaying(null);
+    } finally {
+      setLoadingVoice(null);
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {XAI_VOICE_LABELS.map((label) => {
+        const id = label.split(" ")[0].toLowerCase();
+        const active = value === label;
+        return (
+          <div
+            key={label}
+            role="button"
+            tabIndex={0}
+            onClick={() => onChange(label)}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onChange(label); }}
+            className={`flex w-full cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm transition-colors ${
+              active ? "border-brand-500 bg-brand-500/5 ring-1 ring-brand-500" : "border-ink-200 hover:border-brand-300"
+            }`}
+          >
+            <span className="min-w-0 flex-1 truncate text-ink-800">{label}</span>
+            {active && <span className="shrink-0 rounded-full bg-brand-600 px-2 py-0.5 text-[10px] font-semibold text-white">Selected</span>}
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); void preview(id); }}
+              title={playing === id ? "Stop preview" : "Play preview"}
+              className="flex shrink-0 items-center gap-1 rounded-lg border border-ink-200 px-2 py-1 text-[11px] font-medium text-brand-600 hover:bg-brand-50"
+            >
+              {loadingVoice === id ? (
+                <span className="animate-pulse">…</span>
+              ) : playing === id ? (
+                <><Square className="h-3 w-3 fill-current" /> Stop</>
+              ) : (
+                <><Play className="h-3 w-3" /> Preview</>
+              )}
+            </button>
+          </div>
+        );
+      })}
+      {value && !XAI_VOICE_LABELS.includes(value) && (
+        <p className="text-[11px] text-amber-600">Current voice “{value}” is from the previous engine — pick a Grok voice above.</p>
+      )}
+      {previewError && <p className="text-[11px] text-amber-600">{previewError}</p>}
+    </div>
+  );
+}
 
 function emptyForm(): Omit<AiAgent, "id" | "vapiAssistantId"> {
   return {
@@ -1181,12 +1274,11 @@ export function AgentModal({
               </select>
             </Field>
             {form.kind === "voice" && voiceProvider === "xai" && (
-              <Field label="Voice (xAI)">
-                <select className={inputCls} value={form.voice} onChange={(e) => set("voice", e.target.value)}>
-                  {XAI_VOICE_LABELS.map((v) => <option key={v}>{v}</option>)}
-                  {form.voice && !XAI_VOICE_LABELS.includes(form.voice) && <option value={form.voice}>{form.voice} (legacy)</option>}
-                </select>
-              </Field>
+              <div className="md:col-span-2">
+                <Field label="Voice (xAI) — tap Preview to hear each one">
+                  <XaiVoicePicker value={form.voice} onChange={(v) => set("voice", v)} />
+                </Field>
+              </div>
             )}
             {form.kind === "voice" && voiceProvider === "vapi" && (
               <>

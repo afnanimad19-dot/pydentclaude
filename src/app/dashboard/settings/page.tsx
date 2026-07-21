@@ -30,7 +30,6 @@ import { VoiceProviderCard } from "@/components/dashboard/voice-provider-card";
 import { HyperfxCard } from "@/components/dashboard/hyperfx-card";
 import { AppsMarketplace } from "@/components/dashboard/apps-marketplace";
 import { WebsiteConfigCard } from "@/components/dashboard/website-config";
-import { IntegrationsPanel } from "@/components/dashboard/integrations-panel";
 import { TeamMembersPanel } from "@/components/dashboard/team-members";
 import { BillingPanel } from "@/components/dashboard/billing-panel";
 import { ThemeToggle } from "@/components/theme";
@@ -210,7 +209,6 @@ export default function SettingsPage() {
           <VoiceProviderCard />
           <HyperfxCard />
           <AppsMarketplace />
-          <IntegrationsPanel />
           <OpenDentalConfigCard />
           <WebsiteConfigCard />
         </div>
