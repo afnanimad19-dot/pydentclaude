@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
     ok: true,
     token: secret.token,
     url: XAI_REALTIME_URL,
-    model: "grok-voice-latest",
+    model: /^grok-voice/.test(String(agent.model ?? "")) ? agent.model : "grok-voice-latest",
     voice: resolveXaiVoice(agent.voice),
     instructions: buildXaiInstructions(agent),
     tools: xaiAgentTools(agent),

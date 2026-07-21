@@ -54,6 +54,8 @@ import {
   fetchTeamChatMessages,
   appendTeamChatMessage,
   deleteTeamChat,
+  fetchVoiceProvider,
+  type VoiceProvider,
   type AiAgent,
   type DataSource,
   type ChannelDefault,
@@ -67,19 +69,29 @@ const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", 
 const ANTHROPIC_MODELS = ["anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4", "anthropic/claude-opus-4.1"];
 const VAPI_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1"];
 
-// xAI Grok voices (the roster the Voice Agent + TTS APIs share), plus the
-// legacy Vapi labels so agents saved with them still display correctly.
-const VOICES = [
+// Voice rosters per engine. Which one the builder/test call uses is decided by
+// the Voice engine card in Settings (fetchVoiceProvider).
+const XAI_VOICE_LABELS = [
   "Eve · natural female (default)",
   "Ara · warm friendly female",
   "Rex · confident clear male",
   "Sal · calm neutral male",
   "Leo · energetic male",
-  "Warm female · US English",
-  "Friendly male · US English",
-  "Neutral female · US English",
-  "Calm male · US English",
 ];
+const XAI_VOICE_MODELS = ["grok-voice-latest", "grok-voice-think-fast-1.0"];
+
+const VOICES = XAI_VOICE_LABELS; // default roster (xAI is the default engine)
+
+// Mirrors the server-side mapping in /api/vapi/assistants (Vapi engine only).
+const VOICE_IDS: Record<string, string> = {
+  "Warm female · US English": "Leah",
+  "Friendly male · US English": "Elliot",
+  "Neutral female · US English": "Savannah",
+  "Calm male · US English": "Rohan",
+};
+
+const VAPI_PUBLIC_KEY =
+  process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY ?? "5cdbcfe9-1819-48ae-bac0-38a1db8a6a9d";
 
 const LANGUAGES = [
   "English", "Spanish", "Arabic", "French", "Portuguese", "German", "Italian", "Mandarin Chinese",
@@ -191,7 +203,7 @@ export function AgentsView({
       {source === "live" ? (
         <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-600">
           <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" />
-          <span><strong className="font-semibold">Live</strong> — agents are stored in your database. Chat agents reply through the AI gateway; voice agents run on Grok voice (xAI).</span>
+          <span><strong className="font-semibold">Live</strong> — agents are stored in your database. Chat agents reply through the AI gateway; voice agents run on your selected voice engine (Settings → Voice engine).</span>
         </div>
       ) : (
         <DemoBanner context="Agents table not found — run supabase/migrations/0002 and 0003 in the SQL Editor." />
@@ -925,6 +937,10 @@ export function AgentModal({
   const [vapiId, setVapiId] = useState<string | null>(initial?.vapiAssistantId ?? null);
   const [savedAgentId, setSavedAgentId] = useState<string | null>(initial?.id ?? null);
   const [voiceLibOpen, setVoiceLibOpen] = useState(false);
+  // Which engine powers voice agents (Settings → Voice engine). Drives which
+  // voices/models/settings this builder shows and how the agent is synced.
+  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("xai");
+  useEffect(() => { fetchVoiceProvider().then(setVoiceProvider); }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
   const [extracting, setExtracting] = useState<string[]>([]);
@@ -1032,7 +1048,12 @@ export function AgentModal({
 
     let message = res.message;
     let vapiOk = true; // non-voice agents don't need Vapi
-    if (res.ok && form.kind === "voice") {
+    if (res.ok && form.kind === "voice" && voiceProvider === "xai") {
+      // Grok voice (xAI): sessions are built per-call from the saved agent — no
+      // external assistant object to sync. Saving is all that's needed.
+      message = initial || savedAgentId ? "Agent saved — runs on Grok voice (xAI)." : "Agent created — runs on Grok voice (xAI).";
+    }
+    if (res.ok && form.kind === "voice" && voiceProvider === "vapi") {
       vapiOk = false;
       try {
         const vapiRes = await fetch("/api/vapi/assistants", {
@@ -1102,7 +1123,7 @@ export function AgentModal({
             {form.kind === "voice" ? <PhoneCall className="h-5 w-5 text-brand-600 dark:text-brand-300" /> : <MessageCircle className="h-5 w-5 text-brand-600 dark:text-brand-300" />}
             <div>
               <p className="text-sm font-semibold text-ink-900">{form.kind === "voice" ? "Voice agent" : "Chat agent"}</p>
-              <p className="text-xs text-ink-500">{form.kind === "voice" ? "Voice — runs on Grok voice (xAI); phone numbers via Vapi." : "WhatsApp · Instagram · SMS · Email — replies in the inbox."}</p>
+              <p className="text-xs text-ink-500">{form.kind === "voice" ? (voiceProvider === "xai" ? "Voice — runs on Grok voice (xAI). Switch engines in Settings → Voice engine." : "Voice — runs on Vapi + ElevenLabs. Switch engines in Settings → Voice engine.") : "WhatsApp · Instagram · SMS · Email — replies in the inbox."}</p>
             </div>
           </div>
 
@@ -1131,7 +1152,7 @@ export function AgentModal({
                 ))}
               </select>
             </Field>
-            <Field label={form.kind === "chat" ? "AI model" : "Model (Vapi)"}>
+            <Field label={form.kind === "chat" ? "AI model" : voiceProvider === "xai" ? "Voice model (Grok · xAI)" : "Model (Vapi)"}>
               <select className={inputCls} value={form.model} onChange={(e) => set("model", e.target.value)}>
                 {form.kind === "chat" ? (
                   <>
@@ -1141,6 +1162,11 @@ export function AgentModal({
                     <optgroup label="Anthropic">
                       {ANTHROPIC_MODELS.map((m) => <option key={m}>{m}</option>)}
                     </optgroup>
+                  </>
+                ) : voiceProvider === "xai" ? (
+                  <>
+                    {XAI_VOICE_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+                    {!/^grok-voice/.test(form.model) && <option value={form.model}>{form.model} (legacy — pick a Grok model)</option>}
                   </>
                 ) : (
                   VAPI_MODELS.map((m) => <option key={m} value={`openai/${m}`}>{m}</option>)
@@ -1154,7 +1180,15 @@ export function AgentModal({
                 ))}
               </select>
             </Field>
-            {form.kind === "voice" && (
+            {form.kind === "voice" && voiceProvider === "xai" && (
+              <Field label="Voice (xAI)">
+                <select className={inputCls} value={form.voice} onChange={(e) => set("voice", e.target.value)}>
+                  {XAI_VOICE_LABELS.map((v) => <option key={v}>{v}</option>)}
+                  {form.voice && !XAI_VOICE_LABELS.includes(form.voice) && <option value={form.voice}>{form.voice} (legacy)</option>}
+                </select>
+              </Field>
+            )}
+            {form.kind === "voice" && voiceProvider === "vapi" && (
               <>
                 <Field label="Voice (ElevenLabs)">
                   <button
@@ -1304,11 +1338,19 @@ export function AgentModal({
             </>
           )}
 
-          {form.kind === "voice" && (
+          {form.kind === "voice" && voiceProvider === "vapi" && (
             <VoiceAdvancedSettings
               value={form.voiceSettings}
               onChange={(v) => set("voiceSettings", v)}
             />
+          )}
+          {form.kind === "voice" && voiceProvider === "xai" && (
+            <div className="mt-4 rounded-xl border border-ink-100 bg-ink-50/40 p-4 text-xs text-ink-500">
+              <strong className="font-semibold text-ink-700">Grok voice (xAI)</strong> — turn detection, barge-in
+              interruptions, noise handling and transcription are built into the Grok voice model, so there&apos;s nothing
+              extra to tune here. Pick the voice and model above; the first message below is spoken word-for-word. You can
+              switch engines any time in Settings → Voice engine.
+            </div>
           )}
 
           <div className="mt-4">
@@ -1590,6 +1632,8 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   const callRef = useRef<any>(null);
   const transcriptRef = useRef<{ speaker: string; text: string }[]>([]);
   const savedRef = useRef(false);
+  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("xai");
+  useEffect(() => { fetchVoiceProvider().then(setVoiceProvider); }, []);
 
   // Voice tests are saved into the SAME per-agent history as the chat tests, so
   // "Previous tests" shows both as reviewable transcripts.
@@ -1613,6 +1657,98 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
     return () => { void saveTranscript(); callRef.current?.stop?.(); };
   }, [saveTranscript]);
 
+  const pushLine = (speaker: string, text: string) => {
+    const line = { speaker, text };
+    transcriptRef.current = [...transcriptRef.current, line];
+    setTranscript((t) => [...t, line]);
+  };
+
+  // Grok voice (xAI) — the default engine.
+  async function startXai() {
+    const { XaiRealtimeCall } = await import("@/lib/xai-realtime-client");
+    const call = new XaiRealtimeCall();
+    callRef.current = call;
+    await call.start(agent.id, {
+      onState: (s: "live" | "ended" | "error") => {
+        setState(s);
+        if (s === "ended") void saveTranscript();
+      },
+      onError: (m: string) => {
+        setState("error");
+        setError(m);
+      },
+      onSpeaking: setAssistantSpeaking,
+      onLine: (speaker: "user" | "assistant", text: string) => pushLine(speaker === "assistant" ? agent.name : "You", text),
+    });
+  }
+
+  // Vapi — used when the clinic selected Vapi in Settings → Voice engine.
+  async function startVapi() {
+    const { default: Vapi } = await import("@vapi-ai/web");
+    const vapi = new Vapi(VAPI_PUBLIC_KEY);
+    callRef.current = vapi;
+
+    vapi.on("call-start", () => setState("live"));
+    vapi.on("call-end", () => { setState("ended"); void saveTranscript(); });
+    vapi.on("speech-start", () => setAssistantSpeaking(true));
+    vapi.on("speech-end", () => setAssistantSpeaking(false));
+    vapi.on("error", (e: unknown) => {
+      setState("error");
+      setError(e instanceof Error ? e.message : JSON.stringify(e).slice(0, 200));
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vapi.on("message", (msg: any) => {
+      if (msg.type === "transcript" && msg.transcriptType === "final") {
+        pushLine(msg.role === "assistant" ? agent.name : "You", msg.transcript);
+      }
+    });
+
+    if (agent.vapiAssistantId) {
+      await vapi.start(agent.vapiAssistantId);
+    } else {
+      // Agent not synced to Vapi yet — start with an inline assistant config.
+      const vs = agent.voiceSettings;
+      await vapi.start({
+        name: agent.name,
+        firstMessage: agent.firstMessage || `Hi, this is ${agent.name} from the dental office. How can I help?`,
+        model: {
+          provider: "openai",
+          model: agent.model.replace(/^openai\//, "").replace(/^grok-voice.*$/, "gpt-4o-mini") || "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: [
+                agent.agentIdentity && `AGENT IDENTITY:\n${agent.agentIdentity}`,
+                agent.instructions && `TASKS:\n${agent.instructions}`,
+                agent.behavior && `STYLE GUARDRAILS (how to speak — phrases to use/avoid, flow):\n${agent.behavior}`,
+                agent.knowledgeBase && `KNOWLEDGE BASE:\n${agent.knowledgeBase}`,
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            },
+          ],
+        },
+        voice: agent.voiceId
+          ? { provider: "11labs", voiceId: agent.voiceId }
+          : { provider: "vapi", voiceId: VOICE_IDS[agent.voice] ?? "Leah" },
+        backgroundDenoisingEnabled: vs.noiseReductionEnabled,
+        maxDurationSeconds: Math.min(43200, Math.max(10, vs.maxCallDuration * 60)),
+        silenceTimeoutSeconds: Math.min(3600, Math.max(5, vs.maxSilenceDuration)),
+        startSpeakingPlan: {
+          waitSeconds: Math.min(5, Math.max(0, vs.detectionTimeout)),
+          ...(vs.turnDetectionEnabled && vs.detectionMode !== "fixed"
+            ? { smartEndpointingPlan: { provider: "livekit" } }
+            : {}),
+          transcriptionEndpointingPlan: {
+            onPunctuationSeconds: vs.minSilenceDuration,
+            onNoPunctuationSeconds: vs.endOfSpeechTimeout,
+          },
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+  }
+
   async function start() {
     setState("connecting");
     setError(null);
@@ -1621,25 +1757,8 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
     transcriptRef.current = [];
     setTranscript([]);
     try {
-      const { XaiRealtimeCall } = await import("@/lib/xai-realtime-client");
-      const call = new XaiRealtimeCall();
-      callRef.current = call;
-      await call.start(agent.id, {
-        onState: (s: "live" | "ended" | "error") => {
-          setState(s);
-          if (s === "ended") void saveTranscript();
-        },
-        onError: (m: string) => {
-          setState("error");
-          setError(m);
-        },
-        onSpeaking: setAssistantSpeaking,
-        onLine: (speaker: "user" | "assistant", text: string) => {
-          const line = { speaker: speaker === "assistant" ? agent.name : "You", text };
-          transcriptRef.current = [...transcriptRef.current, line];
-          setTranscript((t) => [...t, line]);
-        },
-      });
+      if (voiceProvider === "vapi") await startVapi();
+      else await startXai();
     } catch (e) {
       setState("error");
       setError(e instanceof Error ? e.message : "Could not start the call.");
@@ -1662,7 +1781,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
         onClose();
       }}
       title={`Test call — talk to ${agent.name}`}
-      subtitle="Live web call on Grok voice (xAI) — allow microphone access when your browser asks."
+      subtitle={`Live web call on ${voiceProvider === "vapi" ? "Vapi" : "Grok voice (xAI)"} — allow microphone access when your browser asks.`}
       wide
     >
       <div className="mb-1 flex items-center justify-between">
@@ -1709,7 +1828,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
 
         <p className="text-sm font-medium text-ink-700">
           {state === "idle" && "Ready — start the call and speak like a patient."}
-          {state === "connecting" && "Connecting to Grok voice…"}
+          {state === "connecting" && (voiceProvider === "vapi" ? "Connecting to Vapi…" : "Connecting to Grok voice…")}
           {state === "live" && (assistantSpeaking ? `${agent.name} is speaking…` : "Listening — say something!")}
           {state === "ended" && "Call ended."}
           {state === "error" && "Call failed."}

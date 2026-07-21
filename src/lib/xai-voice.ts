@@ -23,8 +23,10 @@ export const XAI_VOICES: { id: string; label: string }[] = [
 ];
 
 // Accept several env names so whatever the key was saved as in Netlify works.
+// (X_AI_VOICE_KEY is the name used on this deployment.)
 export function xaiApiKey(): string | null {
   return (
+    process.env.X_AI_VOICE_KEY ||
     process.env.XAI_API_KEY ||
     process.env.XAI_VOICE_API_KEY ||
     process.env.X_AI_API_KEY ||

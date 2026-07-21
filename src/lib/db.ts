@@ -2589,13 +2589,46 @@ export interface Connection {
 }
 
 // This clinic's connected integrations (Google, etc.). Status only — no tokens.
+// The internal voice_engine preference row is filtered out — it's a setting,
+// not an integration.
 export async function fetchConnections(): Promise<Connection[]> {
   try {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("connections").select("*").eq("workspace_id", ws);
-    return (data ?? []).map((r) => ({ provider: r.provider, status: r.status ?? "connected", accountLabel: r.account_label ?? "", accessMode: r.access_mode === "write" ? "write" : "read" }));
+    return (data ?? [])
+      .filter((r) => r.provider !== "voice_engine")
+      .map((r) => ({ provider: r.provider, status: r.status ?? "connected", accountLabel: r.account_label ?? "", accessMode: r.access_mode === "write" ? "write" : "read" }));
   } catch {
     return [];
+  }
+}
+
+// -------------------------------------------------- voice engine (xAI / Vapi)
+// Which provider powers the clinic's voice agents. Stored as a row in the
+// connections table (provider "voice_engine", choice in account_label) so no
+// migration is needed. Default: xAI Grok Voice.
+export type VoiceProvider = "xai" | "vapi";
+
+export async function fetchVoiceProvider(): Promise<VoiceProvider> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("connections").select("account_label").eq("workspace_id", ws).eq("provider", "voice_engine").maybeSingle();
+    return data?.account_label === "vapi" ? "vapi" : "xai";
+  } catch {
+    return "xai";
+  }
+}
+
+export async function saveVoiceProvider(p: VoiceProvider): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  try {
+    const { data } = await supabase.from("connections").select("id").eq("workspace_id", ws).eq("provider", "voice_engine").maybeSingle();
+    if (data?.id) await supabase.from("connections").update({ account_label: p, status: "connected" }).eq("id", data.id);
+    else await supabase.from("connections").insert({ workspace_id: ws, provider: "voice_engine", status: "connected", account_label: p });
+    return { ok: true, message: p === "xai" ? "Voice engine set to xAI Grok Voice." : "Voice engine set to Vapi." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not save the voice engine." };
   }
 }
 
