@@ -413,9 +413,11 @@ export function NewAgentModal({ open, onClose }: { open: boolean; onClose: () =>
             </Field>
             <Field label="Voice">
               <select className={inputCls}>
-                <option>Warm female · US English</option>
-                <option>Friendly male · US English</option>
-                <option>Neutral female · US English</option>
+                <option>Eve · natural female (default)</option>
+                <option>Ara · warm friendly female</option>
+                <option>Rex · confident clear male</option>
+                <option>Sal · calm neutral male</option>
+                <option>Leo · energetic male</option>
               </select>
             </Field>
             <Field label="Languages">

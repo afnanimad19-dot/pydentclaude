@@ -21,7 +21,12 @@ function voiceFor(label?: string): string {
     "Neutral female · US English": "Savannah",
     "Calm male · US English": "Rohan",
   };
-  return map[label ?? ""] ?? "Leah";
+  if (map[label ?? ""]) return map[label ?? ""];
+  // Grok voice labels (browser calls run on xAI) → closest Vapi phone voice.
+  const l = (label ?? "").toLowerCase();
+  if (/rex|leo/.test(l)) return "Elliot";
+  if (/sal/.test(l)) return "Rohan";
+  return "Leah"; // eve / ara / default
 }
 
 function notConfigured() {

@@ -24,9 +24,12 @@ export async function GET(req: NextRequest) {
   } catch {
     return NextResponse.json({ ok: false, error: `"${cfg.url}" is not a valid URL — it must be the full https:// address.` }, { status: 400 });
   }
-  if (PRIVATE_HOST.test(base.hostname)) {
+  // A LAN address can never work from the cloud — but when Pydent itself runs
+  // on-premise (self-hosted / locally next to Open Dental), it's exactly right.
+  const runningInCloud = !!(process.env.NETLIFY || process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+  if (PRIVATE_HOST.test(base.hostname) && runningInCloud) {
     return NextResponse.json(
-      { ok: false, error: `${base.hostname} is a local/LAN address — it only works on the clinic's own network. Pydent's server needs a PUBLIC address (a Cloudflare Tunnel URL, or the clinic's public host reachable from the internet).` },
+      { ok: false, error: `${base.hostname} is a local/LAN address — it only works on the clinic's own network. Pydent's cloud server needs a PUBLIC address (a Cloudflare Tunnel URL, or the clinic's public host reachable from the internet). (If you self-host Pydent inside the clinic network, LAN addresses work.)` },
       { status: 400 }
     );
   }

@@ -732,7 +732,7 @@ function novaBase(kind: "voice" | "chat"): Omit<AiAgent, "id" | "vapiAssistantId
     role: kind === "voice" ? "Sales" : "Sales",
     status: "Draft",
     model: kind === "voice" ? "gpt-4o-mini" : "openai/gpt-4o-mini",
-    voice: kind === "voice" ? "Warm female · US English" : "",
+    voice: kind === "voice" ? "Ara · warm friendly female" : "",
     voiceId: null,
     firstMessage: "Hi, this is Nova from the dental clinic — is now an okay time for a quick word?",
     language: "English",

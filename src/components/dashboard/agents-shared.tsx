@@ -67,23 +67,19 @@ const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", 
 const ANTHROPIC_MODELS = ["anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4", "anthropic/claude-opus-4.1"];
 const VAPI_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1"];
 
+// xAI Grok voices (the roster the Voice Agent + TTS APIs share), plus the
+// legacy Vapi labels so agents saved with them still display correctly.
 const VOICES = [
+  "Eve · natural female (default)",
+  "Ara · warm friendly female",
+  "Rex · confident clear male",
+  "Sal · calm neutral male",
+  "Leo · energetic male",
   "Warm female · US English",
   "Friendly male · US English",
   "Neutral female · US English",
   "Calm male · US English",
 ];
-
-// Mirrors the server-side mapping in /api/vapi/assistants
-const VOICE_IDS: Record<string, string> = {
-  "Warm female · US English": "Leah",
-  "Friendly male · US English": "Elliot",
-  "Neutral female · US English": "Savannah",
-  "Calm male · US English": "Rohan",
-};
-
-const VAPI_PUBLIC_KEY =
-  process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY ?? "5cdbcfe9-1819-48ae-bac0-38a1db8a6a9d";
 
 const LANGUAGES = [
   "English", "Spanish", "Arabic", "French", "Portuguese", "German", "Italian", "Mandarin Chinese",
@@ -195,7 +191,7 @@ export function AgentsView({
       {source === "live" ? (
         <div className="mb-6 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-600">
           <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" />
-          <span><strong className="font-semibold">Live</strong> — agents are stored in your database. Chat agents reply through the AI gateway; voice agents run on Vapi.</span>
+          <span><strong className="font-semibold">Live</strong> — agents are stored in your database. Chat agents reply through the AI gateway; voice agents run on Grok voice (xAI).</span>
         </div>
       ) : (
         <DemoBanner context="Agents table not found — run supabase/migrations/0002 and 0003 in the SQL Editor." />
@@ -1106,7 +1102,7 @@ export function AgentModal({
             {form.kind === "voice" ? <PhoneCall className="h-5 w-5 text-brand-600 dark:text-brand-300" /> : <MessageCircle className="h-5 w-5 text-brand-600 dark:text-brand-300" />}
             <div>
               <p className="text-sm font-semibold text-ink-900">{form.kind === "voice" ? "Voice agent" : "Chat agent"}</p>
-              <p className="text-xs text-ink-500">{form.kind === "voice" ? "Phone calls — runs on Vapi + ElevenLabs." : "WhatsApp · Instagram · SMS · Email — replies in the inbox."}</p>
+              <p className="text-xs text-ink-500">{form.kind === "voice" ? "Voice — runs on Grok voice (xAI); phone numbers via Vapi." : "WhatsApp · Instagram · SMS · Email — replies in the inbox."}</p>
             </div>
           </div>
 
@@ -1576,8 +1572,9 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
 }
 
 // ------------------------------------------------------- test voice call
-// Talks to the agent live in the browser through the Vapi Web SDK — the call
-// runs on Vapi's infrastructure; this UI just starts/stops and shows status.
+// Talks to the agent live in the browser over the xAI Grok Voice Agent API —
+// full-duplex speech-to-speech on Grok voice models, with the agent's tools
+// (booking, email) executed server-side mid-call.
 
 type CallState = "idle" | "connecting" | "live" | "ended" | "error";
 
@@ -1590,7 +1587,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   const [showHistory, setShowHistory] = useState(false);
   const [viewing, setViewing] = useState<{ role: "user" | "assistant"; content: string }[] | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const vapiRef = useRef<any>(null);
+  const callRef = useRef<any>(null);
   const transcriptRef = useRef<{ speaker: string; text: string }[]>([]);
   const savedRef = useRef(false);
 
@@ -1613,7 +1610,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   }, [key, refreshChats]);
 
   useEffect(() => {
-    return () => { void saveTranscript(); vapiRef.current?.stop?.(); };
+    return () => { void saveTranscript(); callRef.current?.stop?.(); };
   }, [saveTranscript]);
 
   async function start() {
@@ -1624,72 +1621,25 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
     transcriptRef.current = [];
     setTranscript([]);
     try {
-      const { default: Vapi } = await import("@vapi-ai/web");
-      const vapi = new Vapi(VAPI_PUBLIC_KEY);
-      vapiRef.current = vapi;
-
-      vapi.on("call-start", () => setState("live"));
-      vapi.on("call-end", () => { setState("ended"); void saveTranscript(); });
-      vapi.on("speech-start", () => setAssistantSpeaking(true));
-      vapi.on("speech-end", () => setAssistantSpeaking(false));
-      vapi.on("error", (e: unknown) => {
-        setState("error");
-        setError(e instanceof Error ? e.message : JSON.stringify(e).slice(0, 200));
-      });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      vapi.on("message", (msg: any) => {
-        if (msg.type === "transcript" && msg.transcriptType === "final") {
-          const line = { speaker: msg.role === "assistant" ? agent.name : "You", text: msg.transcript };
+      const { XaiRealtimeCall } = await import("@/lib/xai-realtime-client");
+      const call = new XaiRealtimeCall();
+      callRef.current = call;
+      await call.start(agent.id, {
+        onState: (s: "live" | "ended" | "error") => {
+          setState(s);
+          if (s === "ended") void saveTranscript();
+        },
+        onError: (m: string) => {
+          setState("error");
+          setError(m);
+        },
+        onSpeaking: setAssistantSpeaking,
+        onLine: (speaker: "user" | "assistant", text: string) => {
+          const line = { speaker: speaker === "assistant" ? agent.name : "You", text };
           transcriptRef.current = [...transcriptRef.current, line];
           setTranscript((t) => [...t, line]);
-        }
+        },
       });
-
-      if (agent.vapiAssistantId) {
-        await vapi.start(agent.vapiAssistantId);
-      } else {
-        // Agent not synced to Vapi yet — start with an inline assistant config
-        const vs = agent.voiceSettings;
-        await vapi.start({
-          name: agent.name,
-          firstMessage: agent.firstMessage || `Hi, this is ${agent.name} from the dental office. How can I help?`,
-          model: {
-            provider: "openai",
-            model: agent.model.replace(/^openai\//, "") || "gpt-4o-mini",
-            messages: [
-              {
-                role: "system",
-                content: [
-                  agent.agentIdentity && `AGENT IDENTITY:\n${agent.agentIdentity}`,
-                  agent.instructions && `TASKS:\n${agent.instructions}`,
-                  agent.behavior && `STYLE GUARDRAILS (how to speak — phrases to use/avoid, flow):\n${agent.behavior}`,
-                  agent.knowledgeBase && `KNOWLEDGE BASE:\n${agent.knowledgeBase}`,
-                ]
-                  .filter(Boolean)
-                  .join("\n\n"),
-              },
-            ],
-          },
-          voice: agent.voiceId
-            ? { provider: "11labs", voiceId: agent.voiceId }
-            : { provider: "vapi", voiceId: VOICE_IDS[agent.voice] ?? "Leah" },
-          // Reflect the advanced tuning in the live browser test too.
-          backgroundDenoisingEnabled: vs.noiseReductionEnabled,
-          maxDurationSeconds: Math.min(43200, Math.max(10, vs.maxCallDuration * 60)),
-          silenceTimeoutSeconds: Math.min(3600, Math.max(5, vs.maxSilenceDuration)),
-          startSpeakingPlan: {
-            waitSeconds: Math.min(5, Math.max(0, vs.detectionTimeout)),
-            ...(vs.turnDetectionEnabled && vs.detectionMode !== "fixed"
-              ? { smartEndpointingPlan: { provider: "livekit" } }
-              : {}),
-            transcriptionEndpointingPlan: {
-              onPunctuationSeconds: vs.minSilenceDuration,
-              onNoPunctuationSeconds: vs.endOfSpeechTimeout,
-            },
-          },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any);
-      }
     } catch (e) {
       setState("error");
       setError(e instanceof Error ? e.message : "Could not start the call.");
@@ -1697,7 +1647,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   }
 
   function stop() {
-    vapiRef.current?.stop?.();
+    callRef.current?.stop?.();
     setState("ended");
     void saveTranscript();
   }
@@ -1712,7 +1662,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
         onClose();
       }}
       title={`Test call — talk to ${agent.name}`}
-      subtitle="Live web call through Vapi — allow microphone access when your browser asks."
+      subtitle="Live web call on Grok voice (xAI) — allow microphone access when your browser asks."
       wide
     >
       <div className="mb-1 flex items-center justify-between">
@@ -1759,7 +1709,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
 
         <p className="text-sm font-medium text-ink-700">
           {state === "idle" && "Ready — start the call and speak like a patient."}
-          {state === "connecting" && "Connecting to Vapi…"}
+          {state === "connecting" && "Connecting to Grok voice…"}
           {state === "live" && (assistantSpeaking ? `${agent.name} is speaking…` : "Listening — say something!")}
           {state === "ended" && "Call ended."}
           {state === "error" && "Call failed."}
