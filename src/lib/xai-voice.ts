@@ -13,13 +13,39 @@ export const XAI_REALTIME_URL = "wss://api.x.ai/v1/realtime";
 // (currently grok-voice-think-fast-1.0, reasoning on by default).
 export const XAI_VOICE_MODELS = ["grok-voice-latest", "grok-voice-think-fast-1.0"];
 
-// xAI's built-in voice roster (same ids across Voice Agent + TTS APIs).
+// xAI's built-in voice roster (same ids across the Voice Agent + TTS APIs):
+// the original voices plus the 21 flagship voices added to the console. The
+// /api/xai/voices route ALSO pulls the live list from the account (including
+// custom/cloned voices), so this is the always-available baseline. NOTE: the
+// first five labels are frozen — existing agents store them verbatim.
 export const XAI_VOICES: { id: string; label: string }[] = [
   { id: "eve", label: "Eve · natural female (default)" },
   { id: "ara", label: "Ara · warm friendly female" },
   { id: "rex", label: "Rex · confident clear male" },
   { id: "sal", label: "Sal · calm neutral male" },
   { id: "leo", label: "Leo · energetic male" },
+  { id: "gork", label: "Gork · laid-back male" },
+  { id: "altair", label: "Altair · flagship" },
+  { id: "atlas", label: "Atlas · flagship" },
+  { id: "carina", label: "Carina · flagship" },
+  { id: "castor", label: "Castor · flagship" },
+  { id: "celeste", label: "Celeste · flagship" },
+  { id: "cosmo", label: "Cosmo · flagship" },
+  { id: "helios", label: "Helios · flagship" },
+  { id: "helix", label: "Helix · flagship" },
+  { id: "iris", label: "Iris · flagship" },
+  { id: "kepler", label: "Kepler · flagship" },
+  { id: "lumen", label: "Lumen · flagship" },
+  { id: "luna", label: "Luna · flagship" },
+  { id: "lux", label: "Lux · flagship" },
+  { id: "naksh", label: "Naksh · flagship" },
+  { id: "orion", label: "Orion · flagship" },
+  { id: "perseus", label: "Perseus · flagship" },
+  { id: "rigel", label: "Rigel · flagship" },
+  { id: "sirius", label: "Sirius · flagship" },
+  { id: "ursa", label: "Ursa · flagship" },
+  { id: "zagan", label: "Zagan · flagship" },
+  { id: "zenith", label: "Zenith · flagship" },
 ];
 
 // Accept several env names so whatever the key was saved as in Netlify works.
@@ -46,7 +72,9 @@ export function resolveXaiVoice(label: string | null | undefined): string {
   const custom = /\(([A-Za-z0-9_-]{2,64})\)\s*$/.exec(raw);
   if (custom) return custom[1];
   const l = raw.toLowerCase();
-  for (const v of XAI_VOICES) if (l.includes(v.id)) return v.id;
+  // Longest ids first so e.g. "carina" can never be shadowed by a shorter id.
+  const byLength = [...XAI_VOICES].sort((a, b) => b.id.length - a.id.length);
+  for (const v of byLength) if (l.includes(v.id)) return v.id;
   if (/female|woman/.test(l)) return "ara";
   if (/male|man/.test(l)) return "rex";
   return "eve";

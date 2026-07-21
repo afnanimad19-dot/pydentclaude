@@ -72,12 +72,36 @@ const VAPI_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1"];
 
 // Voice rosters per engine. Which one the builder/test call uses is decided by
 // the Voice engine card in Settings (fetchVoiceProvider).
+// Baseline built-in roster (kept in sync with XAI_VOICES in lib/xai-voice.ts);
+// the picker also loads the live account list — custom voices included.
 const XAI_VOICE_LABELS = [
   "Eve · natural female (default)",
   "Ara · warm friendly female",
   "Rex · confident clear male",
   "Sal · calm neutral male",
   "Leo · energetic male",
+  "Gork · laid-back male",
+  "Altair · flagship",
+  "Atlas · flagship",
+  "Carina · flagship",
+  "Castor · flagship",
+  "Celeste · flagship",
+  "Cosmo · flagship",
+  "Helios · flagship",
+  "Helix · flagship",
+  "Iris · flagship",
+  "Kepler · flagship",
+  "Lumen · flagship",
+  "Luna · flagship",
+  "Lux · flagship",
+  "Naksh · flagship",
+  "Orion · flagship",
+  "Perseus · flagship",
+  "Rigel · flagship",
+  "Sirius · flagship",
+  "Ursa · flagship",
+  "Zagan · flagship",
+  "Zenith · flagship",
 ];
 const XAI_VOICE_MODELS = ["grok-voice-latest", "grok-voice-think-fast-1.0"];
 
@@ -128,6 +152,7 @@ function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: stri
   const [voices, setVoices] = useState<{ id: string; label: string }[]>(
     XAI_VOICE_LABELS.map((l) => ({ id: l.split(" ")[0].toLowerCase(), label: l }))
   );
+  const [liveList, setLiveList] = useState<boolean | null>(null);
   const [playing, setPlaying] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -139,8 +164,9 @@ function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: stri
       .then((r) => r.json())
       .then((d) => {
         if (Array.isArray(d.voices) && d.voices.length) setVoices(d.voices);
+        setLiveList(d.live === true);
       })
-      .catch(() => {});
+      .catch(() => setLiveList(false));
     const urls = urlsRef.current;
     return () => {
       audioRef.current?.pause();
@@ -222,7 +248,13 @@ function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: stri
           )}
         </button>
       </div>
-      <p className="mt-1 text-[11px] text-ink-400">All voices from your xAI account — custom voices added in xAI&apos;s Voice Library appear here automatically.</p>
+      <p className="mt-1 text-[11px] text-ink-400">
+        {liveList === true
+          ? "Live list from your xAI account — custom voices from the Voice Library appear here automatically."
+          : liveList === false
+          ? "Showing the built-in roster — couldn't load your xAI account's live list (check X_AI_VOICE_KEY / credits). Previews still work once the key is valid."
+          : "All xAI voices — custom voices added in xAI's Voice Library appear here automatically."}
+      </p>
       {previewError && <p className="mt-1 text-[11px] text-amber-600">{previewError}</p>}
     </div>
   );
