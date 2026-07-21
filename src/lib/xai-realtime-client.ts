@@ -54,6 +54,8 @@ export class XaiRealtimeCall {
   private trDeltaEvt: string | null = null;
   private trDoneEvt: string | null = null;
   private lastLine: { speaker: string; text: string } | null = null;
+  private live = false; // connection reached the talking state
+  private responseActive = false; // a model response is currently generating
 
   async start(agentId: string, handlers: XaiCallHandlers): Promise<void> {
     this.agentId = agentId;
@@ -103,6 +105,7 @@ export class XaiRealtimeCall {
         this.commitLine("assistant", cfg.firstMessage);
       }
       this.startMicPump();
+      this.live = true;
       handlers.onState("live");
     };
 
@@ -118,7 +121,8 @@ export class XaiRealtimeCall {
     };
 
     ws.onerror = () => {
-      if (!this.closed) handlers.onError("The voice connection failed.");
+      // Only fatal if we never got connected — once live, onclose handles the end.
+      if (!this.closed && !this.live) handlers.onError("The voice connection failed.");
     };
     ws.onclose = () => {
       if (!this.closed) {
@@ -144,6 +148,7 @@ export class XaiRealtimeCall {
     if (type === "response.output_audio.delta" || type === "response.audio.delta") {
       if (!this.audioEvt) this.audioEvt = type;
       if (type !== this.audioEvt) return; // duplicate stream under the other name
+      this.responseActive = true; // audio flowing = a response is in flight
       if (typeof msg.delta === "string") this.playDelta(msg.delta);
       this.handlers?.onSpeaking(true);
     } else if (type === "response.output_audio_transcript.delta" || type === "response.audio_transcript.delta") {
@@ -156,6 +161,7 @@ export class XaiRealtimeCall {
       this.commitLine("assistant", msg.transcript ?? this.assistantText);
       this.assistantText = "";
     } else if (type === "response.done") {
+      this.responseActive = false;
       if (this.assistantText) {
         this.commitLine("assistant", this.assistantText);
         this.assistantText = "";
@@ -168,6 +174,7 @@ export class XaiRealtimeCall {
       this.commitLine("user", msg.transcript ?? this.pendingUserText);
       this.pendingUserText = "";
     } else if (type === "response.created") {
+      this.responseActive = true;
       // The agent started answering — the user's turn is final now.
       if (this.pendingUserText) {
         this.commitLine("user", this.pendingUserText);
@@ -179,8 +186,18 @@ export class XaiRealtimeCall {
     } else if (type === "response.function_call_arguments.done") {
       await this.runToolCall(msg);
     } else if (type === "error") {
-      const detail = msg?.error?.message ?? msg?.message ?? "Voice session error";
-      this.handlers?.onError(String(detail).slice(0, 300));
+      // Server "error" events are frequently NON-fatal (e.g. a response.cancel
+      // landing after the response already finished). Flipping a live, working
+      // call into an error state over one of those was showing "could not
+      // connect" mid-conversation — so once live, log and carry on; only
+      // surface errors that happen before the call is up.
+      const detail = String(msg?.error?.message ?? msg?.message ?? "Voice session error");
+      if (/cancel|no active response|not.*active/i.test(detail)) return;
+      if (this.live) {
+        console.warn("xai voice event (non-fatal):", detail);
+        return;
+      }
+      this.handlers?.onError(detail.slice(0, 300));
     }
   }
 
@@ -261,11 +278,13 @@ export class XaiRealtimeCall {
     this.sources = [];
     this.nextPlayTime = 0;
     this.handlers?.onSpeaking(false);
-    // Ask the model to stop generating the cut-off answer too.
+    // Ask the model to stop generating the cut-off answer — but only when one
+    // is actually in flight (a stray cancel makes the server emit an error).
     const ws = this.ws;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (this.responseActive && ws && ws.readyState === WebSocket.OPEN) {
       try {
         ws.send(JSON.stringify({ type: "response.cancel" }));
+        this.responseActive = false;
       } catch {
         /* best-effort */
       }

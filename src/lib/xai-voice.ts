@@ -149,7 +149,7 @@ export function buildXaiInstructions(agent: VoiceAgentRow): string {
     agent.behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${agent.behavior}`,
     agent.knowledge_base && `KNOWLEDGE BASE (answer ONLY from this — the clinic's real doctors, services, prices, hours. Read all of it. If it isn't here, say you'll check with the team):\n${String(agent.knowledge_base).slice(0, 48000)}`,
     booking,
-    "Speak naturally and keep each turn short — one or two sentences — so the caller can jump in. Never read out symbols, markdown or URLs; say them like a human would. Never invent medical advice.",
+    "SPEAKING RULE — talk like a real human on the phone: SHORT turns, one sentence (two max, ~8–20 words), plain everyday words and contractions, then stop and let the caller respond. One idea per turn; never monologue, never read paragraphs or lists. Never read out symbols, markdown or URLs; say them like a human would. Never invent medical advice.",
   ]
     .filter(Boolean)
     .join("\n\n");
