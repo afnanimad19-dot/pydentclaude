@@ -1142,9 +1142,23 @@ export function AgentModal({
     let message = res.message;
     let vapiOk = true; // non-voice agents don't need Vapi
     if (res.ok && form.kind === "voice" && voiceProvider === "xai") {
-      // Grok voice (xAI): sessions are built per-call from the saved agent — no
-      // external assistant object to sync. Saving is all that's needed.
-      message = initial || savedAgentId ? "Agent saved — runs on Grok voice (xAI)." : "Agent created — runs on Grok voice (xAI).";
+      // Mirror the agent into the xAI console (Voice → Agents) so it's visible
+      // and phone-deployable there too. Non-blocking: calls work either way,
+      // since sessions are built per-call from the saved agent.
+      const agentId = res.id ?? initial?.id ?? savedAgentId;
+      let synced = "";
+      try {
+        const xr = await fetch("/api/xai/agents", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentId }),
+        });
+        const xd = await xr.json().catch(() => ({}));
+        synced = xr.ok ? " and synced to your xAI console (Voice → Agents)" : ` (xAI console sync failed: ${xd.error ?? "unreachable"} — calls still work)`;
+      } catch {
+        synced = " (xAI console sync unreachable — calls still work)";
+      }
+      message = `${initial || savedAgentId ? "Agent saved" : "Agent created"} — runs on Grok voice (xAI)${synced}.`;
     }
     if (res.ok && form.kind === "voice" && voiceProvider === "vapi") {
       vapiOk = false;

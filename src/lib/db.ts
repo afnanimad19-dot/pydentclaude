@@ -787,10 +787,17 @@ export async function ensureNovaAgents(): Promise<{ ok: boolean; message: string
     }
   }
   const after = (await fetchAgents()).agents;
+  const voice = after.find((a) => a.kind === "voice" && /nova/i.test(a.name));
+  // Mirror the voice Nova into the xAI console too (best-effort, non-blocking).
+  if (voice && changed.length) {
+    try {
+      void fetch("/api/xai/agents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agentId: voice.id }) });
+    } catch { /* console mirror is optional */ }
+  }
   return {
     ok: true,
     message: changed.length ? `Nova ${changed.join(" + ")}.` : "Nova is ready.",
-    voice: after.find((a) => a.kind === "voice" && /nova/i.test(a.name)),
+    voice,
     chat: after.find((a) => a.kind === "chat" && /nova/i.test(a.name)),
   };
 }

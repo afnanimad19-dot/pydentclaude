@@ -91,6 +91,10 @@ interface VoiceAgentRow {
   can_book?: boolean;
   can_reschedule?: boolean;
   can_cancel?: boolean;
+  first_message?: string;
+  first_message_mode?: string;
+  voice?: string;
+  model?: string;
 }
 
 // The system prompt for a live voice session — same structure the Vapi mapping
@@ -117,6 +121,79 @@ export function buildXaiInstructions(agent: VoiceAgentRow): string {
     .filter(Boolean)
     .join("\n\n");
 }
+
+// ------------------------------------------------------- xAI console agents
+// xAI's Agents API keeps PERSISTENT voice agents (visible in the console under
+// Voice → Agents, usable for phone deployment there). We mirror every Pydent
+// voice agent into it on save — like the Vapi sync — so the clinic can see and
+// deploy the same agent in the xAI console. The API is in beta and its exact
+// shapes shift, so every call is defensive: update falls back through
+// PATCH → PUT → recreate, and create retries without tools if the schema
+// rejects them. Documented updatable fields: name, instructions, tools, voice.
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+async function xaiAgentsFetch(method: string, path: string, body?: unknown): Promise<{ status: number; data: any }> {
+  const key = xaiApiKey();
+  if (!key) return { status: 503, data: { error: "xAI isn't configured (X_AI_VOICE_KEY missing)." } };
+  const res = await fetch(`${XAI_BASE}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(20000),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, data };
+}
+
+function xaiAgentIdFrom(data: any): string | null {
+  const id = data?.id ?? data?.agent_id ?? data?.agent?.id ?? data?.data?.id ?? null;
+  return id ? String(id) : null;
+}
+
+// Build the console agent payload. The welcome message is folded into the
+// instructions too (the beta API's greeting field name isn't stable), so the
+// agent opens correctly however it's deployed.
+function xaiAgentPayload(agent: VoiceAgentRow): Record<string, unknown> {
+  const greetFirst = (agent.first_message_mode ?? "assistant_first") !== "user_first";
+  const welcome = greetFirst && agent.first_message ? `\n\nWELCOME MESSAGE — open every conversation with exactly: "${agent.first_message}"` : "";
+  return {
+    name: agent.name || "Pydent voice agent",
+    instructions: buildXaiInstructions(agent) + welcome,
+    voice: resolveXaiVoice(agent.voice),
+    tools: xaiAgentTools(agent),
+  };
+}
+
+// Create or update the mirrored console agent. Returns the (possibly new) xAI
+// agent id. Never throws — callers surface the error text.
+export async function syncXaiAgent(agent: VoiceAgentRow, existingId?: string | null): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const payload = xaiAgentPayload(agent);
+  try {
+    if (existingId) {
+      for (const method of ["PATCH", "PUT"]) {
+        const r = await xaiAgentsFetch(method, `/agents/${encodeURIComponent(existingId)}`, payload);
+        if (r.status >= 200 && r.status < 300) return { ok: true, id: xaiAgentIdFrom(r.data) ?? existingId };
+        if (r.status === 404) break; // deleted in the console → recreate below
+        if (r.status !== 405 && r.status !== 501) {
+          // Schema complaint? Retry this method without tools before moving on.
+          const retry = await xaiAgentsFetch(method, `/agents/${encodeURIComponent(existingId)}`, { ...payload, tools: undefined });
+          if (retry.status >= 200 && retry.status < 300) return { ok: true, id: xaiAgentIdFrom(retry.data) ?? existingId };
+        }
+      }
+    }
+    let r = await xaiAgentsFetch("POST", "/agents", payload);
+    if (r.status === 400) r = await xaiAgentsFetch("POST", "/agents", { ...payload, tools: undefined });
+    if (r.status >= 200 && r.status < 300) {
+      const id = xaiAgentIdFrom(r.data);
+      return id ? { ok: true, id } : { ok: true };
+    }
+    const detail = r.data?.error?.message ?? r.data?.error ?? r.data?.message ?? `HTTP ${r.status}`;
+    return { ok: false, error: String(detail).slice(0, 250) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not reach xAI." };
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 // Realtime function tools (flat OpenAI-Realtime schema: name/description/parameters
 // at the top level). The browser executes each call via POST /api/agents/tool-exec.
