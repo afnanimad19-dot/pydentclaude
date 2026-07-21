@@ -400,7 +400,7 @@ async function storeInbound(
         `previous session is treated as ended and the patient is now RETURNING. Whatever they just typed, do NOT continue the old topic yet. ` +
         `Instead: greet them warmly by name, say it's good to hear from them again, then offer exactly these THREE choices and ask them to reply with the number — ` +
         `1) Continue where we left off, 2) Start a new chat, 3) Just ask a question about a service (or hours/prices). ` +
-        `If they then want to book, collect their details in ONE message — full name, email, phone number, the service, and a preferred day/time — not one at a time. Keep it short and friendly.`;
+        `If they then want to book, ask for their details one question at a time (full name, then email, then phone number), then send ONE summary of everything for them to review and confirm before booking. Keep it short and friendly.`;
     }
   }
 

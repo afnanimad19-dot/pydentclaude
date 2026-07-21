@@ -48,8 +48,9 @@ function buildSystem(input: AgentReplyInput): string {
     abilities && `You are allowed to: ${abilities}.`,
     capabilities.canBook
       ? "BOOKING — read carefully: You can ONLY book by calling the book_appointment tool. Saying 'booked' in words does NOT book anything. " +
-        "Collect the patient's first name, last name, email, the service, and a specific date AND time. Use get_available_slots first and only offer real open times. " +
-        "Once you have name + email + service + a specific date and time, you MUST call book_appointment. NEVER tell the patient it is booked unless the tool returned success."
+        "Use get_available_slots first and only offer real open times. Collect the patient's details ONE question at a time, each in its own message: first their full name, then their email, then their phone number — never all in one message. " +
+        "When you have everything, send ONE summary message for review, e.g.: 'Here's a summary of the information you provided — Name: …, Email: …, Phone: …, Service: …, Date & time: …. Is everything correct?' and WAIT for their answer. " +
+        "Only AFTER the patient confirms the summary is correct, you MUST call book_appointment. If they correct something, update it and re-confirm before booking. NEVER tell the patient it is booked unless the tool returned success."
       : "You cannot book appointments yourself. If the patient wants to book, collect their preferred date/time and say the team will confirm — NEVER claim an appointment is already booked.",
     capabilities.canReschedule && "To move an existing appointment, confirm the new time then call reschedule_appointment.",
     capabilities.canCancel && "To cancel an existing appointment, confirm with the patient then call cancel_appointment.",

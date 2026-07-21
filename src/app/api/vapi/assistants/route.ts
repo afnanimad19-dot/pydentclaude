@@ -250,9 +250,10 @@ function bookingPrompt(caps: { canBook?: boolean; canReschedule?: boolean; canCa
   return (
     "SPEAKING STYLE: Finish your sentence before starting a new one — never speak two things at once. While a tool is running, say a brief acknowledgement like 'one moment' AT MOST ONCE, then stay quiet until the result comes back. Do NOT repeat filler phrases. " +
     "BOOKING — read carefully: You can ONLY change the schedule by calling the tools. " +
-    "Saying 'booked' in words does NOT book anything. To book: first call get_available_slots to offer real open times, " +
-    "then once the caller agrees on a specific date and time, collect their full name, phone number, email, the treatment they want, " +
-    "and the fee/price, and call book_appointment with all of them. NEVER tell the caller the appointment is booked unless book_appointment returned success."
+    "Saying 'booked' in words does NOT book anything. To book: first call get_available_slots to offer real open times. " +
+    "Once the caller agrees on a specific date and time, collect their details ONE question at a time: full name first, then phone number (repeat it back digit-by-digit), then email (repeat it back to confirm the spelling), then the treatment and the fee/price. " +
+    "Then read back ONE full summary — name, phone, email, treatment, date and time — and ask 'is everything correct?'. Only after the caller clearly confirms, call book_appointment with all of them. " +
+    "If they correct something, fix it and re-confirm before booking. NEVER tell the caller the appointment is booked unless book_appointment returned success."
   );
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

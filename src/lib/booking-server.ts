@@ -8,6 +8,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getOdConfig, odForward } from "@/lib/opendental-gateway";
 import { triggerWorkflows } from "@/lib/workflow-runner";
 import { pushToGoogleCalendar } from "@/lib/google-api";
+import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -32,6 +33,32 @@ export interface BookingArgs {
   fee?: number | string;
   doctor?: string;
   datetime?: string;
+}
+
+// Mirror a booking onto the clinic's Google Calendar connected on the marketing
+// engine (Hyperfx). Used when the in-app Google OAuth calendar isn't connected.
+// The engine's tool arg names can vary by version, so retry once with alternate
+// field names. Best-effort: a failure never blocks the booking.
+async function pushToEngineCalendar(
+  ws: string,
+  ev: { summary: string; description: string; date: string; time: string }
+): Promise<boolean> {
+  try {
+    const creds = await getHfxCreds(ws);
+    if (!hfxConfigured(creds)) return false;
+    const t = (ev.time || "09:00").slice(0, 5);
+    const [h, m] = t.split(":").map(Number);
+    const endMin = h * 60 + m + 30;
+    const start = `${ev.date}T${t}:00`;
+    const end = `${ev.date}T${String(Math.floor(endMin / 60) % 24).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}:00`;
+    let r = await hfxCall("google_calendar_create_event", { summary: ev.summary, description: ev.description, start_time: start, end_time: end }, creds);
+    if (!r.ok && /param|field|required|invalid|schema|argument|unexpected/i.test(r.error ?? "")) {
+      r = await hfxCall("google_calendar_create_event", { title: ev.summary, description: ev.description, start, end }, creds);
+    }
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 function toFee(v: number | string | undefined): number | null {
@@ -180,12 +207,13 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
     } catch { /* keep the Calendar booking even if Open Dental is unreachable */ }
     try {
       if (ws) {
-        const eventId = await pushToGoogleCalendar(ws, {
-          summary: `${treatment} — ${fullName || ctx.name || "Patient"}`,
-          description: [`Booked via ${ctx.source}`, args.phone || ctx.phone ? `Phone: ${args.phone || ctx.phone}` : "", fee != null ? `Fee: ${fee}` : ""].filter(Boolean).join("\n"),
-          date, time,
-        });
+        const calSummary = `${treatment} — ${fullName || ctx.name || "Patient"}`;
+        const calDescription = [`Booked via ${ctx.source}`, args.phone || ctx.phone ? `Phone: ${args.phone || ctx.phone}` : "", fee != null ? `Fee: ${fee}` : ""].filter(Boolean).join("\n");
+        const eventId = await pushToGoogleCalendar(ws, { summary: calSummary, description: calDescription, date, time });
         if (eventId && apptId) await supabase.from("appointments").update({ google_calendar_event_id: eventId }).eq("id", apptId);
+        // In-app Google OAuth not connected (or push failed) → mirror the event
+        // through the Google Calendar connected on the marketing engine instead.
+        if (!eventId) await pushToEngineCalendar(ws, { summary: calSummary, description: calDescription, date, time });
       }
     } catch { /* keep the booking even if Google Calendar push fails */ }
     try {

@@ -1,7 +1,7 @@
-// Sends transactional/campaign email. Prefers Brevo (BREVO_API_KEY) when set;
-// otherwise the clinic's Gmail — via the marketing engine (Gmail connected on
-// Hyperfx) or the in-app Google OAuth — so "Send now" works without a separate
-// email provider.
+// Sends transactional/campaign email. The PRIMARY path is the clinic's Gmail
+// connected on the marketing engine (Hyperfx) — connect Gmail there and email
+// "just works" everywhere (agent confirmations, campaigns, reports). Falls back
+// to in-app Google OAuth Gmail, then Brevo keys if configured.
 
 import { getValidGoogleToken, getConnectionApiKey } from "@/lib/google-api";
 import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
@@ -36,9 +36,10 @@ async function sendViaBrevo(input: { to: string; subject: string; html: string; 
   return `Email failed (${res.status}): ${(await res.text()).slice(0, 200)}`;
 }
 
-async function sendViaGmail(ws: string, input: { to: string; subject: string; html: string }): Promise<string> {
+// Returns null when Gmail OAuth isn't connected, so callers fall through.
+async function sendViaGmail(ws: string, input: { to: string; subject: string; html: string }): Promise<string | null> {
   const token = await getValidGoogleToken(ws, "google_gmail");
-  if (!token) return "Email isn't connected. Connect Gmail in Settings → Connections (or add BREVO_API_KEY) to send.";
+  if (!token) return null;
   // Build a minimal MIME message and base64url-encode it for the Gmail API.
   const headers = [
     `To: ${input.to}`,
@@ -74,21 +75,24 @@ export async function sendAgentEmail(input: { to: string; subject: string; body:
 
 export async function sendEmail(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string; ws?: string }): Promise<string> {
   try {
-    // 1) the clinic's own Brevo key (connected in-app, per workspace)
-    if (input.ws) {
-      const brevo = await getConnectionApiKey(input.ws, "brevo");
-      if (brevo?.key) return await sendViaBrevo({ ...input, fromEmail: input.fromEmail || brevo.extra || undefined }, brevo.key);
-    }
-    // 2) a global Brevo key (Netlify), if the SaaS provides one
-    if (process.env.BREVO_API_KEY) return await sendViaBrevo(input, process.env.BREVO_API_KEY);
-    // 3) the clinic's Gmail connected on the marketing engine (Hyperfx)
+    // 1) PRIMARY: the clinic's Gmail connected on the marketing engine (Hyperfx)
     if (input.ws) {
       const viaEngine = await sendViaEngineGmail(input.ws, input);
       if (viaEngine) return viaEngine;
     }
-    // 4) the clinic's Gmail connected via in-app Google OAuth
-    if (input.ws) return await sendViaGmail(input.ws, input);
-    return "Email isn't connected. Connect Gmail (on the marketing engine or in Settings → Connections) or paste your Brevo key to send.";
+    // 2) the clinic's Gmail connected via in-app Google OAuth
+    if (input.ws) {
+      const viaGmail = await sendViaGmail(input.ws, input);
+      if (viaGmail) return viaGmail;
+    }
+    // 3) the clinic's own Brevo key (connected in-app, per workspace) — fallback
+    if (input.ws) {
+      const brevo = await getConnectionApiKey(input.ws, "brevo");
+      if (brevo?.key) return await sendViaBrevo({ ...input, fromEmail: input.fromEmail || brevo.extra || undefined }, brevo.key);
+    }
+    // 4) a global Brevo key (Netlify), if the SaaS provides one
+    if (process.env.BREVO_API_KEY) return await sendViaBrevo(input, process.env.BREVO_API_KEY);
+    return "Email isn't connected. Connect Gmail on the marketing engine (Hyperfx) — or in Settings → Connections — to send.";
   } catch (e) {
     return `Email send failed: ${e instanceof Error ? e.message : "error"}`;
   }

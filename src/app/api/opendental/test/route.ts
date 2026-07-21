@@ -34,6 +34,48 @@ export async function GET(req: NextRequest) {
   const headers = odHeaders(cfg);
   const odApiMode = !!cfg.developerKey; // ODFHIR Developer/Customer auth = talking to the Open Dental API directly
 
+  // Developer key set → this is the Open Dental API itself. Test it directly on
+  // /providers (with the standard /api/v1 prefix as fallback) — one call proves
+  // reachability, auth, and data together.
+  if (odApiMode) {
+    const tryProviders = async (base: string) =>
+      fetch(`${base}/providers`, { headers, signal: AbortSignal.timeout(TIMEOUT), cache: "no-store" });
+    try {
+      let r = await tryProviders(cfg.url);
+      if (r.status === 404 && !/\/api\//i.test(cfg.url)) r = await tryProviders(`${cfg.url}/api/v1`);
+      if (r.status === 401 || r.status === 403) {
+        return NextResponse.json(
+          { ok: false, error: `Reached ${base.hostname} and it IS the Open Dental API, but it rejected the keys (HTTP ${r.status}) — re-check the Developer API Key and Customer API Key (header: ODFHIR Developer/Customer).` },
+          { status: 401 }
+        );
+      }
+      if (r.status === 404) {
+        return NextResponse.json(
+          { ok: false, error: `Reached ${base.hostname}, but /providers wasn't found there — the URL doesn't look like the Open Dental API base. Try adding /api/v1 to the URL (e.g. https://host:port/api/v1) and Save again.` },
+          { status: 502 }
+        );
+      }
+      if (!r.ok) {
+        return NextResponse.json({ ok: false, error: `Reached ${base.hostname}, but /providers returned HTTP ${r.status}.` }, { status: 502 });
+      }
+      const data = (await r.json().catch(() => [])) as any;
+      const doctors = Array.isArray(data) ? data.filter((p: any) => !p.IsHidden).length : 0;
+      return NextResponse.json({ ok: true, doctors, enabled: cfg.enabled, mode: "opendental-api" });
+    } catch (e) {
+      const detail = fetchFailureDetail(e);
+      const timedOut = /timed out/i.test(detail) || /ECONNRESET|reset/i.test(detail);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: timedOut
+            ? `Can't reach ${base.host} from Pydent's server — the connection ${detail.includes("reset") ? "was reset" : "timed out"}. The URL and keys are fine; the clinic firewall (FortiGate/FortiDDNS) is only answering allowed IP addresses, and Pydent's cloud servers don't have a fixed IP to allow-list. Two ways to fix it: (1) ask clinic IT to open that port to ALL source IPs — the Developer+Customer API keys still protect it, and this is exactly how other tools connect with just the URL + keys — or (2) run a Cloudflare Tunnel on the clinic machine (no ports opened at all) and paste its URL here instead. Nothing else needs to change: the same keys keep working.`
+            : `Can't reach ${base.host}: ${detail}. Check the URL opens from OUTSIDE the clinic network.`,
+        },
+        { status: 502 }
+      );
+    }
+  }
+
   // 2 — reachability. A failure here is almost always the tunnel/firewall.
   try {
     const r = await fetch(`${cfg.url}/health`, { headers, signal: AbortSignal.timeout(TIMEOUT), cache: "no-store" });
