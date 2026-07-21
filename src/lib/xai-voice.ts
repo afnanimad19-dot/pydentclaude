@@ -147,7 +147,7 @@ export function buildXaiInstructions(agent: VoiceAgentRow): string {
     agent.agent_identity && `AGENT IDENTITY (who you are, your tone and role):\n${agent.agent_identity}`,
     agent.instructions && `TASKS (what you do — your goals and the actions to perform):\n${agent.instructions}`,
     agent.behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${agent.behavior}`,
-    agent.knowledge_base && `KNOWLEDGE BASE (answer ONLY from this — the clinic's real doctors, services, prices, hours. If it isn't here, say you'll check with the team):\n${agent.knowledge_base}`,
+    agent.knowledge_base && `KNOWLEDGE BASE (answer ONLY from this — the clinic's real doctors, services, prices, hours. Read all of it. If it isn't here, say you'll check with the team):\n${String(agent.knowledge_base).slice(0, 48000)}`,
     booking,
     "Speak naturally and keep each turn short — one or two sentences — so the caller can jump in. Never read out symbols, markdown or URLs; say them like a human would. Never invent medical advice.",
   ]
@@ -199,29 +199,43 @@ function xaiAgentPayload(agent: VoiceAgentRow): Record<string, unknown> {
 
 // Create or update the mirrored console agent. Returns the (possibly new) xAI
 // agent id. Never throws — callers surface the error text.
+//
+// The beta API 4xx-rejects payload shapes that drift from its schema (a 422
+// commonly means the tools array or an over-long instructions string), so each
+// write walks a ladder: full payload → without tools → without tools AND
+// instructions trimmed. The trimmed fallback keeps the agent visible in the
+// console even when its knowledge base is huge; live calls always get the full
+// instructions from the session route regardless.
 export async function syncXaiAgent(agent: VoiceAgentRow, existingId?: string | null): Promise<{ ok: boolean; id?: string; error?: string }> {
   const payload = xaiAgentPayload(agent);
+  const attempts: Record<string, unknown>[] = [
+    payload,
+    { ...payload, tools: undefined },
+    { name: payload.name, voice: payload.voice, instructions: String(payload.instructions).slice(0, 8000) },
+  ];
   try {
+    let lastDetail = "";
     if (existingId) {
-      for (const method of ["PATCH", "PUT"]) {
-        const r = await xaiAgentsFetch(method, `/agents/${encodeURIComponent(existingId)}`, payload);
-        if (r.status >= 200 && r.status < 300) return { ok: true, id: xaiAgentIdFrom(r.data) ?? existingId };
-        if (r.status === 404) break; // deleted in the console → recreate below
-        if (r.status !== 405 && r.status !== 501) {
-          // Schema complaint? Retry this method without tools before moving on.
-          const retry = await xaiAgentsFetch(method, `/agents/${encodeURIComponent(existingId)}`, { ...payload, tools: undefined });
-          if (retry.status >= 200 && retry.status < 300) return { ok: true, id: xaiAgentIdFrom(retry.data) ?? existingId };
+      outer: for (const method of ["PATCH", "PUT"]) {
+        for (const body of attempts) {
+          const r = await xaiAgentsFetch(method, `/agents/${encodeURIComponent(existingId)}`, body);
+          if (r.status >= 200 && r.status < 300) return { ok: true, id: xaiAgentIdFrom(r.data) ?? existingId };
+          if (r.status === 404) break outer; // deleted in the console → recreate below
+          if (r.status === 405 || r.status === 501) continue outer; // method unsupported → try the next verb
+          lastDetail = String(r.data?.error?.message ?? r.data?.error ?? r.data?.message ?? `HTTP ${r.status}`);
         }
       }
     }
-    let r = await xaiAgentsFetch("POST", "/agents", payload);
-    if (r.status === 400) r = await xaiAgentsFetch("POST", "/agents", { ...payload, tools: undefined });
-    if (r.status >= 200 && r.status < 300) {
-      const id = xaiAgentIdFrom(r.data);
-      return id ? { ok: true, id } : { ok: true };
+    for (const body of attempts) {
+      const r = await xaiAgentsFetch("POST", "/agents", body);
+      if (r.status >= 200 && r.status < 300) {
+        const id = xaiAgentIdFrom(r.data);
+        return id ? { ok: true, id } : { ok: true };
+      }
+      lastDetail = String(r.data?.error?.message ?? r.data?.error ?? r.data?.message ?? `HTTP ${r.status}`);
+      if (r.status < 400 || r.status >= 500) break; // only schema-style 4xx are worth the next rung
     }
-    const detail = r.data?.error?.message ?? r.data?.error ?? r.data?.message ?? `HTTP ${r.status}`;
-    return { ok: false, error: String(detail).slice(0, 250) };
+    return { ok: false, error: lastDetail.slice(0, 250) || "xAI rejected the agent payload." };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Could not reach xAI." };
   }

@@ -46,6 +46,14 @@ export class XaiRealtimeCall {
   private agentId = "";
   private handlers: XaiCallHandlers | null = null;
   private closed = false;
+  // The API can emit BOTH the GA and the legacy event name for the same audio /
+  // transcript chunk. Lock onto whichever name arrives first and ignore the
+  // other — otherwise every chunk plays twice (overlapping "double voice") and
+  // every line lands in the transcript twice.
+  private audioEvt: string | null = null;
+  private trDeltaEvt: string | null = null;
+  private trDoneEvt: string | null = null;
+  private lastLine: { speaker: string; text: string } | null = null;
 
   async start(agentId: string, handlers: XaiCallHandlers): Promise<void> {
     this.agentId = agentId;
@@ -123,17 +131,28 @@ export class XaiRealtimeCall {
 
   private commitLine(speaker: "user" | "assistant", text: string) {
     const t = (text ?? "").trim();
-    if (t) this.handlers?.onLine(speaker, t);
+    if (!t) return;
+    // Drop exact repeats (e.g. the greeting we logged locally arriving again as
+    // a server transcript, or a duplicate .done event).
+    if (this.lastLine && this.lastLine.speaker === speaker && this.lastLine.text === t) return;
+    this.lastLine = { speaker, text: t };
+    this.handlers?.onLine(speaker, t);
   }
 
   private async handleEvent(msg: any): Promise<void> {
     const type: string = msg?.type ?? "";
     if (type === "response.output_audio.delta" || type === "response.audio.delta") {
+      if (!this.audioEvt) this.audioEvt = type;
+      if (type !== this.audioEvt) return; // duplicate stream under the other name
       if (typeof msg.delta === "string") this.playDelta(msg.delta);
       this.handlers?.onSpeaking(true);
     } else if (type === "response.output_audio_transcript.delta" || type === "response.audio_transcript.delta") {
+      if (!this.trDeltaEvt) this.trDeltaEvt = type;
+      if (type !== this.trDeltaEvt) return;
       this.assistantText += msg.delta ?? "";
     } else if (type === "response.output_audio_transcript.done" || type === "response.audio_transcript.done") {
+      if (!this.trDoneEvt) this.trDoneEvt = type;
+      if (type !== this.trDoneEvt) return;
       this.commitLine("assistant", msg.transcript ?? this.assistantText);
       this.assistantText = "";
     } else if (type === "response.done") {

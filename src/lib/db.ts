@@ -659,7 +659,7 @@ const NOVA_NAME = "Nova";
 // Revision tag embedded in Nova's instructions. Bump this whenever the config
 // below changes and ensureNovaAgents() will re-apply the new config to any
 // existing "Nova" agent (while keeping its uploaded knowledge base and files).
-const NOVA_REV = "2026-07b";
+const NOVA_REV = "2026-07c";
 const NOVA_REV_TAG = `rev ${NOVA_REV}`;
 
 // ---- Shared closer brain (used by both the voice and chat Nova) -------------
@@ -775,10 +775,14 @@ export async function ensureNovaAgents(): Promise<{ ok: boolean; message: string
       // Rename (legacy Phoenix) and/or refresh to the current revision, keeping
       // the uploaded knowledge base, files and voice settings intact.
       const { id, vapiAssistantId, ...rest } = existing; // eslint-disable-line @typescript-eslint/no-unused-vars
+      // A legacy opener that still introduces the agent as "Phoenix" (or an
+      // empty one) gets replaced — otherwise the call literally says Phoenix.
+      const staleOpener = !rest.firstMessage?.trim() || /phoenix/i.test(rest.firstMessage);
       const res = await updateAgent(id, {
         ...rest,
         name: NOVA_NAME,
         role: "Sales",
+        firstMessage: staleOpener ? novaBase(kind).firstMessage : rest.firstMessage,
         agentIdentity: novaIdentity(kind),
         instructions: novaInstructions(kind),
         behavior: novaBehavior(kind),
