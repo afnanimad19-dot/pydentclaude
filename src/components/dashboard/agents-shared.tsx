@@ -120,16 +120,27 @@ const CHANNEL_ICONS: Record<string, typeof MessageCircle> = {
   email: Mail,
 };
 
-// xAI voice picker with audible previews — tap ▶ on any Grok voice to hear a
-// sample line (synthesized live through /api/xai/tts), click the row to select.
+// xAI voice picker: a dropdown of EVERY voice on the clinic's xAI account —
+// the built-in five plus any custom/cloned voices from their Voice Library
+// (loaded live via /api/xai/voices) — with a Preview button that speaks a
+// sample line in the selected voice (/api/xai/tts).
 function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [playing, setPlaying] = useState<string | null>(null);
-  const [loadingVoice, setLoadingVoice] = useState<string | null>(null);
+  const [voices, setVoices] = useState<{ id: string; label: string }[]>(
+    XAI_VOICE_LABELS.map((l) => ({ id: l.split(" ")[0].toLowerCase(), label: l }))
+  );
+  const [playing, setPlaying] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
+    fetch("/api/xai/voices")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.voices) && d.voices.length) setVoices(d.voices);
+      })
+      .catch(() => {});
     const urls = urlsRef.current;
     return () => {
       audioRef.current?.pause();
@@ -137,18 +148,31 @@ function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: stri
     };
   }, []);
 
-  async function preview(id: string) {
+  // The id of the currently selected voice (label match first, then embedded
+  // custom id, then builtin-name match).
+  function selectedId(): string {
+    const hit = voices.find((v) => v.label === value);
+    if (hit) return hit.id;
+    const custom = /\(([A-Za-z0-9_-]{2,64})\)\s*$/.exec(value ?? "");
+    if (custom) return custom[1];
+    const l = (value ?? "").toLowerCase();
+    for (const v of voices) if (l.includes(v.id.toLowerCase())) return v.id;
+    return "eve";
+  }
+
+  async function preview() {
     audioRef.current?.pause();
-    if (playing === id) {
-      setPlaying(null);
+    if (playing) {
+      setPlaying(false);
       return;
     }
+    const id = selectedId();
     setPreviewError(null);
-    setLoadingVoice(id);
+    setLoadingPreview(true);
     try {
       let url = urlsRef.current[id];
       if (!url) {
-        const res = await fetch(`/api/xai/tts?voice=${id}`);
+        const res = await fetch(`/api/xai/tts?voice=${encodeURIComponent(id)}`);
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
           throw new Error(d.error ?? "Preview failed.");
@@ -158,56 +182,48 @@ function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: stri
       }
       const audio = new Audio(url);
       audioRef.current = audio;
-      audio.onended = () => setPlaying(null);
+      audio.onended = () => setPlaying(false);
       await audio.play();
-      setPlaying(id);
+      setPlaying(true);
     } catch (e) {
       setPreviewError(e instanceof Error ? e.message : "Could not play the preview.");
-      setPlaying(null);
+      setPlaying(false);
     } finally {
-      setLoadingVoice(null);
+      setLoadingPreview(false);
     }
   }
 
+  const known = voices.some((v) => v.label === value);
   return (
-    <div className="space-y-1.5">
-      {XAI_VOICE_LABELS.map((label) => {
-        const id = label.split(" ")[0].toLowerCase();
-        const active = value === label;
-        return (
-          <div
-            key={label}
-            role="button"
-            tabIndex={0}
-            onClick={() => onChange(label)}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onChange(label); }}
-            className={`flex w-full cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm transition-colors ${
-              active ? "border-brand-500 bg-brand-500/5 ring-1 ring-brand-500" : "border-ink-200 hover:border-brand-300"
-            }`}
-          >
-            <span className="min-w-0 flex-1 truncate text-ink-800">{label}</span>
-            {active && <span className="shrink-0 rounded-full bg-brand-600 px-2 py-0.5 text-[10px] font-semibold text-white">Selected</span>}
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); void preview(id); }}
-              title={playing === id ? "Stop preview" : "Play preview"}
-              className="flex shrink-0 items-center gap-1 rounded-lg border border-ink-200 px-2 py-1 text-[11px] font-medium text-brand-600 hover:bg-brand-50"
-            >
-              {loadingVoice === id ? (
-                <span className="animate-pulse">…</span>
-              ) : playing === id ? (
-                <><Square className="h-3 w-3 fill-current" /> Stop</>
-              ) : (
-                <><Play className="h-3 w-3" /> Preview</>
-              )}
-            </button>
-          </div>
-        );
-      })}
-      {value && !XAI_VOICE_LABELS.includes(value) && (
-        <p className="text-[11px] text-amber-600">Current voice “{value}” is from the previous engine — pick a Grok voice above.</p>
-      )}
-      {previewError && <p className="text-[11px] text-amber-600">{previewError}</p>}
+    <div>
+      <div className="flex items-center gap-2">
+        <select
+          className={`${inputCls} min-w-0 flex-1`}
+          value={known ? value : ""}
+          onChange={(e) => { audioRef.current?.pause(); setPlaying(false); onChange(e.target.value); }}
+        >
+          {!known && <option value="" disabled>{value ? `${value} (previous engine — pick a Grok voice)` : "Choose a voice…"}</option>}
+          {voices.map((v) => (
+            <option key={v.id} value={v.label}>{v.label}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => void preview()}
+          title={playing ? "Stop preview" : "Hear this voice"}
+          className="flex shrink-0 items-center gap-1.5 rounded-xl border border-ink-200 px-3 py-2.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
+        >
+          {loadingPreview ? (
+            <span className="animate-pulse text-xs">Loading…</span>
+          ) : playing ? (
+            <><Square className="h-3.5 w-3.5 fill-current" /> Stop</>
+          ) : (
+            <><Play className="h-3.5 w-3.5" /> Preview</>
+          )}
+        </button>
+      </div>
+      <p className="mt-1 text-[11px] text-ink-400">All voices from your xAI account — custom voices added in xAI&apos;s Voice Library appear here automatically.</p>
+      {previewError && <p className="mt-1 text-[11px] text-amber-600">{previewError}</p>}
     </div>
   );
 }
@@ -1289,7 +1305,7 @@ export function AgentModal({
             </Field>
             {form.kind === "voice" && voiceProvider === "xai" && (
               <div className="md:col-span-2">
-                <Field label="Voice (xAI) — tap Preview to hear each one">
+                <Field label="Voice (xAI) — pick from the dropdown, tap Preview to hear it">
                   <XaiVoicePicker value={form.voice} onChange={(v) => set("voice", v)} />
                 </Field>
               </div>

@@ -37,10 +37,15 @@ export function xaiApiKey(): string | null {
 }
 
 // Map whatever is stored in agent.voice (a legacy label like "Warm female ·
-// US English", a Grok label like "Ara · warm friendly female", or a bare id)
-// onto an xAI voice id.
+// US English", a Grok label like "Ara · warm friendly female", a custom-voice
+// label like "Clinic Voice · custom (voice_ab12cd)", or a bare id) onto an xAI
+// voice id.
 export function resolveXaiVoice(label: string | null | undefined): string {
-  const l = (label ?? "").toLowerCase();
+  const raw = label ?? "";
+  // Custom voices embed their raw id in trailing parentheses (see /api/xai/voices).
+  const custom = /\(([A-Za-z0-9_-]{2,64})\)\s*$/.exec(raw);
+  if (custom) return custom[1];
+  const l = raw.toLowerCase();
   for (const v of XAI_VOICES) if (l.includes(v.id)) return v.id;
   if (/female|woman/.test(l)) return "ara";
   if (/male|man/.test(l)) return "rex";

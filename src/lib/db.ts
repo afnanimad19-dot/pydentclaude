@@ -2619,20 +2619,26 @@ export type VoiceProvider = "xai" | "vapi";
 export async function fetchVoiceProvider(): Promise<VoiceProvider> {
   try {
     const ws = await getWorkspaceId();
-    const { data } = await supabase.from("connections").select("account_label").eq("workspace_id", ws).eq("provider", "voice_engine").maybeSingle();
+    // limit(1): if duplicate rows ever exist, don't error out — read one.
+    const { data } = await supabase.from("connections").select("account_label").eq("workspace_id", ws).eq("provider", "voice_engine").limit(1).maybeSingle();
     return data?.account_label === "vapi" ? "vapi" : "xai";
   } catch {
     return "xai";
   }
 }
 
+// Save = replace: delete any existing voice_engine row(s) then insert fresh —
+// idempotent, immune to duplicate rows and to update-vs-insert races. Then
+// VERIFY by reading back, so the UI can never show a switch that didn't stick.
 export async function saveVoiceProvider(p: VoiceProvider): Promise<{ ok: boolean; message: string }> {
   const ws = await getWorkspaceId();
   if (!ws) return { ok: false, message: "Sign in first." };
   try {
-    const { data } = await supabase.from("connections").select("id").eq("workspace_id", ws).eq("provider", "voice_engine").maybeSingle();
-    if (data?.id) await supabase.from("connections").update({ account_label: p, status: "connected" }).eq("id", data.id);
-    else await supabase.from("connections").insert({ workspace_id: ws, provider: "voice_engine", status: "connected", account_label: p });
+    await supabase.from("connections").delete().eq("workspace_id", ws).eq("provider", "voice_engine");
+    const { error } = await supabase.from("connections").insert({ workspace_id: ws, provider: "voice_engine", status: "connected", account_label: p });
+    if (error) return { ok: false, message: `Could not save the voice engine: ${error.message}` };
+    const now = await fetchVoiceProvider();
+    if (now !== p) return { ok: false, message: "The engine choice didn't persist — check the connections table permissions and try again." };
     return { ok: true, message: p === "xai" ? "Voice engine set to xAI Grok Voice." : "Voice engine set to Vapi." };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Could not save the voice engine." };

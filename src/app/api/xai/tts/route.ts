@@ -14,8 +14,13 @@ export async function GET(req: NextRequest) {
   if (!key) {
     return NextResponse.json({ error: "xAI voice isn't configured — add X_AI_VOICE_KEY in Netlify." }, { status: 503 });
   }
-  const voiceParam = (req.nextUrl.searchParams.get("voice") ?? "eve").toLowerCase();
-  const voice = XAI_VOICES.some((v) => v.id === voiceParam) ? voiceParam : "eve";
+  // Accept the built-in ids AND custom-voice ids from the account's library.
+  const voiceParam = (req.nextUrl.searchParams.get("voice") ?? "eve").trim();
+  const voice = XAI_VOICES.some((v) => v.id === voiceParam.toLowerCase())
+    ? voiceParam.toLowerCase()
+    : /^[A-Za-z0-9_-]{2,64}$/.test(voiceParam)
+    ? voiceParam
+    : "eve";
   const text = (req.nextUrl.searchParams.get("text") ?? SAMPLE_TEXT).slice(0, 300);
 
   const call = (body: Record<string, unknown>) =>
