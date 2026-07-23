@@ -150,6 +150,7 @@ export function buildXaiInstructions(agent: VoiceAgentRow): string {
     agent.knowledge_base && `KNOWLEDGE BASE (answer ONLY from this — the clinic's real doctors, services, prices, hours. Read all of it. If it isn't here, say you'll check with the team):\n${String(agent.knowledge_base).slice(0, 48000)}`,
     booking,
     "SPEAKING RULE — talk like a real human on the phone: SHORT turns, one sentence (two max, ~8–20 words), plain everyday words and contractions, then stop and let the caller respond. One idea per turn; never monologue, never read paragraphs or lists. Never read out symbols, markdown or URLs; say them like a human would. Never invent medical advice.",
+    "WEB SEARCH: you may use the web_search tool ONLY for general questions the knowledge base doesn't cover (e.g. directions, general dental info). NEVER use it for clinic facts — doctors, prices, hours and services come from the knowledge base alone.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -311,6 +312,9 @@ export function xaiAgentTools(agent: VoiceAgentRow): any[] {
       required: ["to", "subject", "body"],
     },
   });
+  // xAI's built-in live web search (same tool the console agents get). The
+  // instructions restrict it to general questions — clinic facts stay KB-only.
+  tools.push({ type: "web_search" });
   return tools;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */

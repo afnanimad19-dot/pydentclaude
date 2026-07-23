@@ -28,6 +28,7 @@ import {
   PhoneOff,
   Play,
   Square,
+  Download,
   SlidersHorizontal,
   ChevronDown,
   ShieldCheck,
@@ -1154,6 +1155,33 @@ export function AgentModal({
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
+  // The stored text for a KB file: this session's extraction, or the section
+  // saved under its "--- name ---" marker inside the combined knowledge base.
+  function kbTextFor(name: string): string {
+    if (fileTexts[name]) return fileTexts[name];
+    const kb = form.knowledgeBase ?? "";
+    const marker = `--- ${name} ---`;
+    const i = kb.indexOf(marker);
+    if (i === -1) return "";
+    const start = i + marker.length;
+    const next = kb.indexOf("\n--- ", start);
+    return kb.slice(start, next === -1 ? undefined : next).trim();
+  }
+
+  // Download a KB document's extracted text (originals aren't stored — the
+  // agent reads text, so text is what we keep and what you get back).
+  function downloadKbFile(name: string) {
+    const text = kbTextFor(name);
+    if (!text) return;
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = /\.(txt|md|csv|json)$/i.test(name) ? name : `${name}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function removeFile(name: string) {
     setForm((f) => ({ ...f, kbFiles: f.kbFiles.filter((x) => x !== name) }));
     setFileTexts((prev) => {
@@ -1502,11 +1530,33 @@ export function AgentModal({
             />
           )}
           {form.kind === "voice" && voiceProvider === "xai" && (
-            <div className="mt-4 rounded-xl border border-ink-100 bg-ink-50/40 p-4 text-xs text-ink-500">
-              <strong className="font-semibold text-ink-700">Grok voice (xAI)</strong> — turn detection, barge-in
-              interruptions, noise handling and transcription are built into the Grok voice model, so there&apos;s nothing
-              extra to tune here. Pick the voice and model above; the first message below is spoken word-for-word. You can
-              switch engines any time in Settings → Voice engine.
+            <div className="mt-4 space-y-2 rounded-xl border border-ink-100 bg-ink-50/40 p-4 text-xs text-ink-500">
+              <p>
+                <strong className="font-semibold text-ink-700">Grok voice (xAI)</strong> — turn detection, barge-in
+                interruptions, noise handling and transcription are built into the Grok voice model, so there&apos;s nothing
+                extra to tune here. Pick the voice and model above; the first message below is spoken word-for-word. Built-in
+                live <strong className="font-semibold text-ink-700">web search</strong> is included (clinic facts still come only
+                from the knowledge base). You can switch engines any time in Settings → Voice engine.
+              </p>
+              <p>
+                <strong className="font-semibold text-ink-700">Deploy to a phone number:</strong> saving mirrors this agent into
+                your{" "}
+                <a href="https://console.x.ai" target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 underline">
+                  xAI console
+                </a>{" "}
+                (Voice → Agents). Open it there → <em>Deployment</em> → add a Direct SIP number: point a number from Twilio, Telnyx,
+                Plivo or any SIP trunk at <code className="rounded bg-ink-100 px-1">sip:{"{number}"}@sip.voice.x.ai;transport=tls</code>.{" "}
+                <a
+                  href="https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech/sip#telephony-providers"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-brand-600 underline"
+                >
+                  Provider steps
+                </a>
+                . Connectors (Gmail / Google Calendar) need a one-time login in the console; on calls through Pydent, email and
+                calendar already work via your connected accounts.
+              </p>
             </div>
           )}
 
@@ -1555,6 +1605,7 @@ export function AgentModal({
               <ul className="mt-2 space-y-1.5">
                 {form.kbFiles.map((f) => {
                   const failed = (fileTexts[f] ?? "").startsWith("[Could not read");
+                  const hasText = !failed && !!kbTextFor(f);
                   return (
                   <li key={f} className="flex items-center justify-between rounded-lg border border-ink-100 bg-ink-50 px-3 py-2 text-sm text-ink-700">
                     <span className="flex items-center gap-2">
@@ -1565,9 +1616,16 @@ export function AgentModal({
                         <span className="text-xs text-emerald-600">{fileTexts[f].length.toLocaleString()} chars read</span>
                       ) : null}
                     </span>
-                    <button onClick={() => removeFile(f)} className="rounded p-1 text-ink-400 hover:text-rose-500">
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    <span className="flex items-center gap-0.5">
+                      {hasText && (
+                        <button onClick={() => downloadKbFile(f)} title="Download the extracted text" className="rounded p-1 text-ink-400 hover:text-brand-600">
+                          <Download className="h-4 w-4" />
+                        </button>
+                      )}
+                      <button onClick={() => removeFile(f)} title="Remove from the knowledge base" className="rounded p-1 text-ink-400 hover:text-rose-500">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </span>
                   </li>
                   );
                 })}
