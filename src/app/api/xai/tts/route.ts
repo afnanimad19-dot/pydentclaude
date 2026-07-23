@@ -32,12 +32,24 @@ export async function GET(req: NextRequest) {
     });
 
   try {
-    let res = await call({ text, voice_id: voice, language: "auto", output_format: { codec: "mp3" } });
-    // Older/newer API revisions can reject the output_format shape — retry bare.
-    if (!res.ok && res.status === 400) res = await call({ text, voice_id: voice, language: "auto" });
-    if (!res.ok) {
-      const detail = (await res.text().catch(() => "")).slice(0, 200);
-      return NextResponse.json({ error: `xAI TTS failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}` }, { status: 502 });
+    // Send the voice under BOTH accepted names — an API revision that only knows
+    // one would otherwise silently fall back to the default voice, making every
+    // preview sound identical. Walk a ladder if a strict revision rejects extras.
+    const bodies: Record<string, unknown>[] = [
+      { text, voice, voice_id: voice, language: "auto", output_format: { codec: "mp3" } },
+      { text, voice, voice_id: voice, language: "auto" },
+      { text, voice, language: "auto" },
+      { text, voice_id: voice, language: "auto" },
+    ];
+    let res: Response | null = null;
+    for (const b of bodies) {
+      res = await call(b);
+      if (res.ok) break;
+      if (res.status !== 400 && res.status !== 422) break; // only schema-style rejections ladder down
+    }
+    if (!res || !res.ok) {
+      const detail = res ? (await res.text().catch(() => "")).slice(0, 200) : "";
+      return NextResponse.json({ error: `xAI TTS failed (HTTP ${res?.status ?? "?"})${detail ? `: ${detail}` : ""}` }, { status: 502 });
     }
     const audio = await res.arrayBuffer();
     return new NextResponse(audio, {

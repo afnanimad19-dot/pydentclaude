@@ -56,6 +56,7 @@ import {
   appendTeamChatMessage,
   deleteTeamChat,
   fetchVoiceProvider,
+  getWorkspaceId,
   type VoiceProvider,
   type AiAgent,
   type DataSource,
@@ -198,7 +199,8 @@ function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: stri
     try {
       let url = urlsRef.current[id];
       if (!url) {
-        const res = await fetch(`/api/xai/tts?voice=${encodeURIComponent(id)}`);
+        // v=2 busts browser copies cached before the per-voice fix.
+        const res = await fetch(`/api/xai/tts?voice=${encodeURIComponent(id)}&v=2`);
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
           throw new Error(d.error ?? "Preview failed.");
@@ -1097,10 +1099,11 @@ export function AgentModal({
     if (!url || importingWeb) return;
     setImportingWeb(true);
     try {
+      const ws = await getWorkspaceId();
       const res = await fetch("/api/kb/website", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, ws }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not read the website.");

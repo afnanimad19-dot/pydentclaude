@@ -1,10 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
 
 // Fetches a clinic's web page and returns its readable text, so an agent can learn
 // from the website (hours, services, pricing, FAQs). Server-side to avoid CORS.
+// Order of attempts: Firecrawl whole-site crawl (if configured) → plain fetch →
+// the marketing engine's web_fetch_page (renders JavaScript sites properly), so
+// "Fetch site" works on modern JS-built clinic websites too.
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+export const maxDuration = 60;
+
+// Read the page through the engine's browser-grade fetcher. Returns null when
+// the engine isn't configured or came back empty, so callers keep their error.
+/* eslint-disable @typescript-eslint/no-explicit-any */
+async function fetchViaEngine(url: string, ws: string | null): Promise<string | null> {
+  try {
+    const creds = await getHfxCreds(ws);
+    if (!hfxConfigured(creds)) return null;
+    const r = await hfxCall("web_fetch_page", { url }, creds);
+    if (!r.ok) return null;
+    const chunks: string[] = [];
+    const push = (v: unknown) => {
+      if (typeof v === "string" && v.trim()) chunks.push(v);
+    };
+    push(r.data);
+    const d: any = r.data;
+    if (d && typeof d === "object") {
+      push(d.text);
+      push(d.content);
+      push(d.markdown);
+      push(d.page_text);
+      push(d.result);
+    }
+    for (const c of r.content ?? []) push((c as any)?.text);
+    const text = chunks.join("\n").trim();
+    return text.length >= 40 ? text : null;
+  } catch {
+    return null;
+  }
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 function htmlToText(html: string): string {
   return html
@@ -26,7 +61,7 @@ function htmlToText(html: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const { url } = await req.json().catch(() => ({}));
+  const { url, ws } = await req.json().catch(() => ({}));
   if (!url || typeof url !== "string") {
     return NextResponse.json({ error: "Provide a website URL." }, { status: 400 });
   }
@@ -55,18 +90,27 @@ export async function POST(req: NextRequest) {
       redirect: "follow",
       signal: AbortSignal.timeout(20_000),
     });
-    if (!res.ok) {
-      return NextResponse.json({ error: `Could not load the page (${res.status}).` }, { status: 502 });
+    if (res.ok) {
+      const html = await res.text();
+      const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      const title = titleMatch ? htmlToText(titleMatch[1]).slice(0, 200) : target;
+      const text = htmlToText(html);
+      if (text.length >= 40) {
+        return NextResponse.json({ ok: true, title, text: text.slice(0, 200_000) });
+      }
     }
-    const html = await res.text();
-    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    const title = titleMatch ? htmlToText(titleMatch[1]).slice(0, 200) : target;
-    const text = htmlToText(html);
-    if (text.length < 40) {
-      return NextResponse.json({ error: "The page had little readable text (it may be JavaScript-rendered)." }, { status: 422 });
-    }
-    return NextResponse.json({ ok: true, title, text: text.slice(0, 200_000) });
+    // Thin or blocked page (usually a JavaScript-rendered site) → let the
+    // engine's browser-grade fetcher render it.
+    const rendered = await fetchViaEngine(target, ws ?? null);
+    if (rendered) return NextResponse.json({ ok: true, title: target, text: rendered.slice(0, 200_000) });
+    return NextResponse.json(
+      { error: res.ok ? "The page had little readable text (it may be JavaScript-rendered, and the marketing engine couldn't read it either)." : `Could not load the page (${res.status}).` },
+      { status: res.ok ? 422 : 502 }
+    );
   } catch (e) {
+    // Network failure on the direct fetch — the engine may still reach it.
+    const rendered = await fetchViaEngine(target, ws ?? null);
+    if (rendered) return NextResponse.json({ ok: true, title: target, text: rendered.slice(0, 200_000) });
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Failed to fetch the website." },
       { status: 500 }
