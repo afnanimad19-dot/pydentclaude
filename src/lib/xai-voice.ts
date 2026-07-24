@@ -128,6 +128,36 @@ interface VoiceAgentRow {
   first_message_mode?: string;
   voice?: string;
   model?: string;
+  language?: string;
+}
+
+// BCP-47 hint for xAI's transcription (biases speech recognition toward the
+// agent's language — Grok auto-detects, this makes it reliable from word one).
+export function xaiLanguageHint(language?: string | null): string | null {
+  const l = (language ?? "").toLowerCase();
+  if (!l || l.startsWith("english")) return null; // auto-detect / English
+  if (l.includes("+")) return null; // mixed → let auto-detect follow the caller
+  const map: [RegExp, string][] = [
+    [/arabic/, "ar"], [/spanish/, "es"], [/french/, "fr"], [/german/, "de"],
+    [/hindi/, "hi"], [/urdu/, "ur"], [/bengali/, "bn"], [/russian/, "ru"],
+    [/japanese/, "ja"], [/korean/, "ko"], [/turkish/, "tr"], [/vietnamese/, "vi"],
+    [/indonesian/, "id"], [/dutch/, "nl"], [/polish/, "pl"], [/tagalog/, "fil"],
+    [/portuguese/, "pt"], [/italian/, "it"], [/mandarin|chinese/, "zh"],
+  ];
+  for (const [re, code] of map) if (re.test(l)) return code;
+  return null;
+}
+
+// Hard conversation-language rule for voice sessions (Arabic is the priority
+// case — natural warm spoken Arabic, Gulf/UAE style).
+function xaiLanguageRule(language?: string): string {
+  const l = (language ?? "").trim();
+  if (!l || /^english$/i.test(l)) return "";
+  if (/\+/.test(l)) return `LANGUAGE: The clinic serves callers in ${l}. Speak whichever of these the caller uses; follow the caller's language from their first words.`;
+  const arabic = /arabic/i.test(l)
+    ? " Speak natural, warm, everyday spoken Arabic (Gulf/UAE style is ideal) — not stiff formal prose. Keep medical terms simple, say numbers, prices and times the way people say them in Arabic, and keep the same short human turns."
+    : "";
+  return `LANGUAGE: Conduct the ENTIRE call in ${l} — greet, answer, ask questions, read the booking summary and confirm in ${l}.${arabic} Only switch if the caller clearly speaks a different language; then follow the caller.`;
 }
 
 // The system prompt for a live voice session — same structure the Vapi mapping
@@ -144,6 +174,7 @@ export function buildXaiInstructions(agent: VoiceAgentRow): string {
       : "";
   return [
     `You are ${agent.name ?? "the assistant"}, a voice AI for a dental clinic, on a live phone-quality call. Today is ${new Date().toISOString().slice(0, 10)}.`,
+    xaiLanguageRule(agent.language),
     agent.agent_identity && `AGENT IDENTITY (who you are, your tone and role):\n${agent.agent_identity}`,
     agent.instructions && `TASKS (what you do — your goals and the actions to perform):\n${agent.instructions}`,
     agent.behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${agent.behavior}`,

@@ -9,6 +9,7 @@ export interface AgentReplyInput {
   instructions?: string;
   behavior?: string;
   knowledgeBase?: string;
+  language?: string; // the agent's configured language, e.g. "Arabic"
   capabilities?: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean };
   patientContext?: string;
   sessionNote?: string;
@@ -24,6 +25,16 @@ export interface BookingArgs {
   email?: string;
 }
 
+// The agent's configured language becomes a hard conversation-language rule.
+// Arabic is the priority case: reply in natural, warm spoken Arabic throughout.
+export function languageRule(language?: string): string {
+  const l = (language ?? "").trim();
+  if (!l || /^english$/i.test(l)) return "";
+  if (/\+/.test(l)) return `LANGUAGE: The clinic serves patients in ${l}. Reply in the language the patient uses; greet in the language they wrote/spoke first.`;
+  const arabic = /arabic/i.test(l) ? " Use natural, warm, everyday spoken Arabic (Gulf/UAE style is ideal); keep medical terms simple, and write numbers/times clearly." : "";
+  return `LANGUAGE: Conduct the ENTIRE conversation in ${l} — greet, answer, ask questions and confirm bookings in ${l}.${arabic} Only switch language if the patient clearly uses a different one; then follow the patient.`;
+}
+
 function buildSystem(input: AgentReplyInput): string {
   const { agentName = "Assistant", agentIdentity = "", instructions = "", behavior = "", knowledgeBase = "", capabilities = {}, patientContext = "", sessionNote = "" } = input;
   const abilities = [
@@ -37,6 +48,7 @@ function buildSystem(input: AgentReplyInput): string {
   return [
     `You are ${agentName}, an AI assistant for a dental clinic, chatting with a patient.`,
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
+    languageRule(input.language),
     agentIdentity && `AGENT IDENTITY (who you are, your tone and role):\n${agentIdentity}`,
     instructions && `TASKS (what you do — your goals and the actions to perform):\n${instructions}`,
     behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${behavior}`,

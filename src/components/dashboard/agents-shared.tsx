@@ -1755,6 +1755,7 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
           instructions: agent.instructions,
           behavior: agent.behavior,
           knowledgeBase: agent.knowledgeBase,
+          language: agent.language,
           capabilities: { canBook: agent.canBook, canReschedule: agent.canReschedule, canCancel: agent.canCancel },
           messages: next,
         }),

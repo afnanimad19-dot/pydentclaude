@@ -250,6 +250,36 @@ function bookingTools(
   return tools;
 }
 
+// Speech-to-text per language. Deepgram nova-2 covers English well and its
+// "multi" mode handles es/fr/de/hi/ru/pt/ja/it/nl — but NOT Arabic (and a few
+// others), which would transcribe as garbage. Those route to Azure STT, whose
+// coverage includes Gulf Arabic.
+function transcriberFor(language?: string): Record<string, unknown> {
+  const l = (language ?? "").toLowerCase();
+  const azure = (code: string) => ({ provider: "azure", language: code });
+  if (l.includes("arabic")) return azure("ar-AE");
+  if (l.includes("urdu")) return azure("ur-PK");
+  if (l.includes("turkish")) return azure("tr-TR");
+  if (l.includes("bengali")) return azure("bn-IN");
+  if (l.includes("vietnamese")) return azure("vi-VN");
+  if (l.includes("indonesian")) return azure("id-ID");
+  if (l.includes("korean")) return azure("ko-KR");
+  if (l.includes("mandarin") || l.includes("chinese")) return azure("zh-CN");
+  if (l.includes("polish")) return azure("pl-PL");
+  if (l.includes("tagalog")) return azure("fil-PH");
+  const multi = /spanish|french|german|hindi|russian|portuguese|japanese|italian|dutch|\+/.test(l);
+  return { provider: "deepgram", model: "nova-2", language: multi ? "multi" : "en" };
+}
+
+// Hard conversation-language rule (Arabic priority: warm Gulf/UAE spoken style).
+function languageLine(language?: string): string {
+  const l = (language ?? "").trim();
+  if (!l || /^english$/i.test(l)) return "";
+  if (/\+/.test(l)) return `LANGUAGE: The clinic serves callers in ${l}. Speak whichever the caller uses; follow their language from their first words.`;
+  const arabic = /arabic/i.test(l) ? " Speak natural, warm, everyday spoken Arabic (Gulf/UAE style) — keep medical terms simple and say numbers, prices and times the way people say them in Arabic." : "";
+  return `LANGUAGE: Conduct the ENTIRE call in ${l} — greet, answer, collect details, read the booking summary and confirm in ${l}.${arabic} Only switch if the caller clearly speaks another language.`;
+}
+
 function bookingPrompt(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean }): string {
   if (!caps.canBook && !caps.canReschedule && !caps.canCancel) return "";
   return (
@@ -303,6 +333,7 @@ export async function POST(req: NextRequest) {
         {
           role: "system",
           content: [
+            languageLine(agent.language),
             agent.agentIdentity && `AGENT IDENTITY (who you are, your tone and role):\n${agent.agentIdentity}`,
             agent.instructions && `TASKS (what you do — your goals and the actions to perform):\n${agent.instructions}`,
             agent.behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${agent.behavior}`,
@@ -320,7 +351,7 @@ export async function POST(req: NextRequest) {
     voice: agent.voiceId
       ? { provider: "11labs", voiceId: agent.voiceId, model: "eleven_multilingual_v2" }
       : { provider: "vapi", voiceId: voiceFor(agent.voice) },
-    transcriber: { provider: "deepgram", model: "nova-2", language: agent.language?.includes("Spanish") ? "multi" : "en" },
+    transcriber: transcriberFor(agent.language),
     // Advanced call-tuning (turn detection, interruptions, noise, voicemail,
     // limits, idle reminders, privacy, post-call extraction).
     ...advancedFromSettings(agent.voiceSettings),

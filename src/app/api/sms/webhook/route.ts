@@ -49,6 +49,7 @@ async function autoReply(ws: string, conversationId: string, from: string, name:
     instructions: agent.instructions ?? "",
     behavior: agent.behavior ?? "",
     knowledgeBase: agent.knowledge_base ?? "",
+    language: agent.language ?? "",
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
     patientContext: `Contact name: ${name}. Contact phone: ${from}.${apptContext} Keep replies short — this is SMS.`,
     sessionNote: "",

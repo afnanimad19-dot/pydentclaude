@@ -428,6 +428,7 @@ async function storeInbound(
     instructions: agent.instructions ?? "",
     behavior: agent.behavior ?? "",
     knowledgeBase: agent.knowledge_base ?? "",
+    language: agent.language ?? "",
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
     patientContext: `Contact name: ${name}. Contact phone: ${contactId}.${apptContext}`,
     sessionNote,

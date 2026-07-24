@@ -87,7 +87,13 @@ export class XaiRealtimeCall {
             instructions: cfg.instructions,
             turn_detection: { type: "server_vad" },
             audio: {
-              input: { format: { type: "audio/pcm", rate: 24000 }, transport: "json" },
+              input: {
+                format: { type: "audio/pcm", rate: 24000 },
+                transport: "json",
+                // Bias speech recognition toward the agent's language (e.g. "ar"
+                // for an Arabic agent) — Grok auto-detects, this locks it in.
+                ...(cfg.languageHint ? { transcription: { language_hint: cfg.languageHint } } : {}),
+              },
               output: { format: { type: "audio/pcm", rate: 24000 }, transport: "json" },
             },
             ...(Array.isArray(cfg.tools) && cfg.tools.length ? { tools: cfg.tools } : {}),

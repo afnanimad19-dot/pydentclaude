@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { createXaiClientSecret, buildXaiInstructions, xaiAgentTools, resolveXaiVoice, XAI_REALTIME_URL } from "@/lib/xai-voice";
+import { createXaiClientSecret, buildXaiInstructions, xaiAgentTools, resolveXaiVoice, xaiLanguageHint, XAI_REALTIME_URL } from "@/lib/xai-voice";
 
 // Starts an in-browser Grok voice session for an agent: loads the agent's full
 // config, builds the realtime session payload (instructions, voice, tools), and
@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
     firstMessage: agent.first_message || `Hi, this is ${agent.name} from the dental office. How can I help?`,
     greetFirst: (agent.first_message_mode ?? "assistant_first") !== "user_first",
     agentName: agent.name,
+    languageHint: xaiLanguageHint(agent.language),
     // Surface a couple of tuning knobs the browser session applies.
     maxSilenceSec: Number(vs.maxSilenceDuration ?? 30) || 30,
   });
