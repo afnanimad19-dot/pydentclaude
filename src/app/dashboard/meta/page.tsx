@@ -6,7 +6,6 @@ import { Card, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
 import { getWorkspaceId } from "@/lib/db";
-import { AdsStatusRow } from "@/components/dashboard/ads-status-row";
 import { META_OBJECTIVES, strategiesFor, conversionsFor, MESSAGING_APPS, PLACEMENTS, type MetaStrategy } from "@/lib/meta-strategies";
 
 // Meta Ads — live campaigns with full management, Meta-style:
@@ -77,6 +76,37 @@ const statusTone = (s: string): "green" | "amber" | "gray" | "red" =>
 const isActive = (s: string) => /ACTIVE/i.test(s);
 const isPaused = (s: string) => /PAUSED/i.test(s);
 const objLabel = (o: string) => o.replaceAll("OUTCOME_", "").replaceAll("_", " ").toLowerCase();
+
+// Meta-style hover card for the Alerts column: hover the icon and a rich
+// popover lists every issue/recommendation in full — like Ads Manager's
+// "Opportunity score" panel, instead of a squinty browser tooltip.
+function AlertHover({ tone, items }: { tone: "issue" | "rec"; items: string[] }) {
+  const isIssue = tone === "issue";
+  return (
+    <span className={`group relative cursor-help ${isIssue ? "text-rose-500" : "text-amber-500"}`}>
+      {isIssue ? <AlertTriangle className="h-4 w-4" /> : <Lightbulb className="h-4 w-4" />}
+      <div className="invisible absolute left-0 top-6 z-40 w-96 rounded-2xl border border-ink-200 bg-surface p-4 text-left opacity-0 shadow-2xl transition-opacity duration-100 group-hover:visible group-hover:opacity-100">
+        <div className="flex items-center justify-between gap-2">
+          <p className={`flex items-center gap-1.5 text-xs font-semibold ${isIssue ? "text-rose-600" : "text-ink-900"}`}>
+            {isIssue ? <AlertTriangle className="h-3.5 w-3.5" /> : <Lightbulb className="h-3.5 w-3.5 text-amber-500" />}
+            {isIssue ? `${items.length} issue${items.length > 1 ? "s" : ""} need attention` : `${items.length} recommendation${items.length > 1 ? "s" : ""}`}
+          </p>
+          {!isIssue && (
+            <span className="rounded-full bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold text-brand-600">from Meta + Pydent</span>
+          )}
+        </div>
+        <ul className="mt-2.5 max-h-64 space-y-1.5 overflow-y-auto">
+          {items.map((t, i) => (
+            <li key={i} className={`rounded-xl p-2.5 text-xs leading-relaxed ${isIssue ? "bg-rose-500/5 text-rose-700 dark:text-rose-300" : "bg-ink-50 text-ink-700"}`}>
+              {t}
+            </li>
+          ))}
+        </ul>
+        {!isIssue && <p className="mt-2 text-[10px] text-ink-400">Ask Helena to apply any of these — she can edit the campaign for you.</p>}
+      </div>
+    </span>
+  );
+}
 
 export default function MetaAdsPage() {
   const [data, setData] = useState<MetaData | null>(null);
@@ -261,7 +291,6 @@ export default function MetaAdsPage() {
       </div>
 
       {/* All ad platforms at a glance — connection + last-30-day spend. */}
-      <AdsStatusRow ws={ws} />
 
       {loading && !data && <Card className="p-10 text-center text-sm text-ink-400">Loading Meta ads…</Card>}
 
@@ -353,11 +382,9 @@ export default function MetaAdsPage() {
                         <td className="px-4 py-3"><StatusBadge status={c.status} tone={statusTone(c.status)} /></td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
-                            {c.issues.length > 0 && (
-                              <span title={c.issues.join("\n")} className="cursor-help text-rose-500"><AlertTriangle className="h-4 w-4" /></span>
-                            )}
+                            {c.issues.length > 0 && <AlertHover tone="issue" items={c.issues} />}
                             {(c.recommendations.length > 0 || (c.smart?.length ?? 0) > 0) && (
-                              <span title={[...c.recommendations, ...(c.smart ?? [])].join("\n")} className="cursor-help text-amber-500"><Lightbulb className="h-4 w-4" /></span>
+                              <AlertHover tone="rec" items={[...c.recommendations, ...(c.smart ?? [])]} />
                             )}
                             {c.issues.length === 0 && c.recommendations.length === 0 && (c.smart?.length ?? 0) === 0 && <span className="text-xs text-ink-300">—</span>}
                           </div>
@@ -836,10 +863,11 @@ function CreateCampaignWizard({ currency, ws, onClose, onCreate }: {
     }
   }
 
-  async function searchGeo() {
-    if (geoQuery.trim().length < 2) return;
+  async function searchGeo(q?: string) {
+    const query = (q ?? geoQuery).trim();
+    if (query.length < 2) return;
     setGeoSearching(true);
-    const res = await fetch(`/api/hyperfx/meta/geo?ws=${ws ?? ""}&q=${encodeURIComponent(geoQuery.trim())}`);
+    const res = await fetch(`/api/hyperfx/meta/geo?ws=${ws ?? ""}&q=${encodeURIComponent(query)}`);
     const d = await res.json().catch(() => ({}));
     setGeoResults((d.results ?? []).slice(0, 15));
     setGeoSearching(false);
@@ -1035,10 +1063,23 @@ function CreateCampaignWizard({ currency, ws, onClose, onCreate }: {
             <div className="space-y-4">
               <Field label="Search for areas to target (city, emirate/region, or neighbourhood)">
                 <div className="flex gap-2">
-                  <input className={inputCls} value={geoQuery} onChange={(e) => setGeoQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); searchGeo(); } }} placeholder="Dubai, Abu Dhabi, Dubai Marina…" />
-                  <button onClick={searchGeo} disabled={geoSearching} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">{geoSearching ? "…" : "Search"}</button>
+                  <input className={inputCls} value={geoQuery} onChange={(e) => setGeoQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void searchGeo(); } }} placeholder="Dubai, Abu Dhabi, Dubai Marina…" />
+                  <button onClick={() => void searchGeo()} disabled={geoSearching} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50">{geoSearching ? "…" : "Search"}</button>
                 </div>
               </Field>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-ink-400">Quick pick:</span>
+                {["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Al Ain", "Ras Al Khaimah"].map((city) => (
+                  <button
+                    key={city}
+                    onClick={() => { setGeoQuery(city); void searchGeo(city); }}
+                    disabled={geoSearching}
+                    className="rounded-full border border-ink-200 px-2.5 py-1 text-xs font-medium text-ink-600 hover:border-brand-400 hover:text-brand-600 disabled:opacity-50"
+                  >
+                    {city}
+                  </button>
+                ))}
+              </div>
               {geoResults.length > 0 && (
                 <div className="rounded-xl border border-ink-200 divide-y divide-ink-100">
                   {geoResults.map((g) => (
