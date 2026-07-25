@@ -175,6 +175,7 @@ export function buildXaiInstructions(agent: VoiceAgentRow): string {
   return [
     `You are ${agent.name ?? "the assistant"}, a voice AI for a dental clinic, on a live phone-quality call. Today is ${new Date().toISOString().slice(0, 10)}.`,
     xaiLanguageRule(agent.language),
+    "MULTILINGUAL — any caller, any language: you understand and speak 20+ languages (Arabic, Spanish, French, Hindi, Urdu, Russian, Turkish and more). The moment the caller speaks a different language than your current one, SWITCH and conduct the rest of the call in the caller's language — greetings, questions, the booking summary, the confirmation, everything. The knowledge base may be written in English: translate its facts (doctors, services, prices, hours) naturally into the caller's language on the fly. NEVER say you only speak English and never ask the caller to switch languages.",
     agent.agent_identity && `AGENT IDENTITY (who you are, your tone and role):\n${agent.agent_identity}`,
     agent.instructions && `TASKS (what you do — your goals and the actions to perform):\n${agent.instructions}`,
     agent.behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${agent.behavior}`,

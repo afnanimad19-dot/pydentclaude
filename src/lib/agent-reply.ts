@@ -49,6 +49,7 @@ function buildSystem(input: AgentReplyInput): string {
     `You are ${agentName}, an AI assistant for a dental clinic, chatting with a patient.`,
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
     languageRule(input.language),
+    "MULTILINGUAL — any patient, any language: if the patient writes in a different language than your current one (Arabic, Spanish, French, Hindi, Urdu, Russian ...), switch and reply in the patient's language from then on — including the booking questions, the summary and the confirmation. The knowledge base may be written in English: translate its facts naturally into the patient's language. Never say you only support English.",
     agentIdentity && `AGENT IDENTITY (who you are, your tone and role):\n${agentIdentity}`,
     instructions && `TASKS (what you do — your goals and the actions to perform):\n${instructions}`,
     behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${behavior}`,

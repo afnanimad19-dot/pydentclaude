@@ -334,6 +334,7 @@ export async function POST(req: NextRequest) {
           role: "system",
           content: [
             languageLine(agent.language),
+            "MULTILINGUAL: if the caller speaks another language you can understand, reply in that language — translating knowledge-base facts naturally. Never say you only speak English.",
             agent.agentIdentity && `AGENT IDENTITY (who you are, your tone and role):\n${agent.agentIdentity}`,
             agent.instructions && `TASKS (what you do — your goals and the actions to perform):\n${agent.instructions}`,
             agent.behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${agent.behavior}`,
