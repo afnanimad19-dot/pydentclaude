@@ -178,6 +178,27 @@ const AGENTS: TeamAgent[] = [
 
 const UNLOCKED = new Set(AGENTS.map((a) => a.key)); // package gating comes with the admin panel
 
+// Live connectivity comes from the marketing engine (Hyperfx) — platforms are
+// connected THERE, not via in-app OAuth — so each channel chip matches the
+// engine's toolkit ids to light up green.
+const CHANNEL_ENGINE_MATCH: Record<string, RegExp> = {
+  instagram: /instagram/,
+  facebook: /^meta_business/,
+  meta_ads: /^meta_business/,
+  tiktok: /tiktok/,
+  wordpress_self: /wordpress/,
+  google_ads: /^google_ads/,
+  google_search_console: /search_console/,
+  google_analytics: /google_analytics/,
+  google_business: /business_profile|google_business/,
+  reddit: /reddit/,
+};
+
+function engineHas(key: string, ids: string[]): boolean {
+  const re = CHANNEL_ENGINE_MATCH[key];
+  return !!re && ids.some((id) => re.test(id));
+}
+
 export default function TeamAiPage() {
   const [active, setActive] = useState<TeamAgent | null>(null);
 
@@ -222,6 +243,7 @@ export default function TeamAiPage() {
 
 function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => void }) {
   const [connected, setConnected] = useState<Set<string>>(new Set());
+  const [engineIds, setEngineIds] = useState<string[]>([]);
   const [website, setWebsite] = useState("");
   const [ws, setWs] = useState<string | null>(null);
   const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: ChatContent }[]>([]);
@@ -326,6 +348,12 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
 
   useEffect(() => {
     fetchConnections().then((c) => setConnected(new Set(c.map((x) => x.provider))));
+    // Live engine connectivity (the source of truth for the channel chips).
+    getWorkspaceId()
+      .then((w) => fetch(`/api/hyperfx/apps?ws=${w ?? ""}`))
+      .then((r) => r.json())
+      .then((d) => setEngineIds(((d.apps ?? []) as { id: string; connected: boolean }[]).filter((a) => a.connected).map((a) => a.id)))
+      .catch(() => {});
     fetchClinicSettings().then((s) => setWebsite(s.website));
     fetchBrandKnowledge().then(setBrand);
     fetchBrandDocuments().then(setBrandDocs);
@@ -482,7 +510,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">Channels</p>
             <div className="flex flex-wrap gap-1.5">
               {agent.channels.map((ch) => {
-                const on = ch.builtin || connected.has(ch.key);
+                const on = ch.builtin || engineHas(ch.key, engineIds) || connected.has(ch.key);
                 return (
                   <span key={ch.key} className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${on ? "bg-emerald-500/15 text-emerald-600" : "bg-ink-100 text-ink-400"}`}>
                     <span className={`h-1.5 w-1.5 rounded-full ${on ? "bg-emerald-500" : "bg-ink-300"}`} /> {ch.label}

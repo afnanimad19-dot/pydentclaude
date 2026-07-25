@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { teamLlmCall } from "@/lib/team-llm";
 import { HFX_TEAM_TOOLS, execHyperfxTool, hyperfxSystemNote, hfxMetaPerformance, hfxGoogleAdsPerformance } from "@/lib/hyperfx-team-tools";
 import { wpPublishPost, wpUploadMedia } from "@/lib/wp-publish";
 import { generateImage } from "@/lib/image-gen";
@@ -16,18 +17,8 @@ import { firecrawlScrape } from "@/lib/firecrawl";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const OPENROUTER = "https://openrouter.ai/api/v1/chat/completions";
-
 /* eslint-disable @typescript-eslint/no-explicit-any */
-async function call(apiKey: string, body: Record<string, any>) {
-  const res = await fetch(OPENROUTER, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: process.env.TEAM_AI_MODEL ?? "openai/gpt-4o-mini", max_tokens: 3200, ...body }),
-  });
-  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  return res.json();
-}
+const call = (apiKey: string, body: Record<string, any>) => teamLlmCall(apiKey, body, 3200);
 
 const TOOLS = [
   {
