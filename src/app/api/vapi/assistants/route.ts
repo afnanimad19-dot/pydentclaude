@@ -327,7 +327,10 @@ export async function POST(req: NextRequest) {
     server: { url: serverUrl, ...(process.env.VAPI_WEBHOOK_SECRET ? { secret: process.env.VAPI_WEBHOOK_SECRET } : {}) },
     model: {
       provider: "openai",
-      model: agent.model || "gpt-4o-mini",
+      // An agent edited under the xAI engine may carry a grok-voice model —
+      // Vapi's OpenAI provider can't run that, and the call silently fails to
+      // answer. Map any non-OpenAI model to a safe default.
+      model: /^grok/i.test(agent.model ?? "") ? "gpt-4o-mini" : agent.model || "gpt-4o-mini",
       ...(tools.length ? { tools } : {}),
       messages: [
         {
