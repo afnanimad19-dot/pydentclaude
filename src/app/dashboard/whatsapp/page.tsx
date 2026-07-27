@@ -3,11 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { MessageCircle, Megaphone, Plus, Zap } from "lucide-react";
-import { Card, PageHeader, DemoBanner, StatusBadge, Avatar, StatCard } from "@/components/ui";
+import { Card, PageHeader, StatusBadge, Avatar, StatCard } from "@/components/ui";
 import { Modal } from "@/components/modal";
 import { BroadcastWizard } from "@/components/dashboard/broadcast-wizard";
-import { fetchWaBroadcasts, fetchWaBroadcastRecipients, type WaBroadcast, type WaBroadcastRecipient } from "@/lib/db";
-import { broadcasts, conversations, type Broadcast } from "@/lib/mock-data";
+import { fetchWaBroadcasts, fetchWaBroadcastRecipients, fetchWaConversations, fetchWaStats, type WaBroadcast, type WaBroadcastRecipient, type WaConversation, type WaStats } from "@/lib/db";
 
 type Tab = "chats" | "broadcasts";
 
@@ -21,12 +20,16 @@ export default function WhatsAppPage() {
   const tab: Tab = urlTab === "broadcasts" ? "broadcasts" : "chats";
   const setTab = (t: Tab) => router.replace(`/dashboard/whatsapp?tab=${t}`, { scroll: false });
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [selected, setSelected] = useState<Broadcast | null>(null);
   const [liveBroadcasts, setLiveBroadcasts] = useState<WaBroadcast[]>([]);
   const [selectedLive, setSelectedLive] = useState<WaBroadcast | null>(null);
-  const waConversations = conversations.filter((c) => c.channel === "whatsapp");
+  const [chats, setChats] = useState<WaConversation[]>([]);
+  const [stats, setStats] = useState<WaStats>({ chats: 0, botReplies30d: 0, booked30d: 0 });
 
-  const loadLive = useCallback(() => { fetchWaBroadcasts().then(setLiveBroadcasts); }, []);
+  const loadLive = useCallback(() => {
+    fetchWaBroadcasts().then(setLiveBroadcasts);
+    fetchWaConversations().then((all) => setChats(all.filter((c) => c.channel === "whatsapp")));
+    fetchWaStats().then(setStats);
+  }, []);
   useEffect(() => {
     loadLive();
     const t = setInterval(loadLive, 10000);
@@ -36,9 +39,7 @@ export default function WhatsAppPage() {
   return (
     <>
       {wizardOpen && <BroadcastWizard onClose={() => setWizardOpen(false)} onDone={loadLive} />}
-      {selected && <BroadcastDetail broadcast={selected} onClose={() => setSelected(null)} />}
       {selectedLive && <LiveBroadcastDetail broadcast={selectedLive} onClose={() => setSelectedLive(null)} />}
-      <DemoBanner context="WhatsApp Business is not connected yet — these are sample chats, broadcasts and flows." />
       <PageHeader
         title="WhatsApp"
         subtitle="Two-way chats, broadcast campaigns and automation flows on WhatsApp Business."
@@ -74,24 +75,27 @@ export default function WhatsAppPage() {
       {tab === "chats" && (
         <div className="grid gap-4">
           <div className="grid gap-4 md:grid-cols-3">
-            <StatCard icon={MessageCircle} label="Active chats" value={String(waConversations.length)} hint="in the inbox" accent="green" />
-            <StatCard icon={Zap} label="Bot resolution rate" value="78%" hint="resolved without a human" accent="brand" />
-            <StatCard icon={Megaphone} label="Booked from WhatsApp" value="49" hint="this month" accent="violet" />
+            <StatCard icon={MessageCircle} label="Active chats" value={String(stats.chats)} hint="in the inbox" accent="green" />
+            <StatCard icon={Zap} label="AI auto-replies" value={String(stats.botReplies30d)} hint="last 30 days" accent="brand" />
+            <StatCard icon={Megaphone} label="Booked from WhatsApp" value={String(stats.booked30d)} hint="last 30 days" accent="violet" />
           </div>
           <Card>
-            {waConversations.map((c) => (
+            {chats.length === 0 && (
+              <p className="px-5 py-8 text-center text-sm text-ink-400">No WhatsApp chats yet — they appear here the moment a patient messages your number.</p>
+            )}
+            {chats.map((c) => (
               <a
                 key={c.id}
                 href="/dashboard/inbox"
                 className="flex items-center gap-3 border-b border-ink-100 px-5 py-4 last:border-0 hover:bg-ink-50"
               >
-                <Avatar name={c.patientName} />
+                <Avatar name={c.contactName} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-ink-900">{c.patientName}</p>
-                    <span className="text-xs text-ink-400">{c.time}</span>
+                    <p className="text-sm font-medium text-ink-900">{c.contactName}</p>
+                    <span className="text-xs text-ink-400">{(c.lastTime ?? "").slice(0, 16).replace("T", " ")}</span>
                   </div>
-                  <p className="truncate text-sm text-ink-500">{c.preview}</p>
+                  <p className="truncate text-sm text-ink-500">{c.lastMessage}</p>
                 </div>
                 {c.unread > 0 && (
                   <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[10px] font-semibold text-white">
@@ -138,31 +142,6 @@ export default function WhatsAppPage() {
                   <td className="px-4 py-4 text-right"><span className="text-xs font-medium text-brand-600 dark:text-brand-300">View →</span></td>
                 </tr>
               ))}
-              {broadcasts
-                .filter((b) => b.channel === "whatsapp")
-                .map((b) => (
-                  <tr
-                    key={b.id}
-                    onClick={() => setSelected(b)}
-                    className="cursor-pointer border-b border-ink-100 last:border-0 hover:bg-ink-50/60"
-                  >
-                    <td className="px-5 py-4">
-                      <p className="font-medium text-ink-900">{b.name}</p>
-                      <p className="text-xs text-ink-400">{b.status === "Sent" ? `Sent ${b.sentAt}` : b.status === "Scheduled" ? `Scheduled for ${b.sentAt}` : "Not sent yet"}</p>
-                    </td>
-                    <td className="px-4 py-4 text-ink-600">{b.audience}</td>
-                    <td className="px-4 py-4 text-right text-ink-800">{b.delivered || "—"}</td>
-                    <td className="px-4 py-4 text-right text-ink-800">{b.read || "—"}</td>
-                    <td className="px-4 py-4 text-right text-ink-800">{b.replied || "—"}</td>
-                    <td className="px-4 py-4 text-right font-semibold text-emerald-600">{b.booked || "—"}</td>
-                    <td className="px-4 py-4">
-                      <StatusBadge status={b.status} tone={statusTone[b.status]} />
-                    </td>
-                    <td className="px-4 py-4 text-right">
-                      <span className="text-xs font-medium text-brand-600 dark:text-brand-300">View →</span>
-                    </td>
-                  </tr>
-                ))}
             </tbody>
           </table>
         </Card>
@@ -172,74 +151,6 @@ export default function WhatsAppPage() {
   );
 }
 
-function BroadcastDetail({ broadcast: b, onClose }: { broadcast: Broadcast; onClose: () => void }) {
-  const base = Math.max(b.recipients, 1);
-  const pct = (n: number) => Math.round((n / base) * 100);
-  const funnel = [
-    { label: "Recipients", value: b.recipients, color: "bg-ink-400" },
-    { label: "Delivered", value: b.delivered, color: "bg-blue-500" },
-    { label: "Read", value: b.read, color: "bg-violet-500" },
-    { label: "Replied", value: b.replied, color: "bg-amber-500" },
-    { label: "Booked", value: b.booked, color: "bg-emerald-500" },
-  ];
-
-  return (
-    <Modal open onClose={onClose} title={b.name} subtitle={`${b.audience} · ${b.channel.toUpperCase()}`}>
-      <div className="grid gap-5">
-        {/* Status + timing */}
-        <div className="flex flex-wrap items-center gap-3">
-          <StatusBadge status={b.status} tone={statusTone[b.status]} />
-          <span className="text-sm text-ink-500">
-            {b.status === "Sent" ? `Sent ${b.sentAt}` : b.status === "Scheduled" ? `Scheduled for ${b.sentAt}` : "Not sent yet"}
-          </span>
-        </div>
-
-        {/* Headline numbers */}
-        <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-xl border border-ink-100 px-4 py-3">
-            <p className="text-xs text-ink-400">Delivery rate</p>
-            <p className="mt-1 text-2xl font-semibold text-ink-900">{pct(b.delivered)}%</p>
-          </div>
-          <div className="rounded-xl border border-ink-100 px-4 py-3">
-            <p className="text-xs text-ink-400">Read rate</p>
-            <p className="mt-1 text-2xl font-semibold text-ink-900">{pct(b.read)}%</p>
-          </div>
-          <div className="rounded-xl border border-ink-100 px-4 py-3">
-            <p className="text-xs text-ink-400">Booked</p>
-            <p className="mt-1 text-2xl font-semibold text-emerald-600">{b.booked}</p>
-          </div>
-        </div>
-
-        {/* Funnel */}
-        <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-400">Delivery funnel</p>
-          <div className="space-y-2.5">
-            {funnel.map((f) => (
-              <div key={f.label}>
-                <div className="mb-1 flex items-center justify-between text-sm">
-                  <span className="font-medium text-ink-800">{f.label}</span>
-                  <span className="text-ink-500">{f.value.toLocaleString()} · {pct(f.value)}%</span>
-                </div>
-                <div className="h-2.5 overflow-hidden rounded-full bg-ink-100">
-                  <div className={`h-full rounded-full ${f.color}`} style={{ width: `${pct(f.value)}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Template that was sent */}
-        <div className="rounded-xl border border-ink-200 bg-ink-50/60 p-4">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink-400">Template sent</p>
-            <code className="rounded-md bg-surface px-2 py-0.5 font-mono text-xs text-ink-600">{b.template}</code>
-          </div>
-          <p className="mt-2.5 rounded-lg bg-surface p-3 text-sm leading-relaxed text-ink-800">{b.message}</p>
-        </div>
-      </div>
-    </Modal>
-  );
-}
 
 function LiveBroadcastDetail({ broadcast: b, onClose }: { broadcast: WaBroadcast; onClose: () => void }) {
   const [recipients, setRecipients] = useState<WaBroadcastRecipient[]>([]);

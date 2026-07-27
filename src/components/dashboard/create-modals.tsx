@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { CalendarDays, CheckCircle2, AlertTriangle, Folder } from "lucide-react";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import {
   createPatient,
   createAppointment,
+  fetchAppointments,
   fetchFolders,
   fetchWaTemplates,
+  getWorkspaceId,
   type PatientFolder,
   type WaTemplate,
 } from "@/lib/db";
@@ -124,13 +126,25 @@ export function NewPatientModal({
   );
 }
 
-const SLOT_DATES: Record<string, string> = {
-  "Mon 15": "2026-06-15",
-  "Tue 16": "2026-06-16",
-  "Wed 17": "2026-06-17",
-  "Thu 18": "2026-06-18",
-  "Fri 19": "2026-06-19",
-};
+// The next 6 real days starting today, as { label: "Mon 28", date: "2026-07-28" }.
+function upcomingDays(): { label: string; date: string }[] {
+  const out: { label: string; date: string }[] = [];
+  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(Date.now() + i * 86400000);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    out.push({ label: `${names[d.getDay()]} ${d.getDate()}`, date: iso });
+  }
+  return out;
+}
+
+// Clinic hours 09:00–17:00 in half-hour slots — the same grid the AI agents'
+// get_available_slots uses, so both sides of the app agree on availability.
+const DAY_TIMES: string[] = (() => {
+  const t: string[] = [];
+  for (let h = 9; h < 17; h++) for (const m of ["00", "30"]) t.push(`${String(h).padStart(2, "0")}:${m}`);
+  return t;
+})();
 
 export function NewAppointmentModal({
   open,
@@ -149,13 +163,27 @@ export function NewAppointmentModal({
 }) {
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
-  const [slot, setSlot] = useState<string | null>(null);
+  const [slot, setSlot] = useState<{ date: string; time: string; label: string } | null>(null);
   const [selectedPatient, setSelectedPatient] = useState(patientId ?? "");
   const [provider, setProvider] = useState("Dr. Patel");
   const [operatory, setOperatory] = useState("Op 1");
   const [procedure, setProcedure] = useState("");
-  const days = Object.keys(SLOT_DATES);
-  const times = ["9:00", "10:00", "11:30", "14:00", "15:30", "16:30"];
+  const [mirrorGcal, setMirrorGcal] = useState(true);
+  // REAL availability: which date+time slots are already booked.
+  const [taken, setTaken] = useState<Set<string>>(new Set());
+  const days = useMemo(() => upcomingDays(), []);
+
+  useEffect(() => {
+    if (!open) return;
+    fetchAppointments().then(({ appointments }) => {
+      const t = new Set<string>();
+      for (const a of appointments) {
+        if (a.status === "Broken") continue;
+        t.add(`${a.date} ${String(a.time ?? "").slice(0, 5)}`);
+      }
+      setTaken(t);
+    });
+  }, [open]);
 
   function close() {
     setResult(null);
@@ -173,16 +201,28 @@ export function NewAppointmentModal({
       setResult({ ok: false, message: "Please pick a time slot." });
       return;
     }
-    const [day, time] = [slot.slice(0, 6).trim(), slot.slice(6).trim()];
     setSaving(true);
     const res = await createAppointment({
       patientId: pid,
       provider,
       operatory,
       procedure,
-      date: SLOT_DATES[day] ?? "2026-06-15",
-      time,
+      date: slot.date,
+      time: slot.time,
     });
+    if (res.ok && mirrorGcal) {
+      // Mirror to the clinic's Google Calendar (in-app OAuth or the engine's
+      // connected calendar) — same push agent bookings get. Best-effort.
+      try {
+        const ws = await getWorkspaceId();
+        const pName = patientName ?? patientOptions?.find((p) => p.id === pid)?.name ?? "Patient";
+        void fetch("/api/calendar/gcal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ws, summary: `${procedure || "Appointment"} — ${pName}`, description: `Provider: ${provider} · ${operatory} · booked manually`, date: slot.date, time: slot.time }),
+        });
+      } catch { /* calendar mirror is optional */ }
+    }
     setSaving(false);
     setResult(res);
     if (res.ok) onCreated?.();
@@ -191,7 +231,7 @@ export function NewAppointmentModal({
   return (
     <Modal open={open} onClose={close} title="New appointment" subtitle="Saved to your schedule — mirrors to Google Calendar when connected." wide>
       {result?.ok ? (
-        <ResultNote ok text={`${result.message} (${slot})`} />
+        <ResultNote ok text={`${result.message} (${slot?.label ?? ""})`} />
       ) : (
         <>
           {result && <div className="mb-4"><ResultNote ok={false} text={result.message} /></div>}
@@ -230,21 +270,25 @@ export function NewAppointmentModal({
             </Field>
           </div>
           <p className="mb-2 mt-5 flex items-center gap-1.5 text-sm font-medium text-ink-700">
-            <CalendarDays className="h-4 w-4 text-brand-500" /> Pick a slot — week of June 15
+            <CalendarDays className="h-4 w-4 text-brand-500" /> Pick a slot — live availability, next 6 days (booked times are crossed out)
           </p>
-          <div className="grid grid-cols-5 gap-2">
+          <div className="grid max-h-72 grid-cols-6 gap-2 overflow-y-auto pr-1">
             {days.map((d) => (
-              <div key={d} className="space-y-1.5">
-                <p className="text-center text-xs font-semibold text-ink-500">{d}</p>
-                {times.map((t) => {
-                  const id = `${d} ${t}`;
+              <div key={d.date} className="space-y-1.5">
+                <p className="text-center text-xs font-semibold text-ink-500">{d.label}</p>
+                {DAY_TIMES.map((t) => {
+                  const isTaken = taken.has(`${d.date} ${t}`);
+                  const active = slot?.date === d.date && slot?.time === t;
                   return (
                     <button
-                      key={id}
-                      onClick={() => setSlot(id)}
+                      key={t}
+                      disabled={isTaken}
+                      onClick={() => setSlot({ date: d.date, time: t, label: `${d.label} ${t}` })}
                       className={`w-full rounded-lg border px-1 py-1.5 text-xs transition-colors ${
-                        slot === id
+                        active
                           ? "border-brand-500 bg-brand-600 font-semibold text-white"
+                          : isTaken
+                          ? "cursor-not-allowed border-ink-100 text-ink-300 line-through"
                           : "border-ink-200 text-ink-600 hover:border-brand-400 hover:text-brand-600"
                       }`}
                     >
@@ -256,8 +300,8 @@ export function NewAppointmentModal({
             ))}
           </div>
           <label className="mt-4 flex items-center gap-2 text-sm text-ink-600">
-            <input type="checkbox" defaultChecked className="h-4 w-4 accent-[#7c3aed]" />
-            Also add to Google Calendar and send confirmation via patient&apos;s preferred channel
+            <input type="checkbox" checked={mirrorGcal} onChange={(e) => setMirrorGcal(e.target.checked)} className="h-4 w-4 accent-[#7c3aed]" />
+            Also add to Google Calendar (via your connected calendar)
           </label>
           <ModalFooter onClose={close} submitLabel={saving ? "Booking…" : "Book appointment"} onSubmit={submit} />
         </>

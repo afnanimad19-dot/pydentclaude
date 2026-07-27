@@ -111,9 +111,29 @@ export default function SettingsPage() {
   const [tags, setTags] = useState<ClinicTag[]>([]);
   const [newTag, setNewTag] = useState("");
   const [ws, setWs] = useState<string | null>(null);
+  // TRUE per-channel connectivity for the Channels tab (was hardcoded gray).
+  const [chanStatus, setChanStatus] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     getWorkspaceId().then(setWs);
+    void (async () => {
+      try {
+        const w = await getWorkspaceId();
+        const [h, apps] = await Promise.all([
+          fetch(`/api/health?ws=${w ?? ""}`).then((r) => r.json()).catch(() => ({})),
+          fetch(`/api/hyperfx/apps?ws=${w ?? ""}`).then((r) => r.json()).catch(() => ({})),
+        ]);
+        const engineIds: string[] = ((apps.apps ?? []) as { id: string; connected: boolean }[]).filter((a) => a.connected).map((a) => a.id);
+        setChanStatus({
+          "WhatsApp Business": !!h.whatsapp,
+          "Instagram (Meta)": !!h.metaPages,
+          "Facebook Messenger (Meta)": !!h.metaPages,
+          "SMS (Twilio)": !!h.twilio,
+          "Gmail / Google Workspace": engineIds.some((id) => /^gmail/.test(id)),
+          "Email campaigns (Resend)": !!h.brevo,
+        });
+      } catch { /* cards stay gray */ }
+    })();
     fetchTags().then(setTags);
     fetchClinicSettings().then((s) => { setTimezone(s.timezone); setDisplayName(s.displayName); });
     fetchWorkspaceName().then(setClinicName);
@@ -223,7 +243,7 @@ export default function SettingsPage() {
                 icon={i.icon}
                 name={i.name}
                 detail={i.detail}
-                badge={<StatusBadge status="Not connected" tone="gray" />}
+                badge={<StatusBadge status={chanStatus[i.name] ? "Connected" : "Not connected"} tone={chanStatus[i.name] ? "green" : "gray"} />}
                 action={
                   i.href ? (
                     <button onClick={() => setTab("whatsapp")} className="shrink-0 rounded-xl bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-brand-700">Set up</button>

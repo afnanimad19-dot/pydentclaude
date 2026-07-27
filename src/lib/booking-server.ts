@@ -39,7 +39,7 @@ export interface BookingArgs {
 // engine (Hyperfx). Used when the in-app Google OAuth calendar isn't connected.
 // The engine's tool arg names can vary by version, so retry once with alternate
 // field names. Best-effort: a failure never blocks the booking.
-async function pushToEngineCalendar(
+export async function pushToEngineCalendar(
   ws: string,
   ev: { summary: string; description: string; date: string; time: string }
 ): Promise<boolean> {

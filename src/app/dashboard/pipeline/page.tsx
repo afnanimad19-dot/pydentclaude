@@ -19,6 +19,8 @@ import {
   createPipelineDeal,
   updatePipelineDeal,
   deletePipelineDeal,
+  fetchPipelineStages,
+  savePipelineStages,
   type AiAgent,
   type WaConversation,
   type PipelineDealRecord,
@@ -46,6 +48,10 @@ export default function PipelinePage() {
   useEffect(() => {
     loadLeads();
     fetchPipelineDeals().then(setDbDeals);
+    // Custom stage list (added/renamed/removed stages) persists per clinic.
+    fetchPipelineStages().then((saved) => {
+      if (saved && saved.length) setStages(saved.map((s) => ({ ...s, deals: [] })));
+    });
     const t = setInterval(loadLeads, 10000);
     return () => clearInterval(t);
   }, [loadLeads]);
@@ -168,12 +174,20 @@ export default function PipelinePage() {
       setDbDeals((prev) => prev.map((d) => (d.stageName === stage.name ? { ...d, stageName: newName } : d)));
       dbDeals.filter((d) => d.stageName === stage.name).forEach((d) => updatePipelineDeal(d.id, { stageName: newName }));
     }
-    setStages((prev) => prev.map((s) => (s.id === id ? { ...s, name: newName || s.name } : s)));
+    setStages((prev) => {
+      const next = prev.map((s) => (s.id === id ? { ...s, name: newName || s.name } : s));
+      void savePipelineStages(next);
+      return next;
+    });
     setRenaming(null);
   }
 
   function addStage() {
-    setStages((prev) => [...prev, { id: `stage-${Date.now()}`, name: "New stage", deals: [] }]);
+    setStages((prev) => {
+      const next = [...prev, { id: `stage-${Date.now()}`, name: "New stage", deals: [] }];
+      void savePipelineStages(next);
+      return next;
+    });
   }
 
   function removeStage(id: string) {
@@ -184,7 +198,11 @@ export default function PipelinePage() {
       toast("Move its leads to another stage first.", "info");
       return;
     }
-    setStages((prev) => prev.filter((s) => s.id !== id));
+    setStages((prev) => {
+      const next = prev.filter((s) => s.id !== id);
+      void savePipelineStages(next);
+      return next;
+    });
   }
 
   return (

@@ -320,7 +320,11 @@ export async function createAppointment(input: {
   date: string;
   time: string;
 }): Promise<{ ok: boolean; message: string }> {
+  // workspace_id is REQUIRED — fetchAppointments filters by it, so a row
+  // inserted without it never appears on the Calendar.
+  const ws = await getWorkspaceId();
   const { error } = await supabase.from("appointments").insert({
+    workspace_id: ws,
     patient_id: input.patientId,
     provider: input.provider,
     operatory: input.operatory,
@@ -328,6 +332,7 @@ export async function createAppointment(input: {
     date: input.date,
     time: input.time,
     status: "Scheduled",
+    confirmed_via: "manual",
   });
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Appointment saved to the schedule." };
@@ -2607,11 +2612,70 @@ export async function fetchConnections(): Promise<Connection[]> {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("connections").select("*").eq("workspace_id", ws);
     return (data ?? [])
-      .filter((r) => r.provider !== "voice_engine")
+      .filter((r) => r.provider !== "voice_engine" && r.provider !== "pipeline_stages")
       .map((r) => ({ provider: r.provider, status: r.status ?? "connected", accountLabel: r.account_label ?? "", accessMode: r.access_mode === "write" ? "write" : "read" }));
   } catch {
     return [];
   }
+}
+
+// ----------------------------------------------- pipeline stage list (custom)
+// The clinic's custom pipeline stage list (id + name, in order). Stored as a
+// JSON blob in a connections row (provider "pipeline_stages") — no migration
+// needed, same pattern as the voice_engine preference. Null = nothing saved
+// yet (use the defaults).
+export interface PipelineStageDef { id: string; name: string }
+
+export async function fetchPipelineStages(): Promise<PipelineStageDef[] | null> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("connections").select("account_label").eq("workspace_id", ws).eq("provider", "pipeline_stages").limit(1).maybeSingle();
+    if (!data?.account_label) return null;
+    const parsed = JSON.parse(data.account_label);
+    return Array.isArray(parsed) && parsed.length ? parsed.filter((s) => s?.id && s?.name) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function savePipelineStages(stages: PipelineStageDef[]): Promise<void> {
+  try {
+    const ws = await getWorkspaceId();
+    if (!ws) return;
+    await supabase.from("connections").delete().eq("workspace_id", ws).eq("provider", "pipeline_stages");
+    await supabase.from("connections").insert({
+      workspace_id: ws,
+      provider: "pipeline_stages",
+      status: "connected",
+      account_label: JSON.stringify(stages.map((s) => ({ id: s.id, name: s.name }))),
+    });
+  } catch {
+    /* keep local state; retried on the next change */
+  }
+}
+
+// ------------------------------------------------------- WhatsApp live stats
+// Real numbers for the WhatsApp page (replacing the old hardcoded samples).
+export interface WaStats { chats: number; botReplies30d: number; booked30d: number }
+
+export async function fetchWaStats(): Promise<WaStats> {
+  const out: WaStats = { chats: 0, botReplies30d: 0, booked30d: 0 };
+  try {
+    const ws = await getWorkspaceId();
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    const sinceDate = since.slice(0, 10);
+    const [convos, bot, booked] = await Promise.all([
+      supabase.from("wa_conversations").select("id", { count: "exact", head: true }).eq("workspace_id", ws).eq("channel", "whatsapp"),
+      supabase.from("wa_messages").select("id", { count: "exact", head: true }).eq("workspace_id", ws).eq("by_bot", true).gte("created_at", since),
+      supabase.from("appointments").select("id", { count: "exact", head: true }).eq("workspace_id", ws).eq("confirmed_via", "whatsapp").gte("date", sinceDate),
+    ]);
+    out.chats = convos.count ?? 0;
+    out.botReplies30d = bot.count ?? 0;
+    out.booked30d = booked.count ?? 0;
+  } catch {
+    /* zeros are honest when the tables are missing */
+  }
+  return out;
 }
 
 // -------------------------------------------------- voice engine (xAI / Vapi)
