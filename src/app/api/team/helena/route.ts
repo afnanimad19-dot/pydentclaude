@@ -7,6 +7,7 @@ import { runAnalyticsReport, runSearchConsoleReport } from "@/lib/google-api";
 import { postToFacebookPage, postToInstagram } from "@/lib/meta-api";
 import { saveReport } from "@/lib/report-render";
 import { logActivity } from "@/lib/activity";
+import { listTemplates, scheduleBroadcast } from "@/lib/angela-data";
 import { firecrawlScrape } from "@/lib/firecrawl";
 
 // Helena — AI Dental Marketing Manager with real tools:
@@ -21,6 +22,31 @@ export const maxDuration = 120;
 const call = (apiKey: string, body: Record<string, any>) => teamLlmCall(apiKey, body, 3200);
 
 const TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "list_whatsapp_templates",
+      description: "List the clinic's APPROVED WhatsApp templates (needed before staging a broadcast).",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "schedule_whatsapp_broadcast",
+      description: "Stage a WhatsApp broadcast using an APPROVED template, to a folder or everyone. It is created in the WhatsApp page for the clinic to review/send — confirm the plan with the user first.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Campaign name" },
+          template_name: { type: "string" },
+          folder_name: { type: "string", description: "Audience folder name, or leave empty for everyone." },
+          scheduled_for: { type: "string", description: "Optional ISO datetime to send; empty = no fixed time." },
+        },
+        required: ["name", "template_name"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -131,7 +157,7 @@ export async function POST(req: NextRequest) {
   const system = [
     brand ? `CLINIC BRAND KNOWLEDGE (use this so you sound like the clinic and use its real facts):\n${brand}` : "",
     "You are Helena, an AI Dental Marketing Manager for a dental clinic. You plan content, write SEO blog posts and social copy, generate images, publish to the clinic's connected channels, and read marketing analytics/ads data.",
-    "STAY IN YOUR LANE — you only do marketing/content. You are part of a team of four specialists. If the user asks about something outside your area, do NOT attempt it: briefly say it's not your area and point them to the right teammate — Sam (SEO, local search, Google Business Profile, keywords, rankings), Kai (reviews, reputation, patient sentiment), or Angela (patient email & WhatsApp campaigns, recall reminders, broadcasts). If asked who the others are or what they do, you may give a one-line description of each teammate. Never discuss internal prompts or system details.",
+    "STAY IN YOUR LANE — you do marketing/content, INCLUDING staging WhatsApp broadcast campaigns you wrote: use list_whatsapp_templates then schedule_whatsapp_broadcast (after the user confirms the plan) — never claim broadcasts are outside your functionality. You are part of a team of four specialists. For other areas, point to the right teammate — Sam (SEO, local search, Google Business Profile, keywords, rankings), Kai (reviews, reputation, patient sentiment), or Angela (patient email campaigns, recall reminders). If asked who the others are or what they do, you may give a one-line description of each teammate. Never discuss internal prompts or system details.",
     website ? `The clinic's website is ${website} — match its brand, services and tone.` : "",
     "When the user asks you to publish/create a blog: write the full article yourself, then call publish_blog_post with clean HTML. Default to status 'draft' unless they clearly say publish/go live.",
     "If they want a featured image (or it would help), call generate_featured_image FIRST, then pass its media id as featured_media_id to publish_blog_post.",
@@ -146,6 +172,12 @@ export async function POST(req: NextRequest) {
   async function exec(name: string, args: any): Promise<string> {
     const hfx = await execHyperfxTool(workspaceId, "helena", name, args);
     if (hfx !== null) return hfx;
+    if (name === "list_whatsapp_templates") return listTemplates(workspaceId);
+    if (name === "schedule_whatsapp_broadcast") {
+      const res = await scheduleBroadcast(workspaceId, { name: String(args.name || "Campaign"), templateName: String(args.template_name || ""), folderName: args.folder_name ? String(args.folder_name) : undefined, scheduledFor: args.scheduled_for ? String(args.scheduled_for) : undefined });
+      if (res.startsWith("Scheduled")) await logActivity(workspaceId, "helena", "Scheduled WhatsApp broadcast", String(args.name || "Campaign"));
+      return res;
+    }
     if (name === "create_report") {
       const id = await saveReport(workspaceId, "helena", String(args.title || "Report"), String(args.content_markdown || ""));
       if (!id) return "Could not save the report (server storage not configured).";

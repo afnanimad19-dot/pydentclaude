@@ -75,10 +75,10 @@ export default function EmailPage() {
       </div>
 
       <div className="mt-6">
-        <NativeBroadcast channel="email" ws={ws} />
+        <div id="automations" className="scroll-mt-20"><NativeBroadcast channel="email" ws={ws} /></div>
       </div>
       <div className="mt-6">
-        <MarketingCampaigns type="email" ws={ws} />
+        <div id="campaigns" className="scroll-mt-20"><MarketingCampaigns type="email" ws={ws} /></div>
       </div>
     </>
   );

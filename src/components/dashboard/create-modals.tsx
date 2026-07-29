@@ -1,18 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { CalendarDays, CheckCircle2, AlertTriangle, Folder } from "lucide-react";
+import { CalendarDays, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import {
   createPatient,
   createAppointment,
   fetchAppointments,
-  fetchFolders,
-  fetchWaTemplates,
   getWorkspaceId,
-  type PatientFolder,
-  type WaTemplate,
 } from "@/lib/db";
 
 function ResultNote({ ok, text }: { ok: boolean; text: string }) {
@@ -46,6 +41,7 @@ export function NewPatientModal({
     birthdate: "",
     status: "New",
     insurance: "",
+    preferredChannel: "WhatsApp",
   });
 
   function set<K extends keyof typeof form>(k: K, v: string) {
@@ -54,7 +50,7 @@ export function NewPatientModal({
 
   function close() {
     setResult(null);
-    setForm({ firstName: "", lastName: "", phone: "", email: "", birthdate: "", status: "New", insurance: "" });
+    setForm({ firstName: "", lastName: "", phone: "", email: "", birthdate: "", status: "New", insurance: "", preferredChannel: "WhatsApp" });
     onClose();
   }
 
@@ -71,6 +67,7 @@ export function NewPatientModal({
       birthdate: form.birthdate,
       insurance: form.insurance,
       status: form.status,
+      preferredChannel: form.preferredChannel,
     });
     setSaving(false);
     setResult(res);
@@ -111,7 +108,7 @@ export function NewPatientModal({
               <input className={inputCls} placeholder="Delta Dental, Cigna, Self-pay…" value={form.insurance} onChange={(e) => set("insurance", e.target.value)} />
             </Field>
             <Field label="Preferred channel">
-              <select className={inputCls}>
+              <select className={inputCls} value={form.preferredChannel} onChange={(e) => set("preferredChannel", e.target.value)}>
                 <option>WhatsApp</option>
                 <option>SMS</option>
                 <option>Email</option>
@@ -310,181 +307,3 @@ export function NewAppointmentModal({
   );
 }
 
-export function NewCampaignModal({
-  open,
-  onClose,
-  channel,
-}: {
-  open: boolean;
-  onClose: () => void;
-  channel: "WhatsApp" | "SMS" | "Email";
-}) {
-  const [done, setDone] = useState(false);
-  const [folders, setFolders] = useState<PatientFolder[]>([]);
-  const [templates, setTemplates] = useState<WaTemplate[]>([]);
-  const [templateId, setTemplateId] = useState("");
-  const [sendMode, setSendMode] = useState("Send now");
-
-  useEffect(() => {
-    if (!open) return;
-    fetchFolders().then(setFolders);
-    if (channel === "WhatsApp") fetchWaTemplates().then((r) => setTemplates(r.templates.filter((t) => t.status === "Approved")));
-  }, [open, channel]);
-
-  const selectedTemplate = templates.find((t) => t.id === templateId);
-
-  function close() {
-    setDone(false);
-    onClose();
-  }
-  return (
-    <Modal open={open} onClose={close} title={`New ${channel} campaign`} subtitle="Audiences come from your patient lists and folders." wide>
-      {done ? (
-        <ResultNote ok text={sendMode === "Schedule for later" ? "Broadcast scheduled (demo) — sending activates when the channel is connected." : "Broadcast queued (demo) — sending activates when the channel is connected."} />
-      ) : (
-        <>
-          <div className="grid gap-4">
-            <Field label="Campaign name"><input className={inputCls} placeholder="July recall — overdue 6+ months" /></Field>
-            {channel === "Email" && <Field label="Subject line"><input className={inputCls} placeholder="We miss your smile, {{first_name}}" /></Field>}
-            <Field label="Audience">
-              <select className={inputCls}>
-                <optgroup label="Smart lists">
-                  <option>Recall due &gt; 180 days (214 patients)</option>
-                  <option>Unconfirmed appointments — next 48h (12)</option>
-                  <option>Unscheduled treatment plans (47)</option>
-                  <option>Inactive &gt; 12 months (342)</option>
-                  <option>All active patients (1,240)</option>
-                </optgroup>
-                {folders.length > 0 && (
-                  <optgroup label="Your folders">
-                    {folders.map((f) => (
-                      <option key={f.id}>📁 {f.name}</option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
-            </Field>
-
-            {channel === "WhatsApp" ? (
-              <>
-                <Field label="Template (Meta-approved only)">
-                  <select className={inputCls} value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
-                    <option value="">Choose an approved template…</option>
-                    {templates.map((t) => (
-                      <option key={t.id} value={t.id}>{t.name} · {t.language}</option>
-                    ))}
-                  </select>
-                </Field>
-                {selectedTemplate ? (
-                  <div className="rounded-xl bg-[#e7f8d4] p-3 text-sm text-gray-800 dark:bg-[#1f2c1a] dark:text-gray-100">
-                    {selectedTemplate.headerType === "text" && selectedTemplate.headerText && (
-                      <p className="mb-1 font-semibold">{selectedTemplate.headerText}</p>
-                    )}
-                    <p className="whitespace-pre-wrap">{selectedTemplate.body}</p>
-                    {selectedTemplate.footer && (
-                      <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{selectedTemplate.footer}</p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="flex items-center gap-1.5 rounded-xl border border-dashed border-ink-300 px-3.5 py-2.5 text-xs text-ink-400">
-                    <Folder className="h-3.5 w-3.5" /> No approved template yet? Build one in{" "}
-                    <Link href="/dashboard/whatsapp/templates" className="font-medium text-brand-600 dark:text-brand-300">WhatsApp → Templates</Link>
-                    — Meta approval takes ~24h.
-                  </p>
-                )}
-              </>
-            ) : (
-              <Field label="Message">
-                <textarea
-                  rows={4}
-                  className={inputCls}
-                  placeholder={`Hi {{first_name}}! You're due for your cleaning — want me to find you a time this week?`}
-                />
-              </Field>
-            )}
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Send">
-                <select className={inputCls} value={sendMode} onChange={(e) => setSendMode(e.target.value)}>
-                  <option>Send now</option>
-                  <option>Schedule for later</option>
-                  <option>Save as draft</option>
-                </select>
-              </Field>
-              {sendMode === "Schedule for later" ? (
-                <Field label="Schedule date & time">
-                  <input type="datetime-local" className={inputCls} defaultValue="2026-06-15T10:00" />
-                </Field>
-              ) : (
-                <Field label="If patient replies">
-                  <select className={inputCls}>
-                    <option>Hand to booking chatbot</option>
-                    <option>Route to Omnichannel Inbox</option>
-                    <option>Queue voice agent follow-up</option>
-                  </select>
-                </Field>
-              )}
-            </div>
-          </div>
-          <ModalFooter onClose={close} submitLabel={sendMode === "Schedule for later" ? "Schedule broadcast" : "Create broadcast"} onSubmit={() => setDone(true)} />
-        </>
-      )}
-    </Modal>
-  );
-}
-
-export function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [done, setDone] = useState(false);
-  function close() {
-    setDone(false);
-    onClose();
-  }
-  return (
-    <Modal open={open} onClose={close} title="New voice agent" subtitle="Powered by Retell AI once a phone line is connected." wide>
-      {done ? (
-        <ResultNote ok text="Agent created as draft (demo) — assign a phone number in Settings to take it live." />
-      ) : (
-        <>
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Agent name"><input className={inputCls} placeholder="Nora" /></Field>
-            <Field label="Role">
-              <select className={inputCls}>
-                <option>Front-desk receptionist (inbound)</option>
-                <option>Recall & reactivation (outbound)</option>
-                <option>Insurance verification (outbound)</option>
-                <option>Post-op check-in (outbound)</option>
-              </select>
-            </Field>
-            <Field label="Voice">
-              <select className={inputCls}>
-                <option>Eve · natural female (default)</option>
-                <option>Ara · warm friendly female</option>
-                <option>Rex · confident clear male</option>
-                <option>Sal · calm neutral male</option>
-                <option>Leo · energetic male</option>
-              </select>
-            </Field>
-            <Field label="Languages">
-              <select className={inputCls}>
-                <option>English</option>
-                <option>English + Spanish</option>
-              </select>
-            </Field>
-          </div>
-          <Field label="Instructions / personality">
-            <textarea
-              rows={4}
-              className={inputCls}
-              placeholder="You are the friendly receptionist for Bright Smile Dental. Greet warmly, answer questions about hours and insurance, and always offer to book an appointment…"
-            />
-          </Field>
-          <label className="mt-4 flex items-center gap-2 text-sm text-ink-600">
-            <input type="checkbox" defaultChecked className="h-4 w-4 accent-[#7c3aed]" />
-            Can book appointments directly into the schedule
-          </label>
-          <ModalFooter onClose={close} submitLabel="Create agent" onSubmit={() => setDone(true)} />
-        </>
-      )}
-    </Modal>
-  );
-}

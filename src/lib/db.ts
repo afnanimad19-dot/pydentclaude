@@ -246,6 +246,7 @@ export async function createPatient(input: {
   status: string;
   sourceChannel?: string;
   sourceAgent?: string;
+  preferredChannel?: string;
 }): Promise<{ ok: boolean; message: string }> {
   const row: Record<string, unknown> = {
     name: input.name,
@@ -257,6 +258,7 @@ export async function createPatient(input: {
   };
   if (input.sourceChannel) row.source_channel = input.sourceChannel;
   if (input.sourceAgent) row.source_agent = input.sourceAgent;
+  if (input.preferredChannel) row.preferred_channel = input.preferredChannel.toLowerCase();
   let { error } = await supabase.from("patients").insert(row);
   if (error && /source_channel|source_agent/.test(error.message)) {
     delete row.source_channel;
@@ -467,6 +469,8 @@ export interface VoiceSettings {
   turnDetectionEnabled: boolean;   // default true
   detectionMode: "smart" | "fixed";// "smart" = AI-driven (default), "fixed" = timeout only
   detectionTimeout: number;        // 0–5s · max wait for user before agent takes turn (default 2.0)
+  // Transcriber (Vapi engine)
+  transcriber: "nova-2" | "nova-3"; // Deepgram model for English calls (default nova-2)
   // Noise Reduction
   noiseReductionEnabled: boolean;  // default false
   reductionLevel: "low" | "medium" | "high"; // default medium
@@ -497,6 +501,7 @@ export function defaultVoiceSettings(): VoiceSettings {
     endOfSpeechTimeout: 0.2,
     turnDetectionEnabled: true,
     detectionMode: "smart",
+    transcriber: "nova-2",
     detectionTimeout: 2.0,
     noiseReductionEnabled: false,
     reductionLevel: "medium",

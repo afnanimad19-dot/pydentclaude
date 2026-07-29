@@ -104,8 +104,8 @@ const nav: NavItem[] = [
     label: "SMS",
     icon: MessageSquareText,
     children: [
-      { href: "/dashboard/sms#conversations", label: "Conversations" },
-      { href: "/dashboard/sms#templates", label: "Templates" },
+      { href: "/dashboard/inbox", label: "Conversations" },
+      { href: "/dashboard/sms#broadcasts", label: "Broadcasts" },
     ],
   },
   {
@@ -135,7 +135,7 @@ const nav: NavItem[] = [
     children: [
       { href: "/dashboard/patients", label: "All contacts" },
       { href: "/dashboard/patients#appointments", label: "Appointments" },
-      { href: "/dashboard/patients#recall", label: "Recall worklist" },
+      { href: "/dashboard/patients#recall", label: "Recall due" },
     ],
   },
   {

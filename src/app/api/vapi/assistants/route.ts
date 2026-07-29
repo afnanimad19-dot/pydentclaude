@@ -254,7 +254,7 @@ function bookingTools(
 // "multi" mode handles es/fr/de/hi/ru/pt/ja/it/nl — but NOT Arabic (and a few
 // others), which would transcribe as garbage. Those route to Azure STT, whose
 // coverage includes Gulf Arabic.
-function transcriberFor(language?: string): Record<string, unknown> {
+function transcriberFor(language?: string, preferredModel?: string): Record<string, unknown> {
   const l = (language ?? "").toLowerCase();
   const azure = (code: string) => ({ provider: "azure", language: code });
   if (l.includes("arabic")) return azure("ar-AE");
@@ -268,7 +268,10 @@ function transcriberFor(language?: string): Record<string, unknown> {
   if (l.includes("polish")) return azure("pl-PL");
   if (l.includes("tagalog")) return azure("fil-PH");
   const multi = /spanish|french|german|hindi|russian|portuguese|japanese|italian|dutch|\+/.test(l);
-  return { provider: "deepgram", model: "nova-2", language: multi ? "multi" : "en" };
+  // English-only calls may use the agent's chosen Deepgram model (nova-3 is
+  // English-only, so multilingual agents stay on nova-2 multi).
+  if (multi) return { provider: "deepgram", model: "nova-2", language: "multi" };
+  return { provider: "deepgram", model: preferredModel === "nova-3" ? "nova-3" : "nova-2", language: "en" };
 }
 
 // Hard conversation-language rule (Arabic priority: warm Gulf/UAE spoken style).
@@ -355,7 +358,7 @@ export async function POST(req: NextRequest) {
     voice: agent.voiceId
       ? { provider: "11labs", voiceId: agent.voiceId, model: "eleven_multilingual_v2" }
       : { provider: "vapi", voiceId: voiceFor(agent.voice) },
-    transcriber: transcriberFor(agent.language),
+    transcriber: transcriberFor(agent.language, agent.voiceSettings?.transcriber),
     // Advanced call-tuning (turn detection, interruptions, noise, voicemail,
     // limits, idle reminders, privacy, post-call extraction).
     ...advancedFromSettings(agent.voiceSettings),

@@ -274,13 +274,15 @@ export default function PatientsPage() {
           hint={`${patients.filter((p) => p.status === "New").length} new`}
           accent="brand"
         />
-        <StatCard
-          icon={BellRing}
-          label="Recall due"
-          value={String(recallDue.length)}
-          hint="auto-enrolled in recall flow"
-          accent="amber"
-        />
+        <div id="recall" className="scroll-mt-20">
+          <StatCard
+            icon={BellRing}
+            label="Recall due"
+            value={String(recallDue.length)}
+            hint="auto-enrolled in recall flow"
+            accent="amber"
+          />
+        </div>
         <StatCard
           icon={CalendarClock}
           label="Upcoming appointments"

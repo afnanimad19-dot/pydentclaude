@@ -1388,9 +1388,13 @@ export function AgentModal({
                   </button>
                 </Field>
                 <Field label="Transcriber">
-                  <select className={inputCls} defaultValue="Deepgram · Nova-2 (multilingual)">
-                    <option>Deepgram · Nova-2 (multilingual)</option>
-                    <option>Deepgram · Nova-3 (English)</option>
+                  <select
+                    className={inputCls}
+                    value={form.voiceSettings.transcriber}
+                    onChange={(e) => set("voiceSettings", { ...form.voiceSettings, transcriber: e.target.value as "nova-2" | "nova-3" })}
+                  >
+                    <option value="nova-2">Deepgram · Nova-2 (multilingual)</option>
+                    <option value="nova-3">Deepgram · Nova-3 (English)</option>
                   </select>
                 </Field>
               </>

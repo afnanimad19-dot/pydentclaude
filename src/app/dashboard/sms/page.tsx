@@ -82,7 +82,7 @@ export default function SmsPage() {
       </div>
 
       <div className="mt-6">
-        <NativeBroadcast channel="sms" ws={ws} />
+        <div id="broadcasts" className="scroll-mt-20"><NativeBroadcast channel="sms" ws={ws} /></div>
       </div>
       <div className="mt-6">
         <MarketingCampaigns type="sms" ws={ws} />
