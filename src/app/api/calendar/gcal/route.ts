@@ -18,13 +18,13 @@ export async function POST(req: NextRequest) {
       time: String(time),
     });
     if (eventId) return NextResponse.json({ ok: true, via: "google" });
-    const engineOk = await pushToEngineCalendar(String(ws), {
+    const engine = await pushToEngineCalendar(String(ws), {
       summary: String(summary ?? "Appointment"),
       description: String(description ?? ""),
       date: String(date),
       time: String(time),
     });
-    return NextResponse.json({ ok: engineOk, via: engineOk ? "engine" : "none" });
+    return NextResponse.json({ ok: engine.ok, via: engine.ok ? "engine" : "none" });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "calendar push failed" });
   }

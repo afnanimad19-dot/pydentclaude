@@ -279,3 +279,51 @@ export async function pushToGoogleCalendar(
     return null;
   }
 }
+
+// Move an existing Google Calendar event to a new date/time (reschedules).
+export async function updateGoogleCalendarEvent(
+  ws: string,
+  eventId: string,
+  appt: { date: string; time: string; durationMin?: number }
+): Promise<boolean> {
+  try {
+    const token = await getValidGoogleToken(ws, "google_calendar");
+    if (!token) return false;
+    let tz = process.env.CLINIC_TIMEZONE ?? "Asia/Dubai";
+    try {
+      const db = admin();
+      if (db) {
+        const { data } = await db.from("clinic_settings").select("timezone").eq("workspace_id", ws).maybeSingle();
+        if (data?.timezone) tz = data.timezone;
+      }
+    } catch { /* default tz */ }
+    const t = (appt.time || "09:00").slice(0, 5);
+    const [h, m] = t.split(":").map(Number);
+    const endMin = h * 60 + m + (appt.durationMin ?? 30);
+    const start = `${appt.date}T${t}:00`;
+    const end = `${appt.date}T${String(Math.floor(endMin / 60) % 24).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}:00`;
+    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ start: { dateTime: start, timeZone: tz }, end: { dateTime: end, timeZone: tz } }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Remove a Google Calendar event (cancellations).
+export async function deleteGoogleCalendarEvent(ws: string, eventId: string): Promise<boolean> {
+  try {
+    const token = await getValidGoogleToken(ws, "google_calendar");
+    if (!token) return false;
+    const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return res.ok || res.status === 404 || res.status === 410; // already gone = fine
+  } catch {
+    return false;
+  }
+}

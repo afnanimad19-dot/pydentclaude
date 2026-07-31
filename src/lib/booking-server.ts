@@ -7,7 +7,7 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getOdConfig, odForward } from "@/lib/opendental-gateway";
 import { triggerWorkflows } from "@/lib/workflow-runner";
-import { pushToGoogleCalendar } from "@/lib/google-api";
+import { pushToGoogleCalendar, updateGoogleCalendarEvent, deleteGoogleCalendarEvent } from "@/lib/google-api";
 import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -42,10 +42,10 @@ export interface BookingArgs {
 export async function pushToEngineCalendar(
   ws: string,
   ev: { summary: string; description: string; date: string; time: string }
-): Promise<boolean> {
+): Promise<{ ok: boolean; id?: string | null }> {
   try {
     const creds = await getHfxCreds(ws);
-    if (!hfxConfigured(creds)) return false;
+    if (!hfxConfigured(creds)) return { ok: false };
     const t = (ev.time || "09:00").slice(0, 5);
     const [h, m] = t.split(":").map(Number);
     const endMin = h * 60 + m + 30;
@@ -55,9 +55,51 @@ export async function pushToEngineCalendar(
     if (!r.ok && /param|field|required|invalid|schema|argument|unexpected/i.test(r.error ?? "")) {
       r = await hfxCall("google_calendar_create_event", { title: ev.summary, description: ev.description, start, end }, creds);
     }
-    return r.ok;
+    if (!r.ok) return { ok: false };
+    // Recover the event id so reschedules/cancellations can target it later.
+    const d: any = r.data;
+    const id = d?.id ?? d?.event_id ?? d?.eventId ?? d?.event?.id ?? null;
+    return { ok: true, id: id ? String(id) : null };
   } catch {
-    return false;
+    return { ok: false };
+  }
+}
+
+// Move / remove the mirrored Google Calendar event for an appointment — works
+// for both mirror paths: in-app OAuth ids, and engine-created events (stored
+// with an "hfx:" prefix, updated through the engine's calendar tools).
+async function syncCalendarEvent(
+  ws: string | null,
+  storedId: string | null | undefined,
+  change: { kind: "move"; date: string; time: string } | { kind: "delete" }
+): Promise<void> {
+  if (!ws || !storedId) return;
+  try {
+    if (storedId.startsWith("hfx:")) {
+      const eventId = storedId.slice(4);
+      const creds = await getHfxCreds(ws);
+      if (!hfxConfigured(creds)) return;
+      if (change.kind === "move") {
+        const t = change.time.slice(0, 5);
+        const [h, m] = t.split(":").map(Number);
+        const endMin = h * 60 + m + 30;
+        const start = `${change.date}T${t}:00`;
+        const end = `${change.date}T${String(Math.floor(endMin / 60) % 24).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}:00`;
+        let r = await hfxCall("google_calendar_update_event", { event_id: eventId, start_time: start, end_time: end }, creds);
+        if (!r.ok) r = await hfxCall("google_calendar_update_event", { eventId, start, end }, creds);
+        void r;
+      } else {
+        // Delete tool availability varies — try it, else mark the event cancelled.
+        const del = await hfxCall("google_calendar_delete_event", { event_id: eventId }, creds);
+        if (!del.ok) await hfxCall("google_calendar_update_event", { event_id: eventId, summary: "CANCELLED — appointment" }, creds);
+      }
+    } else if (change.kind === "move") {
+      await updateGoogleCalendarEvent(ws, storedId, { date: change.date, time: change.time });
+    } else {
+      await deleteGoogleCalendarEvent(ws, storedId);
+    }
+  } catch {
+    /* calendar mirror is best-effort — the in-app calendar is the truth */
   }
 }
 
@@ -212,8 +254,12 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
         const eventId = await pushToGoogleCalendar(ws, { summary: calSummary, description: calDescription, date, time });
         if (eventId && apptId) await supabase.from("appointments").update({ google_calendar_event_id: eventId }).eq("id", apptId);
         // In-app Google OAuth not connected (or push failed) → mirror the event
-        // through the Google Calendar connected on the marketing engine instead.
-        if (!eventId) await pushToEngineCalendar(ws, { summary: calSummary, description: calDescription, date, time });
+        // through the Google Calendar connected on the marketing engine instead,
+        // remembering its id (hfx: prefix) so reschedules/cancels can follow.
+        if (!eventId) {
+          const eng = await pushToEngineCalendar(ws, { summary: calSummary, description: calDescription, date, time });
+          if (eng.ok && eng.id && apptId) await supabase.from("appointments").update({ google_calendar_event_id: `hfx:${eng.id}` }).eq("id", apptId);
+        }
       }
     } catch { /* keep the booking even if Google Calendar push fails */ }
     try {
@@ -237,9 +283,10 @@ export async function rescheduleAppt(ctx: BookingCtx, args: any): Promise<string
   const date = dt.slice(0, 10);
   const time = dt.slice(11, 16) || "09:00";
   if (!date) return "Need a valid new date and time.";
-  const { data: ap } = await supabase.from("appointments").select("id, external_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
+  const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
   if (!ap) return "No upcoming appointment found to reschedule.";
   await supabase.from("appointments").update({ date, time }).eq("id", ap.id);
+  void syncCalendarEvent(ws, ap.google_calendar_event_id, { kind: "move", date, time });
   try {
     const od = await getOdConfig(ws);
     if (od?.enabled && ap.external_id) await odForward(ws, "/reschedule-appointment", { method: "POST", body: { appointmentId: ap.external_id, datetime: dt } });
@@ -255,9 +302,10 @@ export async function cancelAppt(ctx: BookingCtx, args?: any): Promise<string> {
   const ws = ctx.ws;
   const patientId = ctx.patientId ?? (await resolvePatient(ctx, args ?? {}));
   if (!patientId) return "No patient on file.";
-  const { data: ap } = await supabase.from("appointments").select("id, external_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
+  const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
   if (!ap) return "No upcoming appointment found to cancel.";
   await supabase.from("appointments").update({ status: "Broken" }).eq("id", ap.id);
+  void syncCalendarEvent(ws, ap.google_calendar_event_id, { kind: "delete" });
   try {
     const od = await getOdConfig(ws);
     if (od?.enabled && ap.external_id) await odForward(ws, "/cancel-appointment", { method: "POST", body: { appointmentId: ap.external_id } });
