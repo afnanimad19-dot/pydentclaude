@@ -8,7 +8,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getOdConfig, odForward } from "@/lib/opendental-gateway";
 import { triggerWorkflows } from "@/lib/workflow-runner";
 import { pushToGoogleCalendar, updateGoogleCalendarEvent, deleteGoogleCalendarEvent } from "@/lib/google-api";
-import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
+import { getHfxCreds, hfxCall, hfxConfigured, hfxListTools, type HfxCreds } from "@/lib/hyperfx";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -46,6 +46,57 @@ async function clinicTimezone(ws: string | null): Promise<string> {
   return process.env.CLINIC_TIMEZONE ?? "Asia/Dubai";
 }
 
+
+// ---- Schema-driven engine calendar -----------------------------------------
+// The engine's calendar tool names AND parameter names differ between engine
+// versions (a live test showed google_calendar_create_event rejecting `start`
+// as an unexpected keyword). Instead of guessing shapes, read the tool's REAL
+// input schema from the engine and map our values onto whatever its parameters
+// are actually called. Cached briefly so bookings don't re-list tools each time.
+type CalToolSpec = { name: string; props: Record<string, any>; required: string[] };
+type CalSpecs = { create: CalToolSpec | null; update: CalToolSpec | null; del: CalToolSpec | null };
+let calSpecCache: { url: string; at: number; specs: CalSpecs } | null = null;
+
+async function engineCalendarSpecs(creds: HfxCreds): Promise<CalSpecs> {
+  if (calSpecCache && calSpecCache.url === creds.url && Date.now() - calSpecCache.at < 10 * 60 * 1000) return calSpecCache.specs;
+  const specs: CalSpecs = { create: null, update: null, del: null };
+  try {
+    const list = await hfxListTools(creds);
+    for (const t of list.tools ?? []) {
+      if (!/^google_calendar/.test(t.name) || !/event/i.test(t.name)) continue;
+      const schema: any = t.inputSchema ?? {};
+      const spec: CalToolSpec = { name: t.name, props: schema.properties ?? {}, required: schema.required ?? [] };
+      if (/create/i.test(t.name) && !specs.create) specs.create = spec;
+      else if (/update|edit|patch/i.test(t.name) && !specs.update) specs.update = spec;
+      else if (/delete|remove/i.test(t.name) && !specs.del) specs.del = spec;
+    }
+  } catch { /* fall back to static shapes */ }
+  calSpecCache = { url: creds.url, at: Date.now(), specs };
+  return specs;
+}
+
+// Map our event values onto the tool's actual parameter names. Order matters:
+// timezone/event-id/calendar-id are claimed before the broad start/end matches.
+function fillCalendarArgs(
+  spec: CalToolSpec,
+  v: { summary?: string; description?: string; startIso?: string; endIso?: string; tz: string; eventId?: string }
+): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  for (const [key, rawDef] of Object.entries(spec.props)) {
+    const def: any = rawDef;
+    const k = key.toLowerCase();
+    const timeVal = (iso: string) => (def?.type === "object" ? { dateTime: iso, timeZone: v.tz } : iso);
+    if (/(^|_)(time_?zone|tz)($|_)/.test(k)) args[key] = v.tz;
+    else if (v.eventId && /event_?id|^id$/.test(k)) args[key] = v.eventId;
+    else if (/calendar_?id/.test(k)) args[key] = "primary";
+    else if (v.summary !== undefined && /(summary|title)/.test(k)) args[key] = v.summary;
+    else if (v.description !== undefined && /desc/.test(k)) args[key] = v.description;
+    else if (v.startIso && /(^|_)(start|begin|from)($|_)/.test(k)) args[key] = timeVal(v.startIso);
+    else if (v.endIso && /(^|_)(end|until|finish)($|_)/.test(k)) args[key] = timeVal(v.endIso);
+  }
+  return args;
+}
+
 // Mirror a booking onto the clinic's Google Calendar connected on the marketing
 // engine (Hyperfx). Used when the in-app Google OAuth calendar isn't connected.
 // The engine's tool arg names can vary by version, so retry once with alternate
@@ -74,11 +125,18 @@ export async function pushToEngineCalendar(
       { summary: ev.summary, description: ev.description, start: { dateTime: start, timeZone: tz }, end: { dateTime: end, timeZone: tz } },
     ];
     let r: Awaited<ReturnType<typeof hfxCall>> = { ok: false, error: "not attempted" };
-    outer: for (const tool of ["google_calendar_events_create", "google_calendar_create_event"]) {
-      for (const args of argShapes) {
-        r = await hfxCall(tool, args, creds);
-        if (r.ok) break outer;
-        if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
+    // Preferred: build the arguments from the tool's REAL schema.
+    const specs = await engineCalendarSpecs(creds);
+    if (specs.create) {
+      r = await hfxCall(specs.create.name, fillCalendarArgs(specs.create, { summary: ev.summary, description: ev.description, startIso: start, endIso: end, tz }), creds);
+    }
+    if (!r.ok) {
+      outer: for (const tool of ["google_calendar_events_create", "google_calendar_create_event"]) {
+        for (const args of argShapes) {
+          r = await hfxCall(tool, args, creds);
+          if (r.ok) break outer;
+          if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
+        }
       }
     }
     if (!r.ok) return { ok: false, error: String(r.error ?? "engine calendar call failed").slice(0, 300) };
@@ -112,22 +170,35 @@ async function syncCalendarEvent(
         const endMin = h * 60 + m + 30;
         const start = `${change.date}T${t}:00`;
         const end = `${change.date}T${String(Math.floor(endMin / 60) % 24).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}:00`;
-        const shapes: Record<string, unknown>[] = [
-          { event_id: eventId, start, end, time_zone: tz },
-          { event_id: eventId, start_time: start, end_time: end, timezone: tz },
-          { eventId, start: { dateTime: start, timeZone: tz }, end: { dateTime: end, timeZone: tz } },
-        ];
-        outer: for (const tool of ["google_calendar_events_update", "google_calendar_update_event"]) {
-          for (const args of shapes) {
-            const r = await hfxCall(tool, args, creds);
-            if (r.ok) break outer;
-            if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
+        const specs = await engineCalendarSpecs(creds);
+        let moved = false;
+        if (specs.update) {
+          const r = await hfxCall(specs.update.name, fillCalendarArgs(specs.update, { startIso: start, endIso: end, tz, eventId }), creds);
+          moved = r.ok;
+        }
+        if (!moved) {
+          const shapes: Record<string, unknown>[] = [
+            { event_id: eventId, start, end, time_zone: tz },
+            { event_id: eventId, start_time: start, end_time: end, timezone: tz },
+            { eventId, start: { dateTime: start, timeZone: tz }, end: { dateTime: end, timeZone: tz } },
+          ];
+          outer: for (const tool of ["google_calendar_events_update", "google_calendar_update_event"]) {
+            for (const args of shapes) {
+              const r = await hfxCall(tool, args, creds);
+              if (r.ok) break outer;
+              if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
+            }
           }
         }
       } else {
         // Delete the event; if the delete tool is missing, mark it cancelled.
+        const specs = await engineCalendarSpecs(creds);
         let deleted = false;
-        for (const tool of ["google_calendar_events_delete", "google_calendar_delete_event"]) {
+        if (specs.del) {
+          const del = await hfxCall(specs.del.name, fillCalendarArgs(specs.del, { tz, eventId }), creds);
+          deleted = del.ok;
+        }
+        for (const tool of deleted ? [] : ["google_calendar_events_delete", "google_calendar_delete_event"]) {
           const del = await hfxCall(tool, { event_id: eventId }, creds);
           if (del.ok) { deleted = true; break; }
         }
