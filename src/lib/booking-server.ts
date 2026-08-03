@@ -85,7 +85,10 @@ function fillCalendarArgs(
   for (const [key, rawDef] of Object.entries(spec.props)) {
     const def: any = rawDef;
     const k = key.toLowerCase();
-    const timeVal = (iso: string) => (def?.type === "object" ? { dateTime: iso, timeZone: v.tz } : iso);
+    // Google's API wants start/end as { dateTime, timeZone } objects — default
+    // to that shape (the live 400 came from sending flat strings); only send a
+    // string when the schema explicitly says string, and stamp the UTC offset.
+    const timeVal = (iso: string) => (def?.type === "string" ? isoWithOffset(iso, v.tz) : { dateTime: isoWithOffset(iso, v.tz), timeZone: v.tz });
     if (/(^|_)(time_?zone|tz)($|_)/.test(k)) args[key] = v.tz;
     else if (v.eventId && /event_?id|^id$/.test(k)) args[key] = v.eventId;
     else if (/calendar_?id/.test(k)) args[key] = "primary";
@@ -95,6 +98,40 @@ function fillCalendarArgs(
     else if (v.endIso && /(^|_)(end|until|finish)($|_)/.test(k)) args[key] = timeVal(v.endIso);
   }
   return args;
+}
+
+
+// RFC3339 with the real UTC offset for the clinic timezone (e.g. +04:00 for
+// Asia/Dubai) — Google's API rejects offset-less datetimes with 400 Bad Request.
+function isoWithOffset(dateTimeLocal: string, tz: string): string {
+  try {
+    const probe = new Date(`${dateTimeLocal}Z`);
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "longOffset" })
+      .formatToParts(probe)
+      .find((x) => x.type === "timeZoneName")?.value ?? "GMT+04:00";
+    const off = part.replace("GMT", "") || "+04:00";
+    return `${dateTimeLocal}${off === "" ? "+00:00" : off}`;
+  } catch {
+    return `${dateTimeLocal}+04:00`;
+  }
+}
+
+// The engine sometimes returns an upstream failure as a NORMAL text result
+// ("Tool '...' error: ... status_code: 400 ...") without flagging it as an
+// error — detect that so a failed calendar write can't masquerade as success.
+function engineErrorIn(data: unknown): string | null {
+  if (typeof data !== "string") return null;
+  if (/Tool '.*' error/i.test(data) || /status_code:\s*[45]\d\d/.test(data)) return data.slice(0, 300);
+  return null;
+}
+
+async function calCall(creds: HfxCreds, name: string, args: Record<string, unknown>): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+  const r = await hfxCall(name, args, creds);
+  if (r.ok) {
+    const err = engineErrorIn(r.data);
+    if (err) return { ok: false, error: err, data: r.data };
+  }
+  return r;
 }
 
 // Deep-search the engine's response for an event id / link, whatever the
@@ -133,21 +170,23 @@ export async function pushToEngineCalendar(
     // pin the clinic timezone (Asia/Dubai default) so events land at the right
     // local hour.
     const tz = await clinicTimezone(ws);
+    const startOff = isoWithOffset(start, tz);
+    const endOff = isoWithOffset(end, tz);
     const argShapes: Record<string, unknown>[] = [
-      { summary: ev.summary, description: ev.description, start, end, time_zone: tz },
-      { summary: ev.summary, description: ev.description, start_time: start, end_time: end, timezone: tz },
-      { summary: ev.summary, description: ev.description, start: { dateTime: start, timeZone: tz }, end: { dateTime: end, timeZone: tz } },
+      { summary: ev.summary, description: ev.description, start: { dateTime: startOff, timeZone: tz }, end: { dateTime: endOff, timeZone: tz } },
+      { summary: ev.summary, description: ev.description, start: startOff, end: endOff, time_zone: tz },
+      { summary: ev.summary, description: ev.description, start_time: startOff, end_time: endOff, timezone: tz },
     ];
     let r: Awaited<ReturnType<typeof hfxCall>> = { ok: false, error: "not attempted" };
     // Preferred: build the arguments from the tool's REAL schema.
     const specs = await engineCalendarSpecs(creds);
     if (specs.create) {
-      r = await hfxCall(specs.create.name, fillCalendarArgs(specs.create, { summary: ev.summary, description: ev.description, startIso: start, endIso: end, tz }), creds);
+      r = await calCall(creds, specs.create.name, fillCalendarArgs(specs.create, { summary: ev.summary, description: ev.description, startIso: start, endIso: end, tz }));
     }
     if (!r.ok) {
       outer: for (const tool of ["google_calendar_events_create", "google_calendar_create_event"]) {
         for (const args of argShapes) {
-          r = await hfxCall(tool, args, creds);
+          r = await calCall(creds, tool, args);
           if (r.ok) break outer;
           if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
         }
@@ -191,7 +230,7 @@ async function syncCalendarEvent(
         const specs = await engineCalendarSpecs(creds);
         let moved = false;
         if (specs.update) {
-          const r = await hfxCall(specs.update.name, fillCalendarArgs(specs.update, { startIso: start, endIso: end, tz, eventId }), creds);
+          const r = await calCall(creds, specs.update.name, fillCalendarArgs(specs.update, { startIso: start, endIso: end, tz, eventId }));
           moved = r.ok;
         }
         if (!moved) {
@@ -202,7 +241,7 @@ async function syncCalendarEvent(
           ];
           outer: for (const tool of ["google_calendar_events_update", "google_calendar_update_event"]) {
             for (const args of shapes) {
-              const r = await hfxCall(tool, args, creds);
+              const r = await calCall(creds, tool, args);
               if (r.ok) break outer;
               if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
             }
@@ -213,16 +252,16 @@ async function syncCalendarEvent(
         const specs = await engineCalendarSpecs(creds);
         let deleted = false;
         if (specs.del) {
-          const del = await hfxCall(specs.del.name, fillCalendarArgs(specs.del, { tz, eventId }), creds);
+          const del = await calCall(creds, specs.del.name, fillCalendarArgs(specs.del, { tz, eventId }));
           deleted = del.ok;
         }
         for (const tool of deleted ? [] : ["google_calendar_events_delete", "google_calendar_delete_event"]) {
-          const del = await hfxCall(tool, { event_id: eventId }, creds);
+          const del = await calCall(creds, tool, { event_id: eventId });
           if (del.ok) { deleted = true; break; }
         }
         if (!deleted) {
           for (const tool of ["google_calendar_events_update", "google_calendar_update_event"]) {
-            const r = await hfxCall(tool, { event_id: eventId, summary: "CANCELLED — appointment" }, creds);
+            const r = await calCall(creds, tool, { event_id: eventId, summary: "CANCELLED — appointment" });
             if (r.ok) break;
           }
         }
