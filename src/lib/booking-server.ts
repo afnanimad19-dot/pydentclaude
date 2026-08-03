@@ -53,10 +53,10 @@ async function clinicTimezone(ws: string | null): Promise<string> {
 export async function pushToEngineCalendar(
   ws: string,
   ev: { summary: string; description: string; date: string; time: string }
-): Promise<{ ok: boolean; id?: string | null }> {
+): Promise<{ ok: boolean; id?: string | null; error?: string }> {
   try {
     const creds = await getHfxCreds(ws);
-    if (!hfxConfigured(creds)) return { ok: false };
+    if (!hfxConfigured(creds)) return { ok: false, error: "Marketing engine not configured" };
     const t = (ev.time || "09:00").slice(0, 5);
     const [h, m] = t.split(":").map(Number);
     const endMin = h * 60 + m + 30;
@@ -81,13 +81,13 @@ export async function pushToEngineCalendar(
         if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
       }
     }
-    if (!r.ok) return { ok: false };
+    if (!r.ok) return { ok: false, error: String(r.error ?? "engine calendar call failed").slice(0, 300) };
     // Recover the event id so reschedules/cancellations can target it later.
     const d: any = r.data;
     const id = d?.id ?? d?.event_id ?? d?.eventId ?? d?.event?.id ?? null;
     return { ok: true, id: id ? String(id) : null };
-  } catch {
-    return { ok: false };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "engine calendar call failed" };
   }
 }
 
@@ -323,9 +323,13 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
         // In-app Google OAuth not connected (or push failed) → mirror the event
         // through the Google Calendar connected on the marketing engine instead,
         // remembering its id (hfx: prefix) so reschedules/cancels can follow.
-        if (!eventId) {
+        if (eventId) {
+          await ctx.log?.(`📆 Google Calendar: event created (in-app connection).`);
+        } else {
           const eng = await pushToEngineCalendar(ws, { summary: calSummary, description: calDescription, date, time });
           if (eng.ok && eng.id && apptId) await supabase.from("appointments").update({ google_calendar_event_id: `hfx:${eng.id}` }).eq("id", apptId);
+          if (eng.ok) await ctx.log?.(`📆 Google Calendar: event created via the marketing engine${eng.id ? ` (id ${String(eng.id).slice(0, 24)})` : ""}. If you don't see it, tick that calendar's checkbox in Google Calendar's left sidebar.`);
+          else await ctx.log?.(`⚠️ Google Calendar mirror FAILED: ${eng.error ?? "unknown"}. The booking is safe on the Pydent calendar.`);
         }
       }
     } catch { /* keep the booking even if Google Calendar push fails */ }
