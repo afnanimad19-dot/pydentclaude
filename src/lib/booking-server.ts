@@ -187,8 +187,19 @@ async function resolvePatient(ctx: BookingCtx, args: BookingArgs): Promise<strin
   return created?.id ?? null;
 }
 
-// Real open slots: Open Dental when connected, otherwise the local calendar
-// (clinic hours 09:00–17:00 minus already-booked times).
+// Loose provider match, so "Dr. Anmol", "Anmol Batria" and "Dr. Anmol Batria"
+// count as the same doctor when checking clashes.
+function sameProvider(a?: string | null, b?: string | null): boolean {
+  const x = String(a ?? "").toLowerCase().replace(/^dr\.?\s*/, "").trim();
+  const y = String(b ?? "").toLowerCase().replace(/^dr\.?\s*/, "").trim();
+  if (!x && !y) return true; // both unassigned → same "slot owner"
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
+}
+
+// Real open slots: Open Dental when it actually ANSWERS, otherwise the local
+// calendar (clinic hours 09:00–17:00 minus times already booked FOR THAT
+// DOCTOR — two patients at the same time with different doctors is normal).
 export async function getSlots(ws: string | null, args: any): Promise<string> {
   const date = String(args?.date || "").slice(0, 10);
   if (!date) return "Ask the patient which date they'd like first.";
@@ -197,21 +208,32 @@ export async function getSlots(ws: string | null, args: any): Promise<string> {
     if (od?.enabled) {
       const r = await odForward(ws, "/available-slots", { method: "POST", body: { doctorId: args.doctor || "", serviceId: args.service || args.treatment || "", date } });
       const slots = (r.data as any)?.slots;
-      if (Array.isArray(slots) && slots.length) return `Open slots on ${date}: ${slots.join(", ")}.`;
-      return `No open slots returned by Open Dental for ${date}.`;
+      // Only trust Open Dental when it genuinely responded. An unreachable /
+      // erroring Open Dental (firewall, tunnel down) must NOT read as "fully
+      // booked forever" — fall through to the clinic calendar instead.
+      if (r.status === 200 && Array.isArray(slots)) {
+        if (slots.length) return `Open slots on ${date}: ${slots.join(", ")}.`;
+        return `Open Dental shows no open slots on ${date} — offer the patient a different day.`;
+      }
     }
   } catch {
     /* fall through to local availability */
   }
-  const { data: booked } = await supabase.from("appointments").select("time").eq("workspace_id", ws).eq("date", date).neq("status", "Broken");
-  const taken = new Set((booked ?? []).map((b: any) => String(b.time || "").slice(0, 5)));
+  const { data: booked } = await supabase.from("appointments").select("time, provider").eq("workspace_id", ws).eq("date", date).neq("status", "Broken");
+  // A time is only unavailable for THIS doctor (or for the unassigned default
+  // when no doctor was named) — other doctors' bookings don't block it.
+  const taken = new Set(
+    (booked ?? [])
+      .filter((b: any) => sameProvider(b.provider, args.doctor))
+      .map((b: any) => String(b.time || "").slice(0, 5))
+  );
   const open: string[] = [];
   for (let h = 9; h < 17; h++) for (const m of ["00", "30"]) {
     const t = `${String(h).padStart(2, "0")}:${m}`;
     if (!taken.has(t)) open.push(t);
   }
   const offer = open.slice(0, 6);
-  return offer.length ? `Open slots on ${date}: ${offer.join(", ")}.` : `Fully booked on ${date} — suggest another day.`;
+  return offer.length ? `Open slots on ${date}: ${offer.join(", ")}.` : `Fully booked on ${date}${args.doctor ? ` for ${args.doctor}` : ""} — suggest another day.`;
 }
 
 // Book an appointment onto the Calendar (always) + Open Dental (if connected),
@@ -227,12 +249,12 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
   const treatment = (args.treatment || args.service || "Consultation").trim();
   const fee = toFee(args.fee);
 
-  // Don't double-book: reject if the slot is already taken (same provider, or any
-  // provider when none is specified).
-  let conflictQ = supabase.from("appointments").select("id").eq("workspace_id", ws).eq("date", date).eq("time", time).neq("status", "Broken");
-  if (args.doctor) conflictQ = conflictQ.eq("provider", args.doctor);
-  const { data: clash } = await conflictQ.limit(1).maybeSingle();
-  if (clash) return `That slot (${date} ${time}) is already taken — offer the patient a different open time.`;
+  // Don't double-book THE SAME DOCTOR: two patients at the same time with
+  // different doctors is perfectly normal, so only a same-provider clash (or
+  // two unassigned bookings colliding) blocks the slot.
+  const { data: atTime } = await supabase.from("appointments").select("id, provider").eq("workspace_id", ws).eq("date", date).eq("time", time).neq("status", "Broken");
+  const clash = (atTime ?? []).find((a: any) => sameProvider(a.provider, args.doctor));
+  if (clash) return `That slot (${date} ${time}) is already taken${args.doctor ? ` for ${args.doctor}` : ""} — offer the patient a different open time.`;
 
   const patientId = await resolvePatient(ctx, args);
 
