@@ -97,6 +97,20 @@ function fillCalendarArgs(
   return args;
 }
 
+// Deep-search the engine's response for an event id / link, whatever the
+// nesting looks like (result/data/event wrappers vary by engine version).
+function deepFindString(obj: any, keys: string[], depth = 0): string | null {
+  if (!obj || typeof obj !== "object" || depth > 4) return null;
+  for (const k of Object.keys(obj)) {
+    if (keys.includes(k.toLowerCase()) && typeof obj[k] === "string" && obj[k]) return obj[k];
+  }
+  for (const k of Object.keys(obj)) {
+    const r = deepFindString(obj[k], keys, depth + 1);
+    if (r) return r;
+  }
+  return null;
+}
+
 // Mirror a booking onto the clinic's Google Calendar connected on the marketing
 // engine (Hyperfx). Used when the in-app Google OAuth calendar isn't connected.
 // The engine's tool arg names can vary by version, so retry once with alternate
@@ -104,7 +118,7 @@ function fillCalendarArgs(
 export async function pushToEngineCalendar(
   ws: string,
   ev: { summary: string; description: string; date: string; time: string }
-): Promise<{ ok: boolean; id?: string | null; error?: string }> {
+): Promise<{ ok: boolean; id?: string | null; error?: string; link?: string | null; raw?: string }> {
   try {
     const creds = await getHfxCreds(ws);
     if (!hfxConfigured(creds)) return { ok: false, error: "Marketing engine not configured" };
@@ -140,10 +154,14 @@ export async function pushToEngineCalendar(
       }
     }
     if (!r.ok) return { ok: false, error: String(r.error ?? "engine calendar call failed").slice(0, 300) };
-    // Recover the event id so reschedules/cancellations can target it later.
+    // Recover the event id so reschedules/cancellations can target it later,
+    // plus the html link + raw payload for the connection test's diagnostics.
     const d: any = r.data;
-    const id = d?.id ?? d?.event_id ?? d?.eventId ?? d?.event?.id ?? null;
-    return { ok: true, id: id ? String(id) : null };
+    const id = d?.id ?? d?.event_id ?? d?.eventId ?? d?.event?.id ?? deepFindString(d, ["id", "event_id", "eventid"]);
+    const link = deepFindString(d, ["htmllink", "html_link", "link", "event_link", "url"]);
+    let raw = "";
+    try { raw = JSON.stringify(d).slice(0, 900); } catch { raw = String(d).slice(0, 900); }
+    return { ok: true, id: id ? String(id) : null, link, raw };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "engine calendar call failed" };
   }

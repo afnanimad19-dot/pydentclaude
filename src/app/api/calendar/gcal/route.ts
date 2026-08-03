@@ -26,10 +26,14 @@ export async function GET(req: NextRequest) {
       ok: engine.ok,
       via: engine.ok ? "marketing engine (Hyperfx Google Calendar)" : "none",
       eventId: engine.id ?? null,
-      when: `${date} 09:00`,
+      eventLink: engine.link ?? null,
+      when: `${date} 09:00 (Asia/Dubai)`,
+      engineResponse: engine.raw ?? undefined,
       error: engine.ok ? undefined : engine.error,
       note: engine.ok
-        ? "Check Google Calendar tomorrow 09:00. If you don't see it, tick that calendar's checkbox in the left sidebar — it may be created on the connected account's primary calendar."
+        ? (engine.link
+            ? "CLICK eventLink above — it opens the created event directly and shows which Google account/calendar it landed on."
+            : "The engine reported success. Check which Google account is authorized for Google Calendar on hyperfx.ai (Connections) — the event is on THAT account's calendar. The engineResponse field shows exactly what the engine returned.")
         : "The engine calendar call failed — this error text is exactly what to share to get it fixed.",
     });
   } catch (e) {
