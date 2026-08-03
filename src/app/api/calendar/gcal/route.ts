@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pushToGoogleCalendar } from "@/lib/google-api";
-import { pushToEngineCalendar } from "@/lib/booking-server";
+import { pushToEngineCalendar, engineCalendarDebug } from "@/lib/booking-server";
 
 // Mirrors a manually-booked appointment onto the clinic's Google Calendar —
 // the same two-path push agent bookings use: in-app Google OAuth first, then
@@ -22,7 +22,9 @@ export async function GET(req: NextRequest) {
       if (eventId) return NextResponse.json({ ok: true, via: "google (in-app connection)", eventId, when: `${date} 09:00`, note: "Check Google Calendar tomorrow 09:00 — and make sure the target calendar's checkbox is ticked in the left sidebar." });
     }
     const engine = await pushToEngineCalendar(ws, ev);
+    const calendarToolSchema = await engineCalendarDebug(ws);
     return NextResponse.json({
+      calendarToolSchema,
       ok: engine.ok,
       via: engine.ok ? "marketing engine (Hyperfx Google Calendar)" : "none",
       eventId: engine.id ?? null,

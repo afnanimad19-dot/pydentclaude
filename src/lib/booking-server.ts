@@ -148,6 +148,22 @@ function deepFindString(obj: any, keys: string[], depth = 0): string | null {
   return null;
 }
 
+// Diagnostic for the connection test: the engine calendar tools' REAL names and
+// parameter lists, straight from the engine's tool schemas — ends the guessing.
+export async function engineCalendarDebug(ws: string): Promise<Record<string, unknown>> {
+  try {
+    const creds = await getHfxCreds(ws);
+    if (!hfxConfigured(creds)) return { error: "engine not configured" };
+    calSpecCache = null; // always fresh for the test
+    const specs = await engineCalendarSpecs(creds);
+    const show = (sp: CalToolSpec | null) =>
+      sp ? { tool: sp.name, params: Object.fromEntries(Object.entries(sp.props).map(([k, v]: [string, any]) => [k, v?.type ?? "unknown"])), required: sp.required } : null;
+    return { create: show(specs.create), update: show(specs.update), del: show(specs.del) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "debug failed" };
+  }
+}
+
 // Mirror a booking onto the clinic's Google Calendar connected on the marketing
 // engine (Hyperfx). Used when the in-app Google OAuth calendar isn't connected.
 // The engine's tool arg names can vary by version, so retry once with alternate
@@ -192,7 +208,7 @@ export async function pushToEngineCalendar(
         }
       }
     }
-    if (!r.ok) return { ok: false, error: String(r.error ?? "engine calendar call failed").slice(0, 300) };
+    if (!r.ok) return { ok: false, error: String(r.error ?? "engine calendar call failed").slice(0, 1200) };
     // Recover the event id so reschedules/cancellations can target it later,
     // plus the html link + raw payload for the connection test's diagnostics.
     const d: any = r.data;
