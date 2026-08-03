@@ -35,6 +35,17 @@ export interface BookingArgs {
   datetime?: string;
 }
 
+// The clinic's timezone for calendar events (defaults to Dubai).
+async function clinicTimezone(ws: string | null): Promise<string> {
+  try {
+    if (ws) {
+      const { data } = await supabase.from("clinic_settings").select("timezone").eq("workspace_id", ws).maybeSingle();
+      if (data?.timezone) return data.timezone;
+    }
+  } catch { /* default below */ }
+  return process.env.CLINIC_TIMEZONE ?? "Asia/Dubai";
+}
+
 // Mirror a booking onto the clinic's Google Calendar connected on the marketing
 // engine (Hyperfx). Used when the in-app Google OAuth calendar isn't connected.
 // The engine's tool arg names can vary by version, so retry once with alternate
@@ -51,9 +62,24 @@ export async function pushToEngineCalendar(
     const endMin = h * 60 + m + 30;
     const start = `${ev.date}T${t}:00`;
     const end = `${ev.date}T${String(Math.floor(endMin / 60) % 24).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}:00`;
-    let r = await hfxCall("google_calendar_create_event", { summary: ev.summary, description: ev.description, start_time: start, end_time: end }, creds);
-    if (!r.ok && /param|field|required|invalid|schema|argument|unexpected/i.test(r.error ?? "")) {
-      r = await hfxCall("google_calendar_create_event", { title: ev.summary, description: ev.description, start, end }, creds);
+    // The engine's calendar tool has two naming generations
+    // (google_calendar_events_create is current; *_create_event is legacy) and
+    // its arg shape varies — walk names × arg shapes until one sticks. Always
+    // pin the clinic timezone (Asia/Dubai default) so events land at the right
+    // local hour.
+    const tz = await clinicTimezone(ws);
+    const argShapes: Record<string, unknown>[] = [
+      { summary: ev.summary, description: ev.description, start, end, time_zone: tz },
+      { summary: ev.summary, description: ev.description, start_time: start, end_time: end, timezone: tz },
+      { summary: ev.summary, description: ev.description, start: { dateTime: start, timeZone: tz }, end: { dateTime: end, timeZone: tz } },
+    ];
+    let r: Awaited<ReturnType<typeof hfxCall>> = { ok: false, error: "not attempted" };
+    outer: for (const tool of ["google_calendar_events_create", "google_calendar_create_event"]) {
+      for (const args of argShapes) {
+        r = await hfxCall(tool, args, creds);
+        if (r.ok) break outer;
+        if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
+      }
     }
     if (!r.ok) return { ok: false };
     // Recover the event id so reschedules/cancellations can target it later.
@@ -79,19 +105,38 @@ async function syncCalendarEvent(
       const eventId = storedId.slice(4);
       const creds = await getHfxCreds(ws);
       if (!hfxConfigured(creds)) return;
+      const tz = await clinicTimezone(ws);
       if (change.kind === "move") {
         const t = change.time.slice(0, 5);
         const [h, m] = t.split(":").map(Number);
         const endMin = h * 60 + m + 30;
         const start = `${change.date}T${t}:00`;
         const end = `${change.date}T${String(Math.floor(endMin / 60) % 24).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}:00`;
-        let r = await hfxCall("google_calendar_update_event", { event_id: eventId, start_time: start, end_time: end }, creds);
-        if (!r.ok) r = await hfxCall("google_calendar_update_event", { eventId, start, end }, creds);
-        void r;
+        const shapes: Record<string, unknown>[] = [
+          { event_id: eventId, start, end, time_zone: tz },
+          { event_id: eventId, start_time: start, end_time: end, timezone: tz },
+          { eventId, start: { dateTime: start, timeZone: tz }, end: { dateTime: end, timeZone: tz } },
+        ];
+        outer: for (const tool of ["google_calendar_events_update", "google_calendar_update_event"]) {
+          for (const args of shapes) {
+            const r = await hfxCall(tool, args, creds);
+            if (r.ok) break outer;
+            if (!/param|field|required|invalid|schema|argument|unexpected|type|unknown tool|not found/i.test(r.error ?? "")) break outer;
+          }
+        }
       } else {
-        // Delete tool availability varies — try it, else mark the event cancelled.
-        const del = await hfxCall("google_calendar_delete_event", { event_id: eventId }, creds);
-        if (!del.ok) await hfxCall("google_calendar_update_event", { event_id: eventId, summary: "CANCELLED — appointment" }, creds);
+        // Delete the event; if the delete tool is missing, mark it cancelled.
+        let deleted = false;
+        for (const tool of ["google_calendar_events_delete", "google_calendar_delete_event"]) {
+          const del = await hfxCall(tool, { event_id: eventId }, creds);
+          if (del.ok) { deleted = true; break; }
+        }
+        if (!deleted) {
+          for (const tool of ["google_calendar_events_update", "google_calendar_update_event"]) {
+            const r = await hfxCall(tool, { event_id: eventId, summary: "CANCELLED — appointment" }, creds);
+            if (r.ok) break;
+          }
+        }
       }
     } else if (change.kind === "move") {
       await updateGoogleCalendarEvent(ws, storedId, { date: change.date, time: change.time });

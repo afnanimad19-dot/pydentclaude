@@ -8,8 +8,6 @@ import {
   Inbox,
   MessageCircle,
   MessageSquare,
-  MessageSquareText,
-  Mail,
   PhoneCall,
   Camera,
   Megaphone,
@@ -99,24 +97,8 @@ const nav: NavItem[] = [
       { href: "/dashboard/ads/tiktok", label: "TikTok Ads" },
     ],
   },
-  {
-    href: "/dashboard/sms",
-    label: "SMS",
-    icon: MessageSquareText,
-    children: [
-      { href: "/dashboard/inbox", label: "Conversations" },
-      { href: "/dashboard/sms#broadcasts", label: "Broadcasts" },
-    ],
-  },
-  {
-    href: "/dashboard/email",
-    label: "Email",
-    icon: Mail,
-    children: [
-      { href: "/dashboard/email#campaigns", label: "Campaigns" },
-      { href: "/dashboard/email#automations", label: "Automations" },
-    ],
-  },
+  // SMS and Email tabs are hidden for launch (the pages still exist at
+  // /dashboard/sms and /dashboard/email if ever needed) — re-add here to restore.
   { href: "/dashboard/pipeline", label: "Pipeline", icon: KanbanSquare },
   {
     href: "/dashboard/workflows",

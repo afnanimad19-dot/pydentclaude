@@ -93,16 +93,71 @@ async function callOpenRouter(apiKey: string, model: string, body: Record<string
   return res.json();
 }
 
+// Fallback LLM: xAI's Grok chat API (OpenAI-compatible, function calling
+// included). Uses the same funded X_AI_VOICE_KEY as the voice agents, so when
+// OpenRouter can't run a request — the free tier's "Prompt tokens limit
+// exceeded" cap, or an empty balance — replies keep flowing instead of the
+// patient's "hi" dying with a 402.
+const XAI_CHAT_MODELS = ["grok-4-fast-non-reasoning", "grok-3-mini", "grok-3"];
+
+function xaiKey(): string | null {
+  return (
+    process.env.X_AI_VOICE_KEY || process.env.XAI_API_KEY || process.env.XAI_VOICE_API_KEY ||
+    process.env.X_AI_API_KEY || process.env.GROK_API_KEY || process.env.XAI_KEY || null
+  );
+}
+
+async function callXaiChat(body: Record<string, unknown>) {
+  const key = xaiKey();
+  if (!key) throw new Error("xAI fallback unavailable (no key)");
+  let lastErr = "";
+  for (const model of XAI_CHAT_MODELS) {
+    const res = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ max_tokens: 320, ...body, model }),
+    });
+    if (res.ok) return res.json();
+    lastErr = `${res.status}: ${(await res.text()).slice(0, 150)}`;
+    if (res.status !== 404 && res.status !== 400) break; // only ladder on unknown-model errors
+  }
+  throw new Error(`xAI fallback failed (${lastErr})`);
+}
+
+// OpenRouter first (the agent's configured model), Grok as automatic fallback
+// when OpenRouter refuses for credit/size reasons.
+async function resilientChat(apiKey: string, model: string, body: Record<string, unknown>) {
+  try {
+    return await callOpenRouter(apiKey, model, body);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    if (/402|credit|tokens limit|Prompt tokens|payment/i.test(msg)) {
+      return await callXaiChat(body);
+    }
+    throw e;
+  }
+}
+
 export async function generateAgentReply(input: AgentReplyInput): Promise<{ reply?: string; error?: string; status: number }> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
   try {
-    const data = await callOpenRouter(apiKey, input.model ?? "openai/gpt-4o-mini", {
+    const data = await resilientChat(apiKey, input.model ?? "openai/gpt-4o-mini", {
       messages: [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-20)],
     });
     return { reply: data.choices?.[0]?.message?.content ?? "", status: 200 };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "AI request failed", status: 502 };
+    // Last resort: shrink the knowledge base so the prompt fits whatever
+    // OpenRouter's remaining allowance is, and try once more.
+    try {
+      const slim = { ...input, knowledgeBase: (input.knowledgeBase ?? "").slice(0, 6000) };
+      const data = await callOpenRouter(apiKey, input.model ?? "openai/gpt-4o-mini", {
+        messages: [{ role: "system", content: buildSystem(slim) }, ...input.messages.slice(-12)],
+      });
+      return { reply: data.choices?.[0]?.message?.content ?? "", status: 200 };
+    } catch {
+      return { error: e instanceof Error ? e.message : "AI request failed", status: 502 };
+    }
   }
 }
 
@@ -204,7 +259,7 @@ export async function generateAgentReplyWithTools(
   const messages: any[] = [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-20)];
   try {
     for (let round = 0; round < 4; round++) {
-      const data = await callOpenRouter(apiKey, model, { messages, tools, tool_choice: "auto" });
+      const data = await resilientChat(apiKey, model, { messages, tools, tool_choice: "auto" });
       const msg = data.choices?.[0]?.message;
       if (!msg?.tool_calls?.length) return { reply: msg?.content ?? "", status: 200 };
       messages.push(msg);
@@ -218,7 +273,7 @@ export async function generateAgentReplyWithTools(
         messages.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
     }
-    const final = await callOpenRouter(apiKey, model, { messages });
+    const final = await resilientChat(apiKey, model, { messages });
     return { reply: final.choices?.[0]?.message?.content ?? "", status: 200 };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI request failed", status: 502 };
