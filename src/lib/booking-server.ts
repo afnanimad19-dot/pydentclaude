@@ -88,7 +88,7 @@ function fillCalendarArgs(
     // Google's API wants start/end as { dateTime, timeZone } objects — default
     // to that shape (the live 400 came from sending flat strings); only send a
     // string when the schema explicitly says string, and stamp the UTC offset.
-    const timeVal = (iso: string) => (def?.type === "string" ? isoWithOffset(iso, v.tz) : { dateTime: isoWithOffset(iso, v.tz), timeZone: v.tz });
+    const timeVal = (iso: string) => (def?.type === "object" ? { dateTime: isoWithOffset(iso, v.tz), timeZone: v.tz } : isoWithOffset(iso, v.tz));
     if (/(^|_)(time_?zone|tz)($|_)/.test(k)) args[key] = v.tz;
     else if (v.eventId && /event_?id|^id$/.test(k)) args[key] = v.eventId;
     else if (/calendar_?id/.test(k)) args[key] = "primary";
@@ -193,11 +193,29 @@ export async function pushToEngineCalendar(
       { summary: ev.summary, description: ev.description, start: startOff, end: endOff, time_zone: tz },
       { summary: ev.summary, description: ev.description, start_time: startOff, end_time: endOff, timezone: tz },
     ];
-    let r: Awaited<ReturnType<typeof hfxCall>> = { ok: false, error: "not attempted" };
-    // Preferred: build the arguments from the tool's REAL schema.
-    const specs = await engineCalendarSpecs(creds);
-    if (specs.create) {
-      r = await calCall(creds, specs.create.name, fillCalendarArgs(specs.create, { summary: ev.summary, description: ev.description, startIso: start, endIso: end, tz }));
+    let r: { ok: boolean; data?: unknown; error?: string } = { ok: false, error: "not attempted" };
+    // EXACT mapping — confirmed live against the engine's schema:
+    // google_calendar_events_create(summary*, calendar_id, description,
+    // start_datetime, end_datetime, start_timezone, end_timezone, ...).
+    // Local wall-clock datetimes + explicit timezone params.
+    r = await calCall(creds, "google_calendar_events_create", {
+      summary: ev.summary,
+      description: ev.description,
+      calendar_id: "primary",
+      start_datetime: start,
+      end_datetime: end,
+      start_timezone: tz,
+      end_timezone: tz,
+    });
+    // Keep the exact call's error: the legacy fallbacks below fail with
+    // confusing "unexpected keyword" noise that hides the real reason.
+    const primaryError = r.ok ? "" : String(r.error ?? "");
+    // Fallbacks for other engine versions: schema-driven, then legacy shapes.
+    if (!r.ok) {
+      const specs = await engineCalendarSpecs(creds);
+      if (specs.create) {
+        r = await calCall(creds, specs.create.name, fillCalendarArgs(specs.create, { summary: ev.summary, description: ev.description, startIso: start, endIso: end, tz }));
+      }
     }
     if (!r.ok) {
       outer: for (const tool of ["google_calendar_events_create", "google_calendar_create_event"]) {
@@ -208,7 +226,7 @@ export async function pushToEngineCalendar(
         }
       }
     }
-    if (!r.ok) return { ok: false, error: String(r.error ?? "engine calendar call failed").slice(0, 1200) };
+    if (!r.ok) return { ok: false, error: (primaryError || String(r.error ?? "engine calendar call failed")).slice(0, 1200) };
     // Recover the event id so reschedules/cancellations can target it later,
     // plus the html link + raw payload for the connection test's diagnostics.
     const d: any = r.data;
@@ -243,11 +261,24 @@ async function syncCalendarEvent(
         const endMin = h * 60 + m + 30;
         const start = `${change.date}T${t}:00`;
         const end = `${change.date}T${String(Math.floor(endMin / 60) % 24).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}:00`;
-        const specs = await engineCalendarSpecs(creds);
         let moved = false;
-        if (specs.update) {
-          const r = await calCall(creds, specs.update.name, fillCalendarArgs(specs.update, { startIso: start, endIso: end, tz, eventId }));
+        {
+          const r = await calCall(creds, "google_calendar_events_update", {
+            event_id: eventId,
+            calendar_id: "primary",
+            start_datetime: start,
+            end_datetime: end,
+            start_timezone: tz,
+            end_timezone: tz,
+          });
           moved = r.ok;
+        }
+        if (!moved) {
+          const specs = await engineCalendarSpecs(creds);
+          if (specs.update) {
+            const r = await calCall(creds, specs.update.name, fillCalendarArgs(specs.update, { startIso: start, endIso: end, tz, eventId }));
+            moved = r.ok;
+          }
         }
         if (!moved) {
           const shapes: Record<string, unknown>[] = [
@@ -265,21 +296,24 @@ async function syncCalendarEvent(
         }
       } else {
         // Delete the event; if the delete tool is missing, mark it cancelled.
-        const specs = await engineCalendarSpecs(creds);
         let deleted = false;
-        if (specs.del) {
-          const del = await calCall(creds, specs.del.name, fillCalendarArgs(specs.del, { tz, eventId }));
+        {
+          const del = await calCall(creds, "google_calendar_events_delete", { event_id: eventId, calendar_id: "primary" });
           deleted = del.ok;
+        }
+        if (!deleted) {
+          const specs = await engineCalendarSpecs(creds);
+          if (specs.del) {
+            const del = await calCall(creds, specs.del.name, fillCalendarArgs(specs.del, { tz, eventId }));
+            deleted = del.ok;
+          }
         }
         for (const tool of deleted ? [] : ["google_calendar_events_delete", "google_calendar_delete_event"]) {
           const del = await calCall(creds, tool, { event_id: eventId });
           if (del.ok) { deleted = true; break; }
         }
         if (!deleted) {
-          for (const tool of ["google_calendar_events_update", "google_calendar_update_event"]) {
-            const r = await calCall(creds, tool, { event_id: eventId, summary: "CANCELLED — appointment" });
-            if (r.ok) break;
-          }
+          await calCall(creds, "google_calendar_events_update", { event_id: eventId, calendar_id: "primary", summary: "CANCELLED — appointment" });
         }
       }
     } else if (change.kind === "move") {
