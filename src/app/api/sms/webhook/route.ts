@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { generateAgentReply, generateAgentReplyWithTools } from "@/lib/agent-reply";
+import { generateAgentReply, generateAgentReplyWithTools, returningGreetingNote } from "@/lib/agent-reply";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
 import { sendAgentEmail } from "@/lib/email-send";
 import { sendSms } from "@/lib/sms-send";
@@ -37,10 +37,15 @@ async function autoReply(ws: string, conversationId: string, from: string, name:
   const history = (historyRows ?? []).slice().reverse();
 
   let apptContext = "";
+  let upcomingAppt: { date?: string; time?: string; procedure?: string; provider?: string } | null = null;
+  let known: { phone?: string; email?: string } = {};
   if (patientId) {
-    const { data: ap } = await supabase.from("appointments").select("date, time, procedure").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
-    if (ap) apptContext = ` Existing upcoming appointment: ${ap.procedure} on ${ap.date} at ${ap.time}.`;
+    const { data: ap } = await supabase.from("appointments").select("date, time, procedure, provider").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
+    if (ap) { upcomingAppt = ap as any; apptContext = ` Existing upcoming appointment: ${ap.procedure}${ap.provider ? ` with ${ap.provider}` : ""} on ${ap.date} at ${ap.time}.`; }
+    const { data: pc } = await supabase.from("patients").select("phone, email").eq("id", patientId).maybeSingle();
+    if (pc) known = { phone: (pc as any).phone || "", email: (pc as any).email || "" };
   }
+  const sessionNote = upcomingAppt ? returningGreetingNote({ name, appt: upcomingAppt, known }) : "";
 
   const replyInput = {
     model: agent.model ?? "openai/gpt-4o-mini",
@@ -52,7 +57,7 @@ async function autoReply(ws: string, conversationId: string, from: string, name:
     language: agent.language ?? "",
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
     patientContext: `Contact name: ${name}. Contact phone: ${from}.${apptContext} Keep replies short — this is SMS.`,
-    sessionNote: "",
+    sessionNote,
     messages: history.map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body })),
   };
 

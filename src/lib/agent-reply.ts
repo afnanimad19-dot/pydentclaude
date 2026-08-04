@@ -35,6 +35,39 @@ export function languageRule(language?: string): string {
   return `LANGUAGE: Conduct the ENTIRE conversation in ${l} — greet, answer, ask questions and confirm bookings in ${l}.${arabic} Only switch language if the patient clearly uses a different one; then follow the patient.`;
 }
 
+// A returning patient (existing conversation gone quiet, or one who already has
+// an appointment on file) should be GREETED with clear choices — not dropped
+// back into the middle of the old chat, and not made to repeat details the
+// clinic already has. Shared by every chat agent (WhatsApp, SMS, inbox) so the
+// behaviour is identical everywhere. `appt` is their next upcoming appointment,
+// if any; `known` lists contact details already on file so the agent reuses
+// them instead of re-asking.
+export function returningGreetingNote(opts: {
+  name?: string;
+  appt?: { procedure?: string; date?: string; time?: string; provider?: string } | null;
+  known?: { phone?: string; email?: string };
+}): string {
+  const first = (opts.name ?? "").trim().split(/\s+/)[0] || "";
+  const a = opts.appt;
+  const apptLine = a?.date
+    ? `They ALREADY have an appointment booked: ${a.procedure || "an appointment"}${a.provider ? ` with ${a.provider}` : ""} on ${a.date}${a.time ? ` at ${a.time}` : ""}. `
+    : "";
+  const knownBits = [opts.known?.phone && "phone number", opts.known?.email && "email"].filter(Boolean).join(" and ");
+  const knownLine = knownBits ? `You already have their ${knownBits} on file — do NOT ask for those again; only ask for what's genuinely missing. ` : "";
+  return (
+    `FOR THIS REPLY ONLY (this overrides other instructions for this one message): this is a RETURNING patient. ` +
+    `Do NOT silently resume the middle of the old conversation and do NOT restart a booking that is already done. ` +
+    `Greet them warmly${first ? ` by name (${first})` : ""} and say it's good to hear from them again. ` +
+    apptLine +
+    `Then ask how you can help and offer exactly these choices, asking them to reply with the number:\n` +
+    (apptLine
+      ? `1) Reschedule or cancel that appointment, 2) Book a different/new appointment, 3) Ask a question (a doctor, a service, hours or prices). `
+      : `1) Continue where we left off, 2) Book a new appointment, 3) Ask a question (a doctor, a service, hours or prices). `) +
+    knownLine +
+    `If they choose to book, ask only for the details you don't already have, one question at a time, then send ONE summary of everything for them to review and confirm before you book. Keep it short and friendly.`
+  );
+}
+
 function buildSystem(input: AgentReplyInput): string {
   const { agentName = "Assistant", agentIdentity = "", instructions = "", behavior = "", knowledgeBase = "", capabilities = {}, patientContext = "", sessionNote = "" } = input;
   const abilities = [

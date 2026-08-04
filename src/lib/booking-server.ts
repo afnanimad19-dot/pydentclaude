@@ -494,8 +494,28 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
     } catch { /* keep the Calendar booking even if Open Dental is unreachable */ }
     try {
       if (ws) {
-        const calSummary = `${treatment} — ${fullName || ctx.name || "Patient"}`;
-        const calDescription = [`Booked via ${ctx.source}`, args.phone || ctx.phone ? `Phone: ${args.phone || ctx.phone}` : "", fee != null ? `Fee: ${fee}` : ""].filter(Boolean).join("\n");
+        // Fill any missing contact detail from the patient record so the
+        // calendar card always carries who to call and how (phone + email),
+        // not just the channel it came in on.
+        let pPhone = args.phone || ctx.phone || "";
+        let pEmail = args.email || "";
+        if (patientId && (!pPhone || !pEmail)) {
+          const { data: pc } = await supabase.from("patients").select("phone, email").eq("id", patientId).maybeSingle();
+          if (pc) { pPhone = pPhone || (pc as any).phone || ""; pEmail = pEmail || (pc as any).email || ""; }
+        }
+        const patientName = fullName || ctx.name || "Patient";
+        const calSummary = `${treatment} — ${patientName}`;
+        // Rich description so clinic staff can see and reach the patient at a
+        // glance: name, doctor, treatment, phone, email, channel and fee.
+        const calDescription = [
+          `Patient: ${patientName}`,
+          args.doctor ? `Doctor: ${args.doctor}` : "",
+          `Treatment: ${treatment}`,
+          pPhone ? `Phone: ${pPhone}` : "",
+          pEmail ? `Email: ${pEmail}` : "",
+          `Booked via ${ctx.source}`,
+          fee != null ? `Fee: ${fee}` : "",
+        ].filter(Boolean).join("\n");
         const eventId = await pushToGoogleCalendar(ws, { summary: calSummary, description: calDescription, date, time });
         if (eventId && apptId) await supabase.from("appointments").update({ google_calendar_event_id: eventId }).eq("id", apptId);
         // In-app Google OAuth not connected (or push failed) → mirror the event

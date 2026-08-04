@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { generateAgentReply, generateAgentReplyWithTools } from "@/lib/agent-reply";
+import { generateAgentReply, generateAgentReplyWithTools, returningGreetingNote } from "@/lib/agent-reply";
 import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPageId } from "@/lib/wa-send";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
 import { sendAgentEmail } from "@/lib/email-send";
@@ -391,25 +391,16 @@ async function storeInbound(
   // minutes — a quiet chat is treated as ended and re-opened on their next reply.
   const sessionMin = Number(process.env.RETURNING_SESSION_MIN ?? 5);
   const RETURNING_MS = sessionMin * 60 * 1000;
-  let sessionNote = "";
-  if (convo?.last_time) {
-    const gap = Date.now() - new Date(convo.last_time).getTime();
-    if (gap > RETURNING_MS) {
-      sessionNote =
-        `FOR THIS REPLY ONLY (this overrides other instructions for this one message): the chat went quiet for a few minutes, so the ` +
-        `previous session is treated as ended and the patient is now RETURNING. Whatever they just typed, do NOT continue the old topic yet. ` +
-        `Instead: greet them warmly by name, say it's good to hear from them again, then offer exactly these THREE choices and ask them to reply with the number — ` +
-        `1) Continue where we left off, 2) Start a new chat, 3) Just ask a question about a service (or hours/prices). ` +
-        `If they then want to book, ask for their details one question at a time (full name, then email, then phone number), then send ONE summary of everything for them to review and confirm before booking. Keep it short and friendly.`;
-    }
-  }
 
-  // Give the agent context about any existing upcoming appointment.
+  // Give the agent context about any existing upcoming appointment (and the
+  // contact details already on file, so it reuses them instead of re-asking).
   let apptContext = "";
+  let upcomingAppt: { date?: string; time?: string; procedure?: string; provider?: string } | null = null;
+  let known: { phone?: string; email?: string } = {};
   if (convoPatientId) {
     const { data: ap } = await supabase
       .from("appointments")
-      .select("date, time, procedure")
+      .select("date, time, procedure, provider")
       .eq("workspace_id", ws)
       .eq("patient_id", convoPatientId)
       .gte("date", new Date().toISOString().slice(0, 10))
@@ -418,7 +409,21 @@ async function storeInbound(
       .order("time")
       .limit(1)
       .maybeSingle();
-    if (ap) apptContext = ` Existing upcoming appointment: ${ap.procedure} on ${ap.date} at ${ap.time}.`;
+    if (ap) {
+      upcomingAppt = ap as any;
+      apptContext = ` Existing upcoming appointment: ${ap.procedure}${ap.provider ? ` with ${ap.provider}` : ""} on ${ap.date} at ${ap.time}.`;
+    }
+    const { data: pc } = await supabase.from("patients").select("phone, email").eq("id", convoPatientId).maybeSingle();
+    if (pc) known = { phone: (pc as any).phone || "", email: (pc as any).email || "" };
+  }
+
+  // A returning contact (quiet past the session window, OR one who already has
+  // an appointment on file) gets a warm "welcome back" with clear numbered
+  // choices instead of the old chat resuming mid-flow.
+  let sessionNote = "";
+  const gap = convo?.last_time ? Date.now() - new Date(convo.last_time).getTime() : 0;
+  if ((convo?.last_time && gap > RETURNING_MS) || upcomingAppt) {
+    sessionNote = returningGreetingNote({ name, appt: upcomingAppt, known });
   }
 
   const replyInput = {
