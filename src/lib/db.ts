@@ -2220,7 +2220,7 @@ export interface VoiceNumber {
   nickname: string;
   agentId: string | null;
   direction: "inbound" | "outbound" | "both";
-  provider: "vapi" | "twilio" | "sip" | "ziwo" | "goautodial" | "maqsam" | "vocalcom";
+  provider: "vapi" | "twilio" | "sip" | "ziwo" | "goautodial" | "maqsam" | "vocalcom" | "landline";
   concurrency: number;
   // The id Vapi assigns the number once it's registered — lets us PATCH it to
   // re-route inbound to a different agent without deleting/recreating.

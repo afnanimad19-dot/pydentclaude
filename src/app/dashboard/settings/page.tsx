@@ -21,6 +21,7 @@ import {
   Plus,
   X,
   CreditCard,
+  PhoneCall,
 } from "lucide-react";
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
@@ -229,6 +230,17 @@ export default function SettingsPage() {
           <VoiceProviderCard />
           <HyperfxCard />
           <AppsMarketplace />
+          <ConnCard
+            icon={PhoneCall}
+            name="Telephony & clinic landline"
+            detail="Connect a phone number so the AI voice agent answers calls — a SIP trunk, a Twilio/Ziwo/Maqsam number, or your existing clinic landline via a small on-prem box (Raspberry Pi). Your landline number stays the same and the agent picks up."
+            badge={<StatusBadge tone="blue" status="Set up" />}
+            action={
+              <Link href="/dashboard/agents/phone-numbers" className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+                Manage phone numbers
+              </Link>
+            }
+          />
           <OpenDentalConfigCard />
           <WebsiteConfigCard />
         </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Phone, Plus, Trash2, Info, Server, ArrowLeft, Search, RefreshCw, MoreVertical, Radio, PhoneForwarded, LayoutGrid, Smartphone, Network, Pencil } from "lucide-react";
+import { Phone, Plus, Trash2, Info, Server, ArrowLeft, Search, RefreshCw, MoreVertical, Radio, PhoneForwarded, LayoutGrid, Smartphone, Network, Pencil, Home, Copy, Check as CheckIcon } from "lucide-react";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -17,9 +17,10 @@ import {
 } from "@/lib/db";
 import { bindNumberToAgent } from "@/lib/voice-binding";
 
-type ProviderKey = "sip" | "ziwo" | "goautodial" | "maqsam" | "twilio" | "vocalcom";
+type ProviderKey = "landline" | "sip" | "ziwo" | "goautodial" | "maqsam" | "twilio" | "vocalcom";
 
 const PROVIDERS: { key: ProviderKey; name: string; desc: string; icon: typeof Phone; color: string }[] = [
+  { key: "landline", name: "Clinic Landline (on-prem)", desc: "Your existing landline answers with the AI agent — via a small on-prem box (Raspberry Pi / mini-PC).", icon: Home, color: "text-brand-500 bg-brand-500/10" },
   { key: "sip", name: "Custom SIP Trunk", desc: "Connect your own SIP trunk configuration", icon: Server, color: "text-violet-500 bg-violet-500/10" },
   { key: "ziwo", name: "Ziwo", desc: "Add extensions from your Ziwo account", icon: Radio, color: "text-fuchsia-500 bg-fuchsia-500/10" },
   { key: "goautodial", name: "Go Auto Dial", desc: "Connect extensions from Go Auto Dial system", icon: PhoneForwarded, color: "text-emerald-500 bg-emerald-500/10" },
@@ -29,7 +30,7 @@ const PROVIDERS: { key: ProviderKey; name: string; desc: string; icon: typeof Ph
 ];
 
 const PROVIDER_LABEL: Record<string, string> = {
-  sip: "Custom SIP Trunk", ziwo: "Ziwo", goautodial: "Go Auto Dial", maqsam: "Maqsam", twilio: "BYOT Phone", vocalcom: "Vocalcom Hermes", vapi: "Vapi",
+  landline: "Clinic Landline (on-prem)", sip: "Custom SIP Trunk", ziwo: "Ziwo", goautodial: "Go Auto Dial", maqsam: "Maqsam", twilio: "BYOT Phone", vocalcom: "Vocalcom Hermes", vapi: "Vapi",
 };
 
 // Per-provider credential fields (stored in config; live connection done in the
@@ -278,6 +279,7 @@ function AddNumberModal({ agents, onClose, onAdded }: { agents: AiAgent[]; onClo
       </Modal>
     );
   }
+  if (provider === "landline") return <LandlineForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
   if (provider === "sip") return <SipForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
   if (provider === "twilio") return <TwilioForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
   return <ProviderForm provider={provider} agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
@@ -463,6 +465,149 @@ function Check({ label, detail, checked, onChange }: { label: string; detail: st
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#7c3aed]" />
       <span><span className="font-medium text-ink-800">{label}</span><span className="block text-xs text-ink-400">{detail}</span></span>
     </label>
+  );
+}
+
+// Small copy-to-clipboard chip used in the landline setup checklist.
+function CopyLine({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ } }}
+      className="inline-flex items-center gap-1.5 rounded-md border border-ink-200 bg-ink-50 px-2 py-1 font-mono text-[11px] text-ink-700 hover:border-brand-400"
+    >
+      {copied ? <CheckIcon className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3 text-ink-400" />} {text}
+    </button>
+  );
+}
+
+// Clinic Landline (on-prem PBX): the INBOUND path from the document — a patient
+// dials the clinic's existing landline and the AI agent answers. The clinic runs
+// a tiny box (Raspberry Pi / mini-PC) with Asterisk (FreePBX) that bridges the
+// line to our voice engine over SIP. This form captures the landline number, how
+// the line reaches the box (analog FXO gateway or an Etisalat IP/SIP line), the
+// box's VPN reachability, and which agent answers — then shows the exact SIP
+// address to point Asterisk at plus the 5-step setup checklist.
+function LandlineForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
+  const [dial, setDial] = useState("+971");
+  const [local, setLocal] = useState("");
+  const [nickname, setNickname] = useState("");
+  const [lineType, setLineType] = useState<"analog" | "etisalat_sip">("analog");
+  // Analog (FXO gateway) fields
+  const [gatewayIp, setGatewayIp] = useState("");
+  // Etisalat IP/SIP line fields
+  const [sipUser, setSipUser] = useState("");
+  const [sipPass, setSipPass] = useState("");
+  const [sipDomain, setSipDomain] = useState("ims.etisalat.ae");
+  const [sipProxy, setSipProxy] = useState("");
+  // On-prem box reachability
+  const [boxHost, setBoxHost] = useState("");
+  // Which engine SIP address to point Asterisk at (paste from Vapi/xAI when known)
+  const [trunkTarget, setTrunkTarget] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const number = local.trim() ? `${dial}${local.replace(/[^\d]/g, "").replace(/^0+/, "")}` : "";
+  const target = trunkTarget.trim() || (number ? `sip:${number.replace(/^\+/, "")}@sip.vapi.ai` : "sip:<your-number>@sip.vapi.ai");
+
+  async function submit() {
+    if (!number) { toast("Enter the clinic landline number.", "info"); return; }
+    setSaving(true);
+    const cfg = {
+      kind: "landline_onprem",
+      lineType,
+      gatewayIp: gatewayIp.trim(),
+      sipUsername: lineType === "etisalat_sip" ? sipUser.trim() : "",
+      sipPassword: lineType === "etisalat_sip" ? sipPass.trim() : "",
+      sipDomain: lineType === "etisalat_sip" ? sipDomain.trim() : "",
+      sipProxy: lineType === "etisalat_sip" ? sipProxy.trim() : "",
+      boxHost: boxHost.trim(),
+      trunkTarget: target,
+      numberType: "national", scope: "Local", status: "active",
+    };
+    const res = await createVoiceNumber({ number, nickname: nickname || "Clinic landline", agentId: agentId || null, direction: "inbound", provider: "landline", concurrency: 1, config: cfg });
+    setSaving(false);
+    if (!res.ok) { toast(res.message, "info"); return; }
+    toast(agentId ? "Landline saved and assigned. Finish the on-prem steps below to go live." : "Landline saved — assign a voice agent so it can answer.", "success");
+    onAdded();
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Clinic Landline (on-prem)" subtitle="Your existing landline number picks up with the AI agent — no new number needed." wide>
+      <BackBar onBack={onBack} />
+      <div className="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
+        <div className="flex items-start gap-2 rounded-xl border border-brand-200 bg-brand-50/50 p-3 text-xs text-ink-600">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-500" /> How it works: patient dials your landline → a small box at the clinic (Raspberry Pi / mini-PC running Asterisk) picks up the line → it hands the call to your AI agent over SIP → the agent talks. Your landline number stays exactly the same.
+        </div>
+
+        <Field label="Clinic landline number (the number patients dial)">
+          <div className="flex gap-2">
+            <select value={dial} onChange={(e) => setDial(e.target.value)} className="w-28 shrink-0 rounded-xl border border-ink-200 bg-surface px-2 py-2.5 text-sm text-ink-800 outline-none focus:border-brand-400">
+              {DIAL_CODES.map((c, i) => <option key={`${c.dial}-${i}`} value={c.dial}>{c.flag} {c.dial}</option>)}
+            </select>
+            <input className={inputCls} placeholder="4 123 4567" value={local} onChange={(e) => setLocal(e.target.value)} />
+          </div>
+          {number && <p className="mt-1 text-xs text-ink-400">Landline <span className="font-mono">{number}</span></p>}
+        </Field>
+        <Field label="Label / nickname"><input className={inputCls} placeholder="Reception landline" value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
+
+        <Field label="How is the line delivered to the clinic?">
+          <select className={inputCls} value={lineType} onChange={(e) => setLineType(e.target.value as typeof lineType)}>
+            <option value="analog">Analog line (copper / wall jack) — needs an FXO gateway (e.g. HT813)</option>
+            <option value="etisalat_sip">Etisalat IP line (SIP) — no gateway, the box registers directly</option>
+          </select>
+        </Field>
+
+        {lineType === "analog" ? (
+          <Field label="FXO gateway IP on the clinic network (optional now — needed at install)">
+            <input className={inputCls} placeholder="192.168.1.50" value={gatewayIp} onChange={(e) => setGatewayIp(e.target.value)} />
+          </Field>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="SIP username (from Etisalat)"><input className={inputCls} placeholder="line username" value={sipUser} onChange={(e) => setSipUser(e.target.value)} /></Field>
+            <Field label="SIP password"><input type="password" className={inputCls} value={sipPass} onChange={(e) => setSipPass(e.target.value)} /></Field>
+            <Field label="SIP domain / registrar"><input className={inputCls} placeholder="ims.etisalat.ae" value={sipDomain} onChange={(e) => setSipDomain(e.target.value)} /></Field>
+            <Field label="Outbound proxy (optional)"><input className={inputCls} placeholder="proxy.etisalat.ae" value={sipProxy} onChange={(e) => setSipProxy(e.target.value)} /></Field>
+          </div>
+        )}
+
+        <Field label="On-prem box address (Tailscale / WireGuard hostname or public IP — how our platform reaches the box)">
+          <input className={inputCls} placeholder="clinic-pi.tailnet.ts.net  or  81.x.x.x" value={boxHost} onChange={(e) => setBoxHost(e.target.value)} />
+        </Field>
+
+        <Field label="Voice agent that answers this landline">
+          <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+            <option value="">Choose agent…</option>
+            {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
+          </select>
+        </Field>
+
+        <Field label="SIP address Asterisk sends inbound calls to (from your voice engine — paste it if you have it)">
+          <input className={inputCls} placeholder="sip:your-number@sip.vapi.ai" value={trunkTarget} onChange={(e) => setTrunkTarget(e.target.value)} />
+        </Field>
+
+        <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-3.5">
+          <p className="mb-2 text-xs font-semibold text-ink-700">On-prem setup — 5 pieces (one-time, at the clinic):</p>
+          <ol className="space-y-1.5 text-xs text-ink-600">
+            <li><span className="font-semibold text-ink-800">1.</span> A small box at the clinic — Raspberry Pi 5 (8GB) or mini-PC, wired to the router.</li>
+            <li><span className="font-semibold text-ink-800">2.</span> Asterisk via FreePBX installed on it (free) — the software switchboard.</li>
+            <li>
+              <span className="font-semibold text-ink-800">3.</span> The line into the box:{" "}
+              {lineType === "analog"
+                ? "HT813 FXO gateway plugged into the wall jack, registered to Asterisk as a trunk."
+                : <>Asterisk registers to <CopyLine text={sipDomain || "ims.etisalat.ae"} /> with the line&apos;s SIP username/password — no gateway.</>}
+            </li>
+            <li><span className="font-semibold text-ink-800">4.</span> A lightweight VPN (Tailscale / WireGuard) on the box{boxHost ? <> — this one: <CopyLine text={boxHost} /></> : ""} so our platform can reach it securely behind the router.</li>
+            <li>
+              <span className="font-semibold text-ink-800">5.</span> Two FreePBX routing rules: <span className="font-medium">inbound</span> — calls arriving on the line go to the AI trunk <CopyLine text={target} />; <span className="font-medium">outbound</span> — the AI extension dials out through the line.
+            </li>
+          </ol>
+          <p className="mt-2 text-[11px] text-ink-400">Everything else — tone settings, disconnect detection — is tuning within these five pieces. Full steps in VOICE_SETUP.md.</p>
+        </div>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save landline"} onSubmit={submit} />
+    </Modal>
   );
 }
 
