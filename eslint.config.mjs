@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
     "netlify/**",
     // The Open Dental connector is a separate Node app installed at the clinic.
     "opendental-connector/**",
+    // The ARI connector is a separate Node app that runs on the clinic's box.
+    "ari-connector/**",
   ]),
 ]);
 

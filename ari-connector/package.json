@@ -1,0 +1,17 @@
+{
+  "name": "pydent-ari-connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "On-prem bridge between a clinic's Asterisk (ARI/Stasis) and Pydent's AI voice agents (xAI Grok / Vapi). Runs on the same box as Asterisk.",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
