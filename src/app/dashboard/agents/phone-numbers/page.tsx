@@ -162,6 +162,7 @@ export default function PhoneNumbersPage() {
 function NumberCard({ n, agents, onChanged }: { n: VoiceNumber; agents: AiAgent[]; onChanged: () => void }) {
   const [menu, setMenu] = useState(false);
   const [edit, setEdit] = useState(false);
+  const [pairing, setPairing] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function onDoc(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setMenu(false); }
@@ -196,13 +197,17 @@ function NumberCard({ n, agents, onChanged }: { n: VoiceNumber; agents: AiAgent[
   return (
     <Card className="flex flex-col p-5">
       {edit && <EditNumberModal n={n} agents={agents} onClose={() => setEdit(false)} onSaved={() => { setEdit(false); onChanged(); }} />}
+      {pairing && <PairingModal n={n} onClose={() => setPairing(false)} />}
       <div className="flex items-start justify-between">
         <p className="text-sm font-medium text-ink-500">{PROVIDER_LABEL[n.provider] ?? n.provider}</p>
         <div className="relative" ref={ref}>
           <button onClick={() => setMenu((m) => !m)} className="rounded-lg p-1 text-ink-400 hover:bg-ink-100"><MoreVertical className="h-4 w-4" /></button>
           {menu && (
-            <div className="absolute right-0 z-10 mt-1 w-36 rounded-xl border border-ink-200 bg-surface py-1 shadow-lg">
+            <div className="absolute right-0 z-10 mt-1 w-44 rounded-xl border border-ink-200 bg-surface py-1 shadow-lg">
               <button onClick={() => { setMenu(false); setEdit(true); }} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-700 hover:bg-ink-50"><Pencil className="h-4 w-4" /> Edit</button>
+              {n.provider === "landline" && (
+                <button onClick={() => { setMenu(false); setPairing(true); }} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-700 hover:bg-ink-50"><Server className="h-4 w-4" /> Pairing / .env</button>
+              )}
               <button onClick={del} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-500/10"><Trash2 className="h-4 w-4" /> Delete</button>
             </div>
           )}
@@ -229,6 +234,46 @@ function NumberCard({ n, agents, onChanged }: { n: VoiceNumber; agents: AiAgent[
         <span className="capitalize">{n.direction}</span>
       </div>
     </Card>
+  );
+}
+
+// Show the pairing details for an on-prem landline box any time (the device
+// token was shown once on save; this recovers it from the saved config so the
+// user can always copy the .env block onto the Pi).
+function PairingModal({ n, onClose }: { n: VoiceNumber; onClose: () => void }) {
+  const cfg = n.config ?? {};
+  const deviceId = (cfg.deviceId as string) || "—";
+  const deviceToken = (cfg.deviceToken as string) || "";
+  const stasisApp = (cfg.stasisApp as string) || "pydent-agent";
+  const base = typeof window !== "undefined" ? window.location.origin : "https://pydent.ai";
+  const envBlock = `ARI_URL=http://127.0.0.1:8088\nARI_USER=pydent\nARI_SECRET=your-ari-password\nSTASIS_APP=${stasisApp}\nPYDENT_BASE=${base}\nPYDENT_DEVICE_TOKEN=${deviceToken}`;
+
+  return (
+    <Modal open onClose={onClose} title="Pairing details" subtitle={`For the box that answers ${n.number}`} z="z-[60]" wide>
+      <div className="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
+        {!deviceToken ? (
+          <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/60 p-3 text-xs text-amber-700">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" /> This landline has no device token — it was saved before pairing existed. Delete it and add it again with <span className="font-semibold">Add Phone Number → Clinic Landline (on-prem)</span> to generate one.
+          </div>
+        ) : (
+          <>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-ink-700">Device ID</p>
+              <CopyChip text={deviceId} block />
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-semibold text-ink-700">Full <span className="font-mono">.env</span> for the connector on the Pi</p>
+              <pre className="overflow-x-auto rounded-lg bg-ink-900 p-3 text-[11px] leading-relaxed text-ink-100"><code>{envBlock}</code></pre>
+              <div className="mt-1.5"><CopyChip text={envBlock} block /></div>
+              <p className="mt-1 text-[11px] text-ink-400">Replace <span className="font-mono">your-ari-password</span> with the ARI secret from the Pi&apos;s <span className="font-mono">ari.conf</span>. Everything else is filled in.</p>
+            </div>
+          </>
+        )}
+      </div>
+      <div className="mt-4 flex justify-end">
+        <button onClick={onClose} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Done</button>
+      </div>
+    </Modal>
   );
 }
 
