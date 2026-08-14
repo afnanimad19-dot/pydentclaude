@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Phone, Plus, Trash2, Info, Server, ArrowLeft, Search, RefreshCw, MoreVertical, Radio, PhoneForwarded, LayoutGrid, Smartphone, Network, Pencil, Home } from "lucide-react";
+import { Phone, Plus, Trash2, Info, Server, ArrowLeft, Search, RefreshCw, MoreVertical, Radio, PhoneForwarded, LayoutGrid, Smartphone, Network, Pencil, Home, Copy, Check as CheckIcon } from "lucide-react";
 import { Card, PageHeader } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
@@ -172,6 +172,19 @@ function NumberCard({ n, agents, onChanged }: { n: VoiceNumber; agents: AiAgent[
   const numberType = (n.config?.numberType as string) || "national";
   const scope = (n.config?.scope as string) || "Global";
   const agentName = agents.find((a) => a.id === n.agentId)?.name;
+  // For an on-prem landline box: is the connector checking in? "Online" if a
+  // heartbeat landed in the last ~60s. Recomputed on a timer (Date.now() can't
+  // run during render), so the badge flips to offline if the box goes quiet.
+  const boxHb = n.provider === "landline";
+  const lastHb = boxHb ? (n.config?.lastHeartbeat as string | null) : null;
+  const [boxOnline, setBoxOnline] = useState(false);
+  useEffect(() => {
+    if (!boxHb) return;
+    const check = () => setBoxOnline(!!lastHb && Date.now() - new Date(lastHb).getTime() < 60000);
+    check();
+    const t = setInterval(check, 15000);
+    return () => clearInterval(t);
+  }, [boxHb, lastHb]);
 
   async function del() {
     if (!confirm(`Delete ${n.number}? This cannot be undone.`)) return;
@@ -204,6 +217,11 @@ function NumberCard({ n, agents, onChanged }: { n: VoiceNumber; agents: AiAgent[
         <span className="rounded-md bg-ink-100 px-2 py-0.5 text-xs font-medium text-ink-600">{scope}</span>
         <span className={`rounded-md px-2 py-0.5 text-xs font-medium ${status === "active" ? "bg-emerald-500/15 text-emerald-600" : "bg-ink-100 text-ink-500"}`}>{status}</span>
         {agentName && <span className="rounded-md bg-brand-500/10 px-2 py-0.5 text-xs font-medium text-brand-600">{agentName}</span>}
+        {boxHb && (
+          <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${boxOnline ? "bg-emerald-500/15 text-emerald-600" : "bg-amber-500/15 text-amber-600"}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${boxOnline ? "bg-emerald-500" : "bg-amber-500"}`} /> {boxOnline ? "Box online" : "Box offline"}
+          </span>
+        )}
       </div>
 
       <div className="mt-4 flex items-center justify-between border-t border-ink-100 pt-3 text-[11px] text-ink-400">
@@ -468,94 +486,113 @@ function Check({ label, detail, checked, onChange }: { label: string; detail: st
   );
 }
 
-// One line in the ARI connection status readout (green dot = OK, red = failing).
-function StatusRow({ ok, label, hint }: { ok: boolean; label: string; hint?: string }) {
+// A copy-to-clipboard chip for the pairing details.
+function CopyChip({ text, block }: { text: string; block?: boolean }) {
+  const [copied, setCopied] = useState(false);
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className={`h-2 w-2 rounded-full ${ok ? "bg-emerald-500" : "bg-rose-400"}`} />
-      <span className={ok ? "text-emerald-600" : "text-rose-500"}>{label}</span>
-      {hint && <span className="text-ink-400">— {hint}</span>}
-    </div>
+    <button
+      type="button"
+      onClick={async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ } }}
+      className={`inline-flex items-center gap-1.5 rounded-md border border-ink-200 bg-ink-50 px-2 py-1 font-mono text-[11px] text-ink-700 hover:border-brand-400 ${block ? "w-full justify-between" : ""}`}
+    >
+      <span className="truncate">{text}</span>
+      {copied ? <CheckIcon className="h-3 w-3 shrink-0 text-emerald-500" /> : <Copy className="h-3 w-3 shrink-0 text-ink-400" />}
+    </button>
   );
 }
 
-// Clinic Landline (on-prem): the INBOUND path where a patient dials the clinic's
-// existing landline and the AI agent answers. The physical line is already
-// handled by the clinic's PBX (e.g. D-Link DVX-2005F), which trunks the call over
-// SIP into Asterisk on a small on-prem box. Pydent does NOT act as a SIP phone —
-// it controls the call through Asterisk's ARI (REST + WebSocket events) with a
-// Stasis app, and streams audio to/from the AI over a media WebSocket. So this
-// form is a CONNECTION PROFILE for that Asterisk box, not a hardware setup form.
+// Clinic Landline (on-prem): a patient dials the clinic's existing landline and
+// the AI agent answers. The clinic's PBX (D-Link) trunks the line over SIP into
+// Asterisk on a small on-prem box (Raspberry Pi). The Pydent connector runs ON
+// that box: it talks to Asterisk over LOCAL ARI and makes only OUTBOUND secure
+// connections to Pydent. So Pydent never reaches into the clinic network, no
+// inbound ports are opened, and ARI credentials stay on the Pi. This form is
+// therefore a PAIRING form — it stores the clinic-facing details and mints a
+// device token that pairs the box to this clinic account. ARI host/user/secret
+// are local provisioning on the Pi, not asked here.
 function LandlineForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
   const [dial, setDial] = useState("+971");
   const [local, setLocal] = useState("");
   const [nickname, setNickname] = useState("");
   const [pbxType, setPbxType] = useState("D-Link DVX-2005F");
   const [boxHost, setBoxHost] = useState("");
-  const [connMode, setConnMode] = useState<"ari_ws" | "ari_rtp" | "sip">("ari_ws");
-  const [ariUrl, setAriUrl] = useState("");
-  const [ariUser, setAriUser] = useState("");
-  const [ariSecret, setAriSecret] = useState("");
   const [stasisApp, setStasisApp] = useState("pydent-agent");
   const [agentId, setAgentId] = useState("");
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [status, setStatus] = useState<{ reachable: boolean; ariConnected: boolean; appRegistered: boolean; version?: string; error?: string } | null>(null);
+  const [paired, setPaired] = useState<{ deviceId: string; deviceToken: string; stasisApp: string } | null>(null);
 
   const number = local.trim() ? `${dial}${local.replace(/[^\d]/g, "").replace(/^0+/, "")}` : "";
-  const usesAri = connMode !== "sip";
-
-  async function test() {
-    if (!ariUrl.trim()) { toast("Enter the ARI URL / host first.", "info"); return; }
-    setTesting(true);
-    setStatus(null);
-    try {
-      const res = await fetch("/api/telephony/ari-test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ariUrl: ariUrl.trim(), username: ariUser.trim(), secret: ariSecret, stasisApp: stasisApp.trim() }),
-      });
-      const data = await res.json();
-      setStatus(data);
-    } catch (e) {
-      setStatus({ reachable: false, ariConnected: false, appRegistered: false, error: e instanceof Error ? e.message : "test failed" });
-    } finally {
-      setTesting(false);
-    }
-  }
 
   async function submit() {
     if (!number) { toast("Enter the clinic landline number.", "info"); return; }
-    if (usesAri && !ariUrl.trim()) { toast("Enter the ARI URL / host (or switch to SIP mode).", "info"); return; }
     setSaving(true);
+    // Generate the device identity that pairs this Pi to the clinic account.
+    const rand = new Uint8Array(24);
+    crypto.getRandomValues(rand);
+    const deviceToken = Array.from(rand, (b) => b.toString(16).padStart(2, "0")).join("");
+    const deviceId = "box-" + deviceToken.slice(0, 8);
+    const app = stasisApp.trim() || "pydent-agent";
     const cfg = {
       kind: "landline_onprem",
       pbxType: pbxType.trim(),
       boxHost: boxHost.trim(),
-      connectionMode: connMode,
-      ariUrl: usesAri ? ariUrl.trim() : "",
-      ariUsername: usesAri ? ariUser.trim() : "",
-      // NOTE: write-only in the UI (never rendered back). Stored in the
-      // workspace-scoped config; the ARI connector reads it server-side.
-      ariSecret: usesAri ? ariSecret : "",
-      ariSecretSet: usesAri && !!ariSecret,
-      stasisApp: usesAri ? stasisApp.trim() : "",
-      mediaMode: connMode === "ari_ws" ? "websocket" : connMode === "ari_rtp" ? "rtp" : "",
+      stasisApp: app,
+      deviceId,
+      deviceToken,
+      connectionMode: "ari_local_outbound",
       numberType: "national", scope: "Local", status: "active",
+      lastHeartbeat: null,
     };
     const res = await createVoiceNumber({ number, nickname: nickname || "Clinic landline", agentId: agentId || null, direction: "inbound", provider: "landline", concurrency: 1, config: cfg });
     setSaving(false);
     if (!res.ok) { toast(res.message, "info"); return; }
-    toast(agentId ? "Landline profile saved. Point the Asterisk dialplan at Stasis(" + (stasisApp.trim() || "pydent-agent") + ") to go live." : "Saved — assign a voice agent so calls route to it.", "success");
-    onAdded();
+    onAdded(); // refresh the list behind the modal
+    setPaired({ deviceId, deviceToken, stasisApp: app });
+  }
+
+  // After saving: show the one-time pairing details for the Pi's .env.
+  if (paired) {
+    const base = typeof window !== "undefined" ? window.location.origin : "https://pydent.ai";
+    const envBlock = `PYDENT_BASE=${base}\nPYDENT_DEVICE_TOKEN=${paired.deviceToken}\nSTASIS_APP=${paired.stasisApp}`;
+    return (
+      <Modal open onClose={onClose} title="Pair the clinic box" subtitle="Put these on the Raspberry Pi to connect it to this clinic — shown once." wide>
+        <div className="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
+          <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 text-xs text-emerald-700">
+            <CheckIcon className="mt-0.5 h-4 w-4 shrink-0" /> Landline saved and paired. Copy the device token now — for security it is not shown again.
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold text-ink-700">Device ID</p>
+            <CopyChip text={paired.deviceId} block />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold text-ink-700">Add to the connector&apos;s <span className="font-mono">.env</span> on the Pi</p>
+            <pre className="overflow-x-auto rounded-lg bg-ink-900 p-3 text-[11px] leading-relaxed text-ink-100"><code>{envBlock}</code></pre>
+            <div className="mt-1.5"><CopyChip text={envBlock} block /></div>
+            <p className="mt-1 text-[11px] text-ink-400">The Pi&apos;s ARI host / user / secret stay in the same .env locally (see the connector README) — they never leave the box.</p>
+          </div>
+          <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-3.5 text-xs text-ink-600">
+            <p className="mb-2 font-semibold text-ink-700">Then, on the Pi:</p>
+            <ol className="space-y-1">
+              <li><span className="font-semibold text-ink-800">1.</span> Install the connector: <span className="font-mono">cp -r ari-connector /opt/… &amp;&amp; npm install</span></li>
+              <li><span className="font-semibold text-ink-800">2.</span> Fill the local ARI values + the block above in <span className="font-mono">.env</span>, then <span className="font-mono">systemctl enable --now pydent-ari-connector</span></li>
+              <li><span className="font-semibold text-ink-800">3.</span> This landline flips to <span className="font-medium text-emerald-600">Box online</span> here once the connector checks in (a few seconds).</li>
+              <li><span className="font-semibold text-ink-800">4.</span> Only then, point the dialplan at <span className="font-mono">Stasis({paired.stasisApp})</span> and call the landline.</li>
+            </ol>
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Done</button>
+        </div>
+      </Modal>
+    );
   }
 
   return (
-    <Modal open onClose={onClose} title="Clinic Landline (on-prem)" subtitle="Connection profile for the clinic's Asterisk box — your landline number stays the same and the AI agent answers." wide>
+    <Modal open onClose={onClose} title="Clinic Landline (on-prem)" subtitle="Pair the clinic's Asterisk box — your landline number stays the same and the AI agent answers." wide>
       <BackBar onBack={onBack} />
       <div className="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
         <div className="flex items-start gap-2 rounded-xl border border-brand-200 bg-brand-50/50 p-3 text-xs text-ink-600">
-          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-500" /> Path: landline → your PBX (D-Link) → SIP → Asterisk on the on-prem box → Pydent controls the call via ARI/Stasis → audio streams to the AI agent. Pydent talks to Asterisk over ARI (REST + WebSocket), it does not register as a SIP phone.
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-500" /> Path: landline → your PBX (D-Link) → SIP → Asterisk on the Pi → the Pydent connector on the Pi (local ARI) → outbound to Pydent → the AI agent. The Pi connects OUT to Pydent, so no inbound ports are opened and ARI stays on the box.
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
@@ -576,58 +613,15 @@ function LandlineForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[];
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
             </select>
           </Field>
+          <Field label="Stasis application name (must match the connector on the Pi)"><input className={inputCls} placeholder="pydent-agent" value={stasisApp} onChange={(e) => setStasisApp(e.target.value)} /></Field>
+          <Field label="Asterisk box address (Tailscale hostname — for your records only)"><input className={inputCls} placeholder="clinic-lh.tailnet.ts.net" value={boxHost} onChange={(e) => setBoxHost(e.target.value)} /></Field>
         </div>
 
-        <Field label="Asterisk box address (Tailscale / WireGuard hostname or private address the Pydent backend can reach)">
-          <input className={inputCls} placeholder="clinic-lh.tailnet.ts.net" value={boxHost} onChange={(e) => setBoxHost(e.target.value)} />
-        </Field>
-
-        <Field label="Connection mode">
-          <select className={inputCls} value={connMode} onChange={(e) => setConnMode(e.target.value as typeof connMode)}>
-            <option value="ari_ws">ARI + Media WebSocket (recommended)</option>
-            <option value="ari_rtp">ARI + External Media (RTP / AudioSocket)</option>
-            <option value="sip">Legacy SIP trunk (Pydent as SIP endpoint)</option>
-          </select>
-        </Field>
-
-        {usesAri && (
-          <div className="rounded-xl border border-ink-100 bg-ink-50/50 p-3.5 space-y-4">
-            <p className="text-xs font-semibold text-ink-700">Asterisk ARI (REST Interface)</p>
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="ARI URL / host"><input className={inputCls} placeholder="http://clinic-lh.tailnet.ts.net:8088" value={ariUrl} onChange={(e) => setAriUrl(e.target.value)} /></Field>
-              <Field label="Stasis application name"><input className={inputCls} placeholder="pydent-agent" value={stasisApp} onChange={(e) => setStasisApp(e.target.value)} /></Field>
-              <Field label="ARI username"><input className={inputCls} placeholder="pydent" value={ariUser} onChange={(e) => setAriUser(e.target.value)} /></Field>
-              <Field label="ARI secret (write-only — not shown again after saving)">
-                <input type="password" className={inputCls} placeholder="••••••••" value={ariSecret} onChange={(e) => setAriSecret(e.target.value)} />
-              </Field>
-            </div>
-            <div className="flex items-center gap-3">
-              <button type="button" onClick={test} disabled={testing} className="rounded-lg border border-brand-300 px-3 py-1.5 text-xs font-semibold text-brand-600 hover:bg-brand-50 disabled:opacity-50">
-                {testing ? "Testing…" : "Test connection"}
-              </button>
-              <span className="text-[11px] text-ink-400">Checks reachability, ARI auth and whether the Stasis app is registered.</span>
-            </div>
-            {status && (
-              <div className="space-y-1.5 rounded-lg border border-ink-100 bg-surface p-3">
-                <StatusRow ok={status.reachable} label="Asterisk reachable" hint={status.reachable ? status.version : "backend can't reach the box — check the box address / Tailscale ACL"} />
-                <StatusRow ok={status.ariConnected} label="ARI connected" hint={status.ariConnected ? "credentials OK" : "check ARI username / secret and that ari.conf has enabled=yes"} />
-                <StatusRow ok={status.appRegistered} label={`Stasis app "${stasisApp.trim() || "pydent-agent"}" registered`} hint={status.appRegistered ? "ready" : "starts once the Pydent ARI connector is running on the box"} />
-                {status.error && <p className="text-[11px] text-rose-500">{status.error}</p>}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-3.5">
-          <p className="mb-2 text-xs font-semibold text-ink-700">Dialplan handoff (on the box) — send the inbound call into Pydent:</p>
-          <pre className="overflow-x-auto rounded-lg bg-ink-900 p-3 text-[11px] leading-relaxed text-ink-100"><code>{`[from-dlink]
-exten => ${local.replace(/[^\d]/g, "") || "123"},1,Answer()
- same => n,Stasis(${stasisApp.trim() || "pydent-agent"})
- same => n,Hangup()`}</code></pre>
-          <p className="mt-2 text-[11px] text-ink-400">The Pydent ARI connector (running on the box) receives the call from this Stasis app and streams audio to <span className="font-medium">{agents.find((a) => a.id === agentId)?.name ?? "the assigned agent"}</span>. Full steps in VOICE_SETUP.md.</p>
+        <div className="flex items-start gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-[11px] text-ink-500">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> ARI host, username and secret are NOT entered here — they are local settings on the Pi&apos;s connector (localhost). Saving generates a device token that pairs the box to this clinic; the box then connects outbound to Pydent on its own.
         </div>
       </div>
-      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save connection profile"} onSubmit={submit} />
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save & pair box"} onSubmit={submit} />
     </Modal>
   );
 }

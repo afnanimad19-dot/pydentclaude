@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
+import { findDeviceByToken } from "@/lib/telephony";
 import { createXaiClientSecret, buildXaiInstructions, xaiAgentTools, resolveXaiVoice, xaiLanguageHint, XAI_REALTIME_URL } from "@/lib/xai-voice";
 
 // Called by the on-prem Pydent ARI connector at the start of every inbound
@@ -19,16 +20,28 @@ function digits(s: string): string {
 }
 
 export async function POST(req: NextRequest) {
-  const { token, ws, dialedNumber, agentId: forcedAgentId } = await req.json().catch(() => ({}));
+  const { deviceToken, token, ws: bodyWs, dialedNumber, agentId: forcedAgentId } = await req.json().catch(() => ({}));
 
-  const expected = process.env.PYDENT_CONNECTOR_TOKEN || "";
-  if (!expected) return NextResponse.json({ error: "Connector auth not configured on the server (set PYDENT_CONNECTOR_TOKEN)." }, { status: 503 });
-  if (token !== expected) return NextResponse.json({ error: "Unauthorized connector." }, { status: 401 });
-  if (!ws) return NextResponse.json({ error: "ws is required." }, { status: 400 });
-
-  // Find the landline profile for the dialed number (match on trailing digits so
-  // formatting differences don't matter), then the agent assigned to it.
+  // Preferred: a per-device token that pairs this box to its landline profile,
+  // so the box authenticates itself and we derive the workspace + agent from it —
+  // no ARI creds or workspace id ever travel from the cloud.
+  let ws = bodyWs as string | undefined;
   let agentId: string | null = forcedAgentId ?? null;
+  if (deviceToken) {
+    const device = await findDeviceByToken(String(deviceToken));
+    if (!device) return NextResponse.json({ error: "Unknown device token — re-pair the box in Pydent." }, { status: 401 });
+    ws = device.workspace_id;
+    agentId = agentId ?? device.agent_id;
+  } else {
+    // Legacy fallback: shared connector token + explicit workspace id.
+    const expected = process.env.PYDENT_CONNECTOR_TOKEN || "";
+    if (!expected || token !== expected) return NextResponse.json({ error: "Unauthorized connector." }, { status: 401 });
+    if (!ws) return NextResponse.json({ error: "ws is required." }, { status: 400 });
+  }
+  if (!ws) return NextResponse.json({ error: "Could not resolve the workspace for this box." }, { status: 400 });
+
+  // If we still don't have an agent, match the landline profile by dialed number
+  // (trailing digits, so formatting differences don't matter).
   if (!agentId) {
     const { data: nums } = await supabase.from("voice_numbers").select("number, agent_id, provider").eq("workspace_id", ws).eq("provider", "landline");
     const want = digits(dialedNumber).slice(-7);

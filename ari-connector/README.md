@@ -9,13 +9,22 @@ Landline → clinic PBX (D-Link) → SIP → Asterisk → Stasis(pydent-agent)
       → THIS connector → audio ↔ AI engine (xAI Grok / Vapi)
 ```
 
-Pydent talks to Asterisk over **ARI** (REST + WebSocket events) and takes call
-audio over **AudioSocket** (external media). It does **not** register as a SIP
-phone — Asterisk owns the telephony, this connector owns the AI logic.
+The connector talks to Asterisk over **local ARI** (REST + WebSocket events) and
+takes call audio over **AudioSocket** (external media). It makes only **outbound**
+connections to Pydent — the cloud never reaches into the clinic network, no
+inbound ports are opened, and the ARI credentials never leave the Pi. It does
+**not** register as a SIP phone — Asterisk owns the telephony, this connector
+owns the AI logic.
+
+**Pairing:** in Pydent → Phone Numbers → *Clinic Landline (on-prem)*, save the
+profile. Pydent shows a one-time **device token** — that pairs this box to the
+clinic account. Put it in `.env` as `PYDENT_DEVICE_TOKEN`. The connector then
+authenticates every outbound call with it, and a **heartbeat** every 15s makes
+the landline show **Box online** in the dashboard (no cloud→Pi test needed).
 
 The engine is chosen per workspace by your **Settings → voice engine** switch
-(xAI Grok or Vapi); the connector asks the Pydent backend which one to use on
-each call, so you flip engines in the dashboard, not here.
+(xAI Grok or Vapi); the connector asks Pydent which one to use on each call, so
+you flip engines in the dashboard, not here.
 
 ---
 
@@ -78,16 +87,15 @@ node index.mjs            # test in the foreground first
 
 | var | what |
 |-----|------|
-| `ARI_URL` | usually `http://127.0.0.1:8088` |
-| `ARI_USER` / `ARI_SECRET` | the `ari.conf` user above |
+| `ARI_URL` | local, usually `http://127.0.0.1:8088` |
+| `ARI_USER` / `ARI_SECRET` | the `ari.conf` user above (stays on the Pi) |
 | `STASIS_APP` | must match `Stasis(pydent-agent)` and the name in the Pydent form |
 | `PYDENT_BASE` | your Pydent URL, e.g. `https://pydent.ai` |
-| `PYDENT_CONNECTOR_TOKEN` | shared token — set the **same** value in Pydent/Netlify env |
-| `PYDENT_WS` | the workspace id this clinic belongs to |
+| `PYDENT_DEVICE_TOKEN` | the device token Pydent showed when you saved the landline profile |
 | `AUDIOSOCKET_HOST` / `AUDIOSOCKET_PORT` | where Asterisk reaches this process (127.0.0.1:9092 when co-located) |
 
-On the **Pydent side**, set `PYDENT_CONNECTOR_TOKEN` (same value) in the Netlify
-environment so `/api/telephony/ari-resolve` accepts this box.
+Nothing needs setting on the Pydent side — the device token is created when you
+save the landline profile and is all the box needs to authenticate outbound.
 
 ## 5. Run as a service
 
@@ -100,13 +108,10 @@ journalctl -u pydent-ari-connector -f
 
 ## 6. Verify from the dashboard
 
-In Pydent → **Phone Numbers → Clinic Landline (on-prem)**, fill the profile
-(number, Asterisk box address, ARI URL/user/secret, Stasis app, agent) and click
-**Test connection**. You should see:
-
-- ✅ Asterisk reachable
-- ✅ ARI connected
-- ✅ Stasis app registered  ← turns green once this connector is running
+In Pydent → **Phone Numbers**, the clinic landline card shows **Box online** once
+this connector starts sending heartbeats (within ~15s). If it stays **Box
+offline**, check `journalctl -u pydent-ari-connector -f` — usually the device
+token or `PYDENT_BASE` is wrong, or the box has no internet.
 
 Then call the landline. The assigned agent answers.
 

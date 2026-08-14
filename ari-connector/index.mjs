@@ -23,11 +23,15 @@ const CFG = {
   ariSecret: process.env.ARI_SECRET || "",
   stasisApp: process.env.STASIS_APP || "pydent-agent",
   pydentBase: (process.env.PYDENT_BASE || "https://pydent.ai").replace(/\/+$/, ""),
-  connectorToken: process.env.PYDENT_CONNECTOR_TOKEN || "",
-  ws: process.env.PYDENT_WS || "",
+  // Per-box token from Pydent's "Save & pair box" screen — pairs this Pi to the
+  // clinic account and authenticates every OUTBOUND call to Pydent.
+  deviceToken: process.env.PYDENT_DEVICE_TOKEN || "",
   asHost: process.env.AUDIOSOCKET_HOST || "127.0.0.1",
   asPort: Number(process.env.AUDIOSOCKET_PORT || 9092),
 };
+
+// Live state reported to Pydent on each heartbeat.
+const STATE = { ariConnected: false };
 
 // xAI streams/accepts PCM16 at 24 kHz; Asterisk AudioSocket "slin" is 16-bit
 // mono at 8 kHz. We resample between the two.
@@ -133,11 +137,30 @@ async function resolveCall(dialedNumber) {
   const res = await fetch(`${CFG.pydentBase}/api/telephony/ari-resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token: CFG.connectorToken, ws: CFG.ws, dialedNumber }),
+    body: JSON.stringify({ deviceToken: CFG.deviceToken, dialedNumber }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `resolve failed (${res.status})`);
   return data;
+}
+
+// Outbound heartbeat: tell Pydent this box is alive and what state it's in, so
+// the dashboard shows "Box online" WITHOUT Pydent ever reaching into the clinic.
+async function sendHeartbeat() {
+  try {
+    await fetch(`${CFG.pydentBase}/api/telephony/heartbeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deviceToken: CFG.deviceToken,
+        ariConnected: STATE.ariConnected,
+        stasisRegistered: STATE.ariConnected, // the events WS registers the app
+        activeCalls: sessions.size,
+      }),
+    });
+  } catch (e) {
+    warn("heartbeat failed:", e.message);
+  }
 }
 
 async function runTool(agentId, name, args) {
@@ -353,7 +376,7 @@ async function onStasisEnd(ev) {
 function connectAriEvents() {
   const wsUrl = CFG.ariUrl.replace(/^http/, "ws") + `/ari/events?app=${encodeURIComponent(CFG.stasisApp)}&api_key=${encodeURIComponent(`${CFG.ariUser}:${CFG.ariSecret}`)}`;
   const ws = new WebSocket(wsUrl);
-  ws.on("open", () => log(`ARI events connected (app=${CFG.stasisApp})`));
+  ws.on("open", () => { STATE.ariConnected = true; log(`ARI events connected (app=${CFG.stasisApp})`); void sendHeartbeat(); });
   ws.on("message", async (raw) => {
     let ev;
     try { ev = JSON.parse(raw.toString()); } catch { return; }
@@ -362,7 +385,7 @@ function connectAriEvents() {
       else if (ev.type === "StasisEnd") await onStasisEnd(ev);
     } catch (e) { warn("event handler error:", e.message); }
   });
-  ws.on("close", () => { warn("ARI events closed — reconnecting in 3s"); setTimeout(connectAriEvents, 3000); });
+  ws.on("close", () => { STATE.ariConnected = false; warn("ARI events closed — reconnecting in 3s"); setTimeout(connectAriEvents, 3000); });
   ws.on("error", (e) => { warn("ARI events error:", e.message); });
 }
 
@@ -370,8 +393,7 @@ function connectAriEvents() {
 function requireCfg() {
   const missing = [];
   if (!CFG.ariSecret) missing.push("ARI_SECRET");
-  if (!CFG.connectorToken) missing.push("PYDENT_CONNECTOR_TOKEN");
-  if (!CFG.ws) missing.push("PYDENT_WS");
+  if (!CFG.deviceToken) missing.push("PYDENT_DEVICE_TOKEN");
   if (missing.length) { console.error("Missing required env:", missing.join(", ")); process.exit(1); }
 }
 
@@ -379,6 +401,9 @@ requireCfg();
 log(`Pydent ARI connector starting — ARI ${CFG.ariUrl}, app ${CFG.stasisApp}, Pydent ${CFG.pydentBase}`);
 startAudioSocketServer();
 connectAriEvents();
+// Check in every 15s so the dashboard shows this box online.
+sendHeartbeat();
+setInterval(sendHeartbeat, 15000);
 
 process.on("SIGINT", async () => { for (const s of sessions.values()) await s.close("shutdown"); process.exit(0); });
 process.on("SIGTERM", async () => { for (const s of sessions.values()) await s.close("shutdown"); process.exit(0); });
