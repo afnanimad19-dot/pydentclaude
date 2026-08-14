@@ -232,48 +232,15 @@ function NumberCard({ n, agents, onChanged }: { n: VoiceNumber; agents: AiAgent[
   );
 }
 
-// Edit a saved number: nickname, direction, and which agent answers it. Changing
-// the agent re-routes inbound on Vapi via bindNumberToAgent.
+// Edit a saved number: reopens the SAME full form the number was created with,
+// pre-filled with everything already saved, so any setting can be changed (not
+// just the name). Routes by provider, exactly like Add does.
 function EditNumberModal({ n, agents, onClose, onSaved }: { n: VoiceNumber; agents: AiAgent[]; onClose: () => void; onSaved: () => void }) {
-  const [nickname, setNickname] = useState(n.nickname);
-  const [direction, setDirection] = useState<VoiceNumber["direction"]>(n.direction);
-  const [agentId, setAgentId] = useState(n.agentId ?? "");
-  const [saving, setSaving] = useState(false);
-
-  async function submit() {
-    setSaving(true);
-    await updateVoiceNumber(n.id, { nickname, direction });
-    let msg = "Number updated.";
-    if (agentId !== (n.agentId ?? "")) {
-      const res = await bindNumberToAgent({ ...n, nickname, direction }, agents.find((a) => a.id === agentId));
-      msg = res.message;
-    }
-    setSaving(false);
-    toast(msg, "success");
-    onSaved();
-  }
-
-  return (
-    <Modal open onClose={onClose} title={`Edit ${n.number}`} subtitle="Change the label, direction or assigned agent." z="z-[60]">
-      <div className="space-y-4">
-        <Field label="Label / nickname"><input className={inputCls} value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Assigned voice agent">
-            <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-              <option value="">Unassigned</option>
-              {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
-            </select>
-          </Field>
-          <Field label="Direction">
-            <select className={inputCls} value={direction} onChange={(e) => setDirection(e.target.value as VoiceNumber["direction"])}>
-              <option value="inbound">Inbound</option><option value="outbound">Outbound</option><option value="both">Both</option>
-            </select>
-          </Field>
-        </div>
-      </div>
-      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save changes"} onSubmit={submit} />
-    </Modal>
-  );
+  const common = { agents, onClose, onAdded: onSaved, existing: n };
+  if (n.provider === "landline") return <LandlineForm {...common} />;
+  if (n.provider === "sip") return <SipForm {...common} />;
+  if (n.provider === "twilio") return <TwilioForm {...common} />;
+  return <ProviderForm provider={n.provider as ProviderKey} {...common} />;
 }
 
 function AddNumberModal({ agents, onClose, onAdded }: { agents: AiAgent[]; onClose: () => void; onAdded: () => void }) {
@@ -323,15 +290,17 @@ const DIAL_CODES: { flag: string; dial: string; name: string }[] = [
 // country-flag picker), Account SID, Auth Token, Label, SMS toggle, agent. On
 // submit it stores the number and registers it on Vapi with the agent attached,
 // so inbound calls are answered and the number is usable for outbound.
-function TwilioForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
-  const [dial, setDial] = useState("+1");
-  const [local, setLocal] = useState("");
-  const [accountSid, setAccountSid] = useState("");
-  const [authToken, setAuthToken] = useState("");
-  const [label, setLabel] = useState("");
-  const [smsEnabled, setSmsEnabled] = useState(true);
-  const [agentId, setAgentId] = useState("");
-  const [direction, setDirection] = useState("inbound");
+function TwilioForm({ agents, onBack, onClose, onAdded, existing }: { agents: AiAgent[]; onBack?: () => void; onClose: () => void; onAdded: () => void; existing?: VoiceNumber }) {
+  const init = existing ? splitNumber(existing.number) : { dial: "+1", local: "" };
+  const ex = existing?.config ?? {};
+  const [dial, setDial] = useState(init.dial);
+  const [local, setLocal] = useState(init.local);
+  const [accountSid, setAccountSid] = useState((ex.twilioAccountSid as string) ?? "");
+  const [authToken, setAuthToken] = useState((ex.twilioAuthToken as string) ?? "");
+  const [label, setLabel] = useState(existing?.nickname ?? "");
+  const [smsEnabled, setSmsEnabled] = useState(ex.smsEnabled !== undefined ? !!ex.smsEnabled : true);
+  const [agentId, setAgentId] = useState(existing?.agentId ?? "");
+  const [direction, setDirection] = useState<string>(existing?.direction ?? "inbound");
   const [saving, setSaving] = useState(false);
 
   const number = local.trim() ? `${dial}${local.replace(/[^\d]/g, "").replace(/^0+/, "")}` : "";
@@ -340,7 +309,15 @@ function TwilioForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; o
     if (!number) { toast("Enter the Twilio phone number.", "info"); return; }
     if (!accountSid.trim() || !authToken.trim()) { toast("Twilio Account SID and Auth Token are required.", "info"); return; }
     setSaving(true);
-    const cfg = { twilioAccountSid: accountSid.trim(), twilioAuthToken: authToken.trim(), smsEnabled, numberType: "national", scope: "Global", status: "active" };
+    const cfg = { ...ex, twilioAccountSid: accountSid.trim(), twilioAuthToken: authToken.trim(), smsEnabled, numberType: "national", scope: "Global", status: "active" };
+    if (existing) {
+      const res = await updateVoiceNumber(existing.id, { number, nickname: label, agentId: agentId || null, direction: direction as VoiceNumber["direction"], config: cfg });
+      if (agentId !== (existing.agentId ?? "")) await bindNumberToAgent({ ...existing, number, nickname: label, direction: direction as VoiceNumber["direction"] }, agents.find((a) => a.id === agentId));
+      setSaving(false);
+      toast(res.ok ? "Number updated." : res.message, res.ok ? "success" : "info");
+      onAdded(); onClose();
+      return;
+    }
     const res = await createVoiceNumber({ number, nickname: label, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider: "twilio", concurrency: 1, config: cfg });
     if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
     const vapi = await connectNumberToVapi({ provider: "twilio", number, nickname: label, agent: agents.find((a) => a.id === agentId), config: cfg });
@@ -351,7 +328,7 @@ function TwilioForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; o
   }
 
   return (
-    <Modal open onClose={onClose} title="Import Twilio number" subtitle="Bring your own Twilio number — we register it on Vapi and route it to your agent." wide>
+    <Modal open onClose={onClose} title={existing ? "Edit Twilio number" : "Import Twilio number"} subtitle={existing ? "Change this number's details." : "Bring your own Twilio number — we register it on Vapi and route it to your agent."} wide z={existing ? "z-[60]" : undefined}>
       <BackBar onBack={onBack} />
       <div className="space-y-4">
         <Field label="Twilio Phone Number">
@@ -379,13 +356,22 @@ function TwilioForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; o
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> We register this number on Vapi using your Twilio SID + token and attach the selected agent, so inbound calls are answered and the number is the caller ID for outbound. (Assign the agent and Save it once so it&apos;s synced to Vapi.)
         </div>
       </div>
-      <ModalFooter onClose={onClose} submitLabel={saving ? "Importing…" : "Import from Twilio"} onSubmit={submit} />
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : existing ? "Save changes" : "Import from Twilio"} onSubmit={submit} />
     </Modal>
   );
 }
 
-function BackBar({ onBack }: { onBack: () => void }) {
+function BackBar({ onBack }: { onBack?: () => void }) {
+  if (!onBack) return null;
   return <button onClick={onBack} className="mb-3 flex items-center gap-1.5 text-sm font-medium text-ink-500 hover:text-ink-800"><ArrowLeft className="h-4 w-4" /> Back</button>;
+}
+
+// Split a stored E.164 number back into a dial-code + local part for the pickers.
+function splitNumber(full: string): { dial: string; local: string } {
+  const s = (full ?? "").trim();
+  const match = DIAL_CODES.find((c) => s.startsWith(c.dial));
+  if (match) return { dial: match.dial, local: s.slice(match.dial.length) };
+  return { dial: "+971", local: s.replace(/^\+/, "") };
 }
 
 function AgentDir({ agentId, setAgentId, direction, setDirection, agents }: { agentId: string; setAgentId: (v: string) => void; direction: string; setDirection: (v: string) => void; agents: AiAgent[] }) {
@@ -407,22 +393,35 @@ function AgentDir({ agentId, setAgentId, direction, setDirection, agents }: { ag
 }
 
 // Generic provider credential form (Ziwo / Go Auto Dial / Maqsam / Vocalcom / BYOT Twilio).
-function ProviderForm({ provider, agents, onBack, onClose, onAdded }: { provider: ProviderKey; agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
+function ProviderForm({ provider, agents, onBack, onClose, onAdded, existing }: { provider: ProviderKey; agents: AiAgent[]; onBack?: () => void; onClose: () => void; onAdded: () => void; existing?: VoiceNumber }) {
   const meta = PROVIDERS.find((p) => p.key === provider)!;
   const fields = PROVIDER_FIELDS[provider] ?? [];
-  const [number, setNumber] = useState("");
-  const [nickname, setNickname] = useState("");
-  const [creds, setCreds] = useState<Record<string, string>>({});
-  const [numberType, setNumberType] = useState("national");
-  const [status, setStatus] = useState("active");
-  const [agentId, setAgentId] = useState("");
-  const [direction, setDirection] = useState("inbound");
+  const ex = existing?.config ?? {};
+  const [number, setNumber] = useState(existing?.number ?? "");
+  const [nickname, setNickname] = useState(existing?.nickname ?? "");
+  const [creds, setCreds] = useState<Record<string, string>>(() => {
+    const o: Record<string, string> = {};
+    for (const f of PROVIDER_FIELDS[provider] ?? []) o[f.key] = (ex[f.key] as string) ?? "";
+    return o;
+  });
+  const [numberType, setNumberType] = useState((ex.numberType as string) ?? "national");
+  const [status, setStatus] = useState((ex.status as string) ?? "active");
+  const [agentId, setAgentId] = useState(existing?.agentId ?? "");
+  const [direction, setDirection] = useState<string>(existing?.direction ?? "inbound");
   const [saving, setSaving] = useState(false);
 
   async function submit() {
     if (!number.trim()) { toast("Enter the phone number.", "info"); return; }
     setSaving(true);
-    const cfg = { ...creds, numberType, scope: "Global", status };
+    const cfg = { ...ex, ...creds, numberType, scope: "Global", status };
+    if (existing) {
+      const res = await updateVoiceNumber(existing.id, { number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], config: cfg });
+      if (agentId !== (existing.agentId ?? "")) await bindNumberToAgent({ ...existing, number: number.trim(), nickname, direction: direction as VoiceNumber["direction"] }, agents.find((a) => a.id === agentId));
+      setSaving(false);
+      toast(res.ok ? "Number updated." : res.message, res.ok ? "success" : "info");
+      onAdded(); onClose();
+      return;
+    }
     const res = await createVoiceNumber({
       number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider, concurrency: 1,
       config: cfg,
@@ -436,7 +435,7 @@ function ProviderForm({ provider, agents, onBack, onClose, onAdded }: { provider
   }
 
   return (
-    <Modal open onClose={onClose} title={`Add ${meta.name} number`} subtitle={meta.desc}>
+    <Modal open onClose={onClose} title={existing ? `Edit ${meta.name} number` : `Add ${meta.name} number`} subtitle={meta.desc} z={existing ? "z-[60]" : undefined}>
       <BackBar onBack={onBack} />
       <div className="space-y-4">
         <div className="grid gap-4 md:grid-cols-2">
@@ -472,7 +471,7 @@ function ProviderForm({ provider, agents, onBack, onClose, onAdded }: { provider
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Pydent stores this provider config and assigns the agent. The live phone connection is completed in {meta.name} / Vapi using these same values.
         </div>
       </div>
-      <ModalFooter onClose={onClose} submitLabel={saving ? "Adding…" : "Add number"} onSubmit={submit} />
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : existing ? "Save changes" : "Add number"} onSubmit={submit} />
     </Modal>
   );
 }
@@ -510,14 +509,16 @@ function CopyChip({ text, block }: { text: string; block?: boolean }) {
 // therefore a PAIRING form — it stores the clinic-facing details and mints a
 // device token that pairs the box to this clinic account. ARI host/user/secret
 // are local provisioning on the Pi, not asked here.
-function LandlineForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
-  const [dial, setDial] = useState("+971");
-  const [local, setLocal] = useState("");
-  const [nickname, setNickname] = useState("");
-  const [pbxType, setPbxType] = useState("D-Link DVX-2005F");
-  const [boxHost, setBoxHost] = useState("");
-  const [stasisApp, setStasisApp] = useState("pydent-agent");
-  const [agentId, setAgentId] = useState("");
+function LandlineForm({ agents, onBack, onClose, onAdded, existing }: { agents: AiAgent[]; onBack?: () => void; onClose: () => void; onAdded: () => void; existing?: VoiceNumber }) {
+  const init = existing ? splitNumber(existing.number) : { dial: "+971", local: "" };
+  const ex = existing?.config ?? {};
+  const [dial, setDial] = useState(init.dial);
+  const [local, setLocal] = useState(init.local);
+  const [nickname, setNickname] = useState(existing?.nickname ?? "");
+  const [pbxType, setPbxType] = useState((ex.pbxType as string) ?? "D-Link DVX-2005F");
+  const [boxHost, setBoxHost] = useState((ex.boxHost as string) ?? "");
+  const [stasisApp, setStasisApp] = useState((ex.stasisApp as string) ?? "pydent-agent");
+  const [agentId, setAgentId] = useState(existing?.agentId ?? "");
   const [saving, setSaving] = useState(false);
   const [paired, setPaired] = useState<{ deviceId: string; deviceToken: string; stasisApp: string } | null>(null);
 
@@ -526,12 +527,32 @@ function LandlineForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[];
   async function submit() {
     if (!number) { toast("Enter the clinic landline number.", "info"); return; }
     setSaving(true);
-    // Generate the device identity that pairs this Pi to the clinic account.
+    const app = stasisApp.trim() || "pydent-agent";
+
+    if (existing) {
+      // EDIT: keep the paired device identity + last heartbeat; change the rest.
+      const cfg = {
+        ...ex,
+        kind: "landline_onprem",
+        pbxType: pbxType.trim(),
+        boxHost: boxHost.trim(),
+        stasisApp: app,
+        connectionMode: "ari_local_outbound",
+      };
+      const res = await updateVoiceNumber(existing.id, { number, nickname: nickname || "Clinic landline", agentId: agentId || null, config: cfg });
+      setSaving(false);
+      if (!res.ok) { toast(res.message, "info"); return; }
+      toast("Landline updated.", "success");
+      onAdded();
+      onClose();
+      return;
+    }
+
+    // CREATE: generate the device identity that pairs this Pi to the clinic.
     const rand = new Uint8Array(24);
     crypto.getRandomValues(rand);
     const deviceToken = Array.from(rand, (b) => b.toString(16).padStart(2, "0")).join("");
     const deviceId = "box-" + deviceToken.slice(0, 8);
-    const app = stasisApp.trim() || "pydent-agent";
     const cfg = {
       kind: "landline_onprem",
       pbxType: pbxType.trim(),
@@ -588,7 +609,7 @@ function LandlineForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[];
   }
 
   return (
-    <Modal open onClose={onClose} title="Clinic Landline (on-prem)" subtitle="Pair the clinic's Asterisk box — your landline number stays the same and the AI agent answers." wide>
+    <Modal open onClose={onClose} title={existing ? "Edit clinic landline" : "Clinic Landline (on-prem)"} subtitle={existing ? "Change this landline's details — the box stays paired." : "Pair the clinic's Asterisk box — your landline number stays the same and the AI agent answers."} wide z={existing ? "z-[60]" : undefined}>
       <BackBar onBack={onBack} />
       <div className="max-h-[64vh] space-y-4 overflow-y-auto pr-1">
         <div className="flex items-start gap-2 rounded-xl border border-brand-200 bg-brand-50/50 p-3 text-xs text-ink-600">
@@ -621,19 +642,20 @@ function LandlineForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[];
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> ARI host, username and secret are NOT entered here — they are local settings on the Pi&apos;s connector (localhost). Saving generates a device token that pairs the box to this clinic; the box then connects outbound to Pydent on its own.
         </div>
       </div>
-      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : "Save & pair box"} onSubmit={submit} />
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : existing ? "Save changes" : "Save & pair box"} onSubmit={submit} />
     </Modal>
   );
 }
 
-function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBack: () => void; onClose: () => void; onAdded: () => void }) {
-  const [number, setNumber] = useState(""); const [nickname, setNickname] = useState(""); const [concurrency, setConcurrency] = useState(1);
-  const [agentId, setAgentId] = useState(""); const [direction, setDirection] = useState("inbound");
-  const [terminationUri, setTerminationUri] = useState("");
-  const [numberType, setNumberType] = useState("national"); const [status, setStatus] = useState("active");
-  const [e164, setE164] = useState(true); const [requiresReg, setRequiresReg] = useState(false); const [publicIp, setPublicIp] = useState(false);
-  const [username, setUsername] = useState(""); const [password, setPassword] = useState("");
-  const [categories, setCategories] = useState<SipCategory[]>([]);
+function SipForm({ agents, onBack, onClose, onAdded, existing }: { agents: AiAgent[]; onBack?: () => void; onClose: () => void; onAdded: () => void; existing?: VoiceNumber }) {
+  const ex = existing?.config ?? {};
+  const [number, setNumber] = useState(existing?.number ?? ""); const [nickname, setNickname] = useState(existing?.nickname ?? ""); const [concurrency, setConcurrency] = useState(existing?.concurrency ?? 1);
+  const [agentId, setAgentId] = useState(existing?.agentId ?? ""); const [direction, setDirection] = useState<string>(existing?.direction ?? "inbound");
+  const [terminationUri, setTerminationUri] = useState((ex.terminationUri as string) ?? "");
+  const [numberType, setNumberType] = useState((ex.numberType as string) ?? "national"); const [status, setStatus] = useState((ex.status as string) ?? "active");
+  const [e164, setE164] = useState(ex.e164LeadingPlus !== undefined ? !!ex.e164LeadingPlus : true); const [requiresReg, setRequiresReg] = useState(!!ex.requiresRegistration); const [publicIp, setPublicIp] = useState(!!ex.registeredPublicIp);
+  const [username, setUsername] = useState((ex.username as string) ?? ""); const [password, setPassword] = useState((ex.password as string) ?? "");
+  const [categories, setCategories] = useState<SipCategory[]>(Array.isArray(ex.categories) ? (ex.categories as SipCategory[]) : []);
   const [saving, setSaving] = useState(false);
 
   function addCategory() { setCategories((c) => [...c, { ipOrDomain: "", port: "5060", protocol: "UDP", direction: "inbound", active: true, ping: false }]); }
@@ -642,7 +664,15 @@ function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBa
   async function submit() {
     if (!number.trim()) { toast("Enter the phone number.", "info"); return; }
     setSaving(true);
-    const cfg = { terminationUri: terminationUri.trim(), e164LeadingPlus: e164, requiresRegistration: requiresReg, registeredPublicIp: publicIp, username: requiresReg ? username : "", password: requiresReg ? password : "", categories, numberType, scope: "Global", status };
+    const cfg = { ...ex, terminationUri: terminationUri.trim(), e164LeadingPlus: e164, requiresRegistration: requiresReg, registeredPublicIp: publicIp, username: requiresReg ? username : "", password: requiresReg ? password : "", categories, numberType, scope: "Global", status };
+    if (existing) {
+      const res = await updateVoiceNumber(existing.id, { number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], config: cfg });
+      if (agentId !== (existing.agentId ?? "")) await bindNumberToAgent({ ...existing, number: number.trim(), nickname, direction: direction as VoiceNumber["direction"] }, agents.find((a) => a.id === agentId));
+      setSaving(false);
+      toast(res.ok ? "SIP trunk updated." : res.message, res.ok ? "success" : "info");
+      onAdded(); onClose();
+      return;
+    }
     const res = await createVoiceNumber({
       number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider: "sip", concurrency,
       config: cfg,
@@ -656,7 +686,7 @@ function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBa
   }
 
   return (
-    <Modal open onClose={onClose} title="Custom SIP Trunk" subtitle="Connect a carrier / UAE +971 number over SIP." wide>
+    <Modal open onClose={onClose} title={existing ? "Edit SIP Trunk" : "Custom SIP Trunk"} subtitle="Connect a carrier / UAE +971 number over SIP." wide z={existing ? "z-[60]" : undefined}>
       <BackBar onBack={onBack} />
       <div className="max-h-[62vh] space-y-4 overflow-y-auto pr-1">
         <div className="grid gap-4 md:grid-cols-3">
@@ -724,7 +754,7 @@ function SipForm({ agents, onBack, onClose, onAdded }: { agents: AiAgent[]; onBa
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Pydent stores this trunk config and assigns the agent. The live SIP connection is completed in Vapi (Phone Numbers → SIP/BYO) using these same values. See VOICE_SETUP.md.
         </div>
       </div>
-      <ModalFooter onClose={onClose} submitLabel={saving ? "Creating…" : "Create number"} onSubmit={submit} />
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : existing ? "Save changes" : "Create number"} onSubmit={submit} />
     </Modal>
   );
 }

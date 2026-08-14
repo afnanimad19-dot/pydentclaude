@@ -2256,13 +2256,16 @@ export async function createVoiceNumber(input: Omit<VoiceNumber, "id" | "created
 // migrated yet so the rest of the update still lands.
 export async function updateVoiceNumber(
   id: string,
-  patch: { agentId?: string | null; direction?: VoiceNumber["direction"]; nickname?: string; vapiPhoneNumberId?: string | null }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  patch: { agentId?: string | null; direction?: VoiceNumber["direction"]; nickname?: string; number?: string; config?: Record<string, any>; vapiPhoneNumberId?: string | null }
 ): Promise<{ ok: boolean; message: string }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const row: Record<string, any> = {};
   if (patch.agentId !== undefined) row.agent_id = patch.agentId;
   if (patch.direction !== undefined) row.direction = patch.direction;
   if (patch.nickname !== undefined) row.nickname = patch.nickname;
+  if (patch.number !== undefined) row.number = patch.number;
+  if (patch.config !== undefined) row.config = patch.config;
   if (patch.vapiPhoneNumberId !== undefined) row.vapi_phone_number_id = patch.vapiPhoneNumberId;
   const { error } = await supabase.from("voice_numbers").update(row).eq("id", id);
   if (error && /vapi_phone_number_id/.test(error.message)) {
