@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
@@ -24,12 +24,26 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   LogOut,
+  ChevronsUpDown,
+  Check,
+  Plus,
+  Building2,
 } from "lucide-react";
 import { Avatar } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme";
-import { Toaster } from "@/components/toast";
+import { Toaster, toast } from "@/components/toast";
+import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
 import { supabase } from "@/lib/supabase";
-import { clearWorkspaceCache, fetchWorkspaceName } from "@/lib/db";
+import {
+  clearWorkspaceCache,
+  fetchWorkspaceName,
+  listWorkspaces,
+  createWorkspace,
+  switchWorkspace,
+  seedInboundReceptionist,
+  saveClinicSettings,
+  type WorkspaceListItem,
+} from "@/lib/db";
 import { CLINICAL_MODULES_ENABLED } from "@/lib/features";
 
 interface NavItem {
@@ -197,17 +211,17 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           open ? "w-60" : "w-[68px]"
         }`}
       >
-        <Link href="/" className={`flex items-center gap-2.5 py-5 ${open ? "px-5" : "justify-center px-2"}`}>
+        <Link href="/" className={`flex items-center gap-2.5 pt-5 pb-2 ${open ? "px-5" : "justify-center px-2"}`}>
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-600 text-white">
             <Sparkles className="h-5 w-5" />
           </div>
           {open && (
             <div className="leading-tight">
               <span className="block text-base font-semibold tracking-tight text-ink-900">Pydent</span>
-              <span className="block max-w-[150px] truncate text-[11px] font-medium text-ink-400">{clinicName || "Your clinic"}</span>
             </div>
           )}
         </Link>
+        {open && <WorkspaceSwitcher currentName={clinicName} />}
 
         <nav className="mt-2 flex-1 space-y-0.5 overflow-y-auto px-3">
           {nav
@@ -325,5 +339,134 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         <Toaster />
       </div>
     </div>
+  );
+}
+
+// ------------------------------------------------------- workspace switcher
+// One account, many clinics: a dropdown on the sidebar to jump between
+// workspaces or create a new one. Each workspace is fully isolated in the
+// database (its own workspace_id — patients, WhatsApp, messages, stats,
+// agents), so a new one starts genuinely empty. Creating a workspace can also
+// seed a ready-made inbound voice receptionist (Laura) with a knowledge base
+// imported from the clinic's website.
+function WorkspaceSwitcher({ currentName }: { currentName: string }) {
+  const [menu, setMenu] = useState(false);
+  const [list, setList] = useState<WorkspaceListItem[] | null>(null);
+  const [create, setCreate] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setMenu(false); }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  function openMenu() {
+    setMenu((m) => !m);
+    if (!list) listWorkspaces().then(setList);
+  }
+
+  async function pick(w: WorkspaceListItem) {
+    setMenu(false);
+    if (w.active) return;
+    const res = await switchWorkspace(w.id);
+    if (!res.ok) { toast(res.message, "info"); return; }
+    // Full reload so every page re-reads data under the new workspace id.
+    window.location.assign("/dashboard");
+  }
+
+  const active = list?.find((w) => w.active)?.name || currentName || "Your clinic";
+
+  return (
+    <div className="relative px-3 pb-2" ref={ref}>
+      {create && <CreateWorkspaceModal onClose={() => setCreate(false)} />}
+      <button
+        onClick={openMenu}
+        className="flex w-full items-center gap-2 rounded-xl border border-ink-200 bg-surface px-2.5 py-2 text-left hover:border-brand-400"
+        title="Switch workspace"
+      >
+        <Building2 className="h-4 w-4 shrink-0 text-brand-500" />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-800">{active}</span>
+        <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-ink-400" />
+      </button>
+      {menu && (
+        <div className="absolute left-3 right-3 z-30 mt-1 rounded-xl border border-ink-200 bg-surface py-1 shadow-lg">
+          {!list ? (
+            <p className="px-3 py-2 text-xs text-ink-400">Loading…</p>
+          ) : (
+            list.map((w) => (
+              <button
+                key={w.id}
+                onClick={() => void pick(w)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-700 hover:bg-ink-50"
+              >
+                <span className="min-w-0 flex-1 truncate">{w.name}</span>
+                {w.active && <Check className="h-4 w-4 shrink-0 text-brand-500" />}
+              </button>
+            ))
+          )}
+          <div className="my-1 border-t border-ink-100" />
+          <button
+            onClick={() => { setMenu(false); setCreate(true); }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium text-brand-600 hover:bg-brand-50"
+          >
+            <Plus className="h-4 w-4" /> Create workspace
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CreateWorkspaceModal({ onClose }: { onClose: () => void }) {
+  const [name, setName] = useState("");
+  const [website, setWebsite] = useState("");
+  const [seedAgent, setSeedAgent] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function submit() {
+    if (!name.trim()) { toast("Give the workspace a name (e.g. the clinic's name).", "info"); return; }
+    setBusy("Creating workspace…");
+    const res = await createWorkspace(name);
+    if (!res.ok) { setBusy(null); toast(res.message, "info"); return; }
+    // A real clinic workspace starts genuinely EMPTY: no demo/sample rows, and
+    // its website saved so agent builders pre-fill "Fetch site" with it.
+    await saveClinicSettings({ showSampleData: false, displayName: name.trim(), ...(website.trim() ? { website: website.trim() } : {}) }).catch(() => {});
+    if (seedAgent) {
+      setBusy(website.trim() ? "Reading the website & creating the voice agent…" : "Creating the voice agent…");
+      const seed = await seedInboundReceptionist(name, website);
+      toast(seed.message, seed.ok ? "success" : "info");
+    } else {
+      toast("Workspace created — you're in it now.", "success");
+    }
+    // Fresh load: the dashboard now shows the NEW (empty) workspace only.
+    window.location.assign("/dashboard");
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Create workspace"
+      subtitle="A separate clinic with its own patients, inbox, WhatsApp, agents and stats — completely isolated from your other workspaces."
+    >
+      <div className="space-y-4">
+        <Field label="Workspace / clinic name">
+          <input className={inputCls} placeholder="Alchimie Polyclinic" value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Clinic website (optional — used to build the agent's knowledge base)">
+          <input className={inputCls} placeholder="https://alchimiepolyclinic.ae" value={website} onChange={(e) => setWebsite(e.target.value)} />
+        </Field>
+        <label className="flex items-start gap-2 rounded-xl border border-ink-200 px-3 py-2.5 text-sm">
+          <input type="checkbox" checked={seedAgent} onChange={(e) => setSeedAgent(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#7c3aed]" />
+          <span>
+            <span className="font-medium text-ink-800">Create a ready-made inbound voice agent (Laura)</span>
+            <span className="block text-xs text-ink-400">A dental receptionist that answers calls, books, reschedules and cancels — knowledge base imported from the website above. English + Arabic.</span>
+          </span>
+        </label>
+        {busy && <p className="text-xs font-medium text-brand-600">{busy}</p>}
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={busy ? busy : "Create workspace"} onSubmit={busy ? () => {} : submit} />
+    </Modal>
   );
 }

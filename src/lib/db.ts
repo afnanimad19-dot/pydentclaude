@@ -1715,6 +1715,146 @@ export async function saveWorkspaceName(name: string): Promise<{ ok: boolean; me
   }
 }
 
+// ------------------------------------------------- multiple workspaces (0058)
+// One account can own several workspaces (one per clinic) and switch between
+// them. Data isolation is untouched: RLS still exposes ONLY the active
+// workspace's rows, so nothing (patients, WhatsApp, messages, stats, agents)
+// ever crosses between clinics. profiles.workspace_id is the active pointer.
+
+export interface WorkspaceListItem {
+  id: string;
+  name: string;
+  active: boolean;
+}
+
+export async function listWorkspaces(): Promise<WorkspaceListItem[]> {
+  try {
+    const active = await getWorkspaceId();
+    const { data } = await supabase.from("workspaces").select("id, name, created_at").order("created_at");
+    return (data ?? []).map((w) => ({ id: w.id, name: w.name ?? "Workspace", active: w.id === active }));
+  } catch {
+    return [];
+  }
+}
+
+const WS_MIGRATION_HINT = "Run migration 0058_workspaces_multi.sql in the Supabase SQL Editor first (Settings → SQL).";
+
+// Creates a fresh, EMPTY workspace and makes it the active one. Everything the
+// dashboard shows afterwards comes from the new workspace_id — a clean slate.
+export async function createWorkspace(name: string): Promise<{ ok: boolean; message: string; id?: string }> {
+  try {
+    const { data, error } = await supabase.rpc("create_workspace", { p_name: name.trim() || "New clinic" });
+    if (error) {
+      if (/function|schema cache|does not exist/i.test(error.message)) return { ok: false, message: WS_MIGRATION_HINT };
+      return { ok: false, message: error.message };
+    }
+    clearWorkspaceCache(); // the active workspace just changed server-side
+    return { ok: true, message: "Workspace created.", id: data ? String(data) : undefined };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not create the workspace." };
+  }
+}
+
+export async function switchWorkspace(id: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    const { error } = await supabase.rpc("switch_workspace", { p_ws: id });
+    if (error) {
+      if (/function|schema cache|does not exist/i.test(error.message)) return { ok: false, message: WS_MIGRATION_HINT };
+      return { ok: false, message: error.message };
+    }
+    clearWorkspaceCache();
+    return { ok: true, message: "Switched workspace." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not switch workspace." };
+  }
+}
+
+// Ready-made INBOUND voice receptionist ("Laura") seeded into a NEW workspace,
+// so a clinic starts with a working phone agent instead of a blank list. The
+// knowledge base is imported from the clinic's website when a URL is given.
+function lauraBase(clinicName: string, knowledgeBase: string): Omit<AiAgent, "id" | "vapiAssistantId"> {
+  const clinic = clinicName.trim() || "the clinic";
+  return {
+    name: "Laura",
+    kind: "voice",
+    role: "Receptionist",
+    status: "Live",
+    model: "grok-voice-latest",
+    voice: "Ara · warm friendly female",
+    voiceId: null,
+    firstMessage: `Thank you for calling ${clinic}! This is Laura — how can I help you today?`,
+    language: "English + Arabic",
+    agentIdentity:
+      `You are Laura, the friendly front-desk receptionist answering INBOUND phone calls for ${clinic}, a dental clinic. ` +
+      "You are warm, calm, professional and genuinely helpful — the voice of the clinic. Callers may be in pain, nervous, or in a hurry: you reassure them, answer their questions from the clinic's knowledge base, and get them booked with the right doctor. " +
+      "You OWN every call start to finish — you never say you'll transfer them to a human, the team, or another assistant. You are the person who helps.",
+    instructions:
+      "[Laura inbound playbook · rev 1]\n" +
+      "You answer calls TO the clinic. On every call:\n" +
+      "1) GREET & LISTEN — after your opener, let the caller say why they're calling. Don't interrogate; answer what they actually asked.\n" +
+      "2) ANSWER FROM THE KNOWLEDGE BASE — doctors, services, prices, hours, location, insurance. If it's genuinely not in the knowledge base, say you'll have the clinic confirm — never invent facts.\n" +
+      "3) BOOKING — when they want an appointment: use get_available_slots and offer real open times (two concrete choices). Collect details ONE question at a time: full name → email (repeat it back letter by letter) → phone (repeat digits back) → confirm service, doctor if requested, and day/time.\n" +
+      "4) SUMMARY & CONFIRM — read back ONE summary of everything (name, email, phone, service, date & time) and only call book_appointment after they clearly say it's correct. Never claim it's booked unless the tool succeeded.\n" +
+      "5) RESCHEDULE / CANCEL — confirm which appointment and the change, then call reschedule_appointment or cancel_appointment.\n" +
+      "6) EMERGENCIES — severe pain, swelling, trauma: be calm and kind, offer the earliest available slot, and advise going to an emergency room for uncontrolled bleeding or serious injury.\n" +
+      "7) CLOSE WARMLY — recap anything booked, invite them to call again, and say goodbye nicely.",
+    behavior:
+      "STYLE (inbound voice): sound like a real person, never a recording. Short natural turns — one sentence, two at most, then stop and listen. Plain spoken words and contractions; say numbers, prices and times the way a person would; spell emails letter by letter; never read out symbols or URLs. " +
+      "MULTILINGUAL: greet in English; if the caller speaks Arabic (or any other language), switch immediately and continue the whole call in their language — warm, natural spoken Arabic (Gulf style) included. Translate knowledge-base facts naturally. " +
+      "GUARDRAILS: only knowledge-base facts — never invent doctors, prices or availability; no medical diagnosis or treatment advice, only help booking the right consultation; be patient with elderly callers and repeat things gently when asked. " +
+      "The one exception to the short-turn rule is the booking summary read-back.",
+    knowledgeBase,
+    canBook: true,
+    canReschedule: true,
+    canCancel: true,
+    channels: ["voice"],
+    purpose: "inbound",
+    firstMessageMode: "assistant_first",
+    kbFiles: [],
+    voiceSettings: defaultVoiceSettings(),
+  };
+}
+
+// Seed the ready-made receptionist into the CURRENT (just-created) workspace.
+// Call ONLY after createWorkspace() has switched the active workspace, so the
+// agent and its knowledge base land in the new clinic — not the previous one.
+export async function seedInboundReceptionist(
+  clinicName: string,
+  websiteUrl?: string
+): Promise<{ ok: boolean; message: string; kbImported: boolean }> {
+  const ws = await getWorkspaceId(); // fresh — cache was cleared on create/switch
+  if (!ws) return { ok: false, message: "Sign in first.", kbImported: false };
+  let kb = "";
+  let kbImported = false;
+  const url = (websiteUrl ?? "").trim();
+  if (url) {
+    try {
+      const res = await fetch("/api/kb/website", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, ws }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const text = String(data.text ?? data.content ?? "").trim();
+      if (res.ok && text) {
+        kb = `--- Website import (${url}) ---\n${text}`.slice(0, 48000);
+        kbImported = true;
+      }
+    } catch {
+      /* agent still gets created — website can be imported later from the builder */
+    }
+  }
+  const res = await createAgent(lauraBase(clinicName, kb));
+  if (!res.ok) return { ok: false, message: res.message, kbImported };
+  return {
+    ok: true,
+    kbImported,
+    message: kbImported
+      ? "Laura (inbound voice receptionist) is ready — knowledge base imported from the website."
+      : "Laura (inbound voice receptionist) is ready. Website import didn't return text — open the agent and use “Fetch site” to add it.",
+  };
+}
+
 // ---------------------------------------------------------- hyperfx (per-clinic)
 
 // Each clinic can have its OWN Hyperfx account/sub-account, so its connected
