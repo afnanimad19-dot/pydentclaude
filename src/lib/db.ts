@@ -1846,6 +1846,13 @@ export async function seedInboundReceptionist(
   }
   const res = await createAgent(lauraBase(clinicName, kb));
   if (!res.ok) return { ok: false, message: res.message, kbImported };
+  // Mirror her into the workspace's voice engine right away (new workspaces
+  // default to xAI) so she shows up in the console without an open-and-save.
+  if (res.id) {
+    try {
+      await fetch("/api/xai/agents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agentId: res.id }) });
+    } catch { /* console mirror is best-effort — calls work either way */ }
+  }
   return {
     ok: true,
     kbImported,

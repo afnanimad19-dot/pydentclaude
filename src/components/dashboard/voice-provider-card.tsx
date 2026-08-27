@@ -1,14 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AudioLines, Check } from "lucide-react";
+import { AudioLines, Check, RefreshCw } from "lucide-react";
 import { Card } from "@/components/ui";
 import { toast } from "@/components/toast";
-import { fetchVoiceProvider, saveVoiceProvider, type VoiceProvider } from "@/lib/db";
+import { fetchVoiceProvider, saveVoiceProvider, fetchAgents, setAgentVapiId, type VoiceProvider, type AiAgent } from "@/lib/db";
 
 // Settings card: choose which engine powers the clinic's voice agents. The
 // choice drives the whole voice experience — the agent builder shows that
 // provider's voices/models/settings, and test calls run on it.
+//
+// Switching ALSO pushes every existing voice agent into the newly selected
+// engine (xAI console mirror, or a Vapi assistant), because xAI/Vapi don't see
+// each other's agents: without this, an agent created under one engine (e.g. a
+// seeded receptionist) simply wouldn't exist on the other after a switch.
 const OPTIONS: { id: VoiceProvider; name: string; desc: string; points: string[] }[] = [
   {
     id: "xai",
@@ -24,10 +29,59 @@ const OPTIONS: { id: VoiceProvider; name: string; desc: string; points: string[]
   },
 ];
 
+// Push one saved voice agent into the target engine. Vapi gets the full config
+// (the server sanitizes grok-only models/voices); xAI mirrors from the saved
+// row server-side. Returns an error string, or null on success.
+async function syncAgentTo(p: VoiceProvider, a: AiAgent): Promise<string | null> {
+  try {
+    if (p === "xai") {
+      const r = await fetch("/api/xai/agents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: a.id }),
+      });
+      if (r.ok) return null;
+      const d = await r.json().catch(() => ({}));
+      return d.error ?? "xAI sync failed";
+    }
+    const r = await fetch("/api/vapi/assistants", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: a.name,
+        voice: a.voice,
+        voiceId: a.voiceId,
+        model: (a.model ?? "").replace(/^openai\//, ""),
+        firstMessage: a.firstMessage,
+        agentIdentity: a.agentIdentity,
+        instructions: a.instructions,
+        behavior: a.behavior,
+        knowledgeBase: a.knowledgeBase,
+        language: a.language,
+        firstMessageMode: a.firstMessageMode,
+        voiceSettings: a.voiceSettings,
+        vapiAssistantId: a.vapiAssistantId, // PATCH the same assistant, never duplicate
+        canBook: a.canBook,
+        canReschedule: a.canReschedule,
+        canCancel: a.canCancel,
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.id) {
+      if (d.id !== a.vapiAssistantId) await setAgentVapiId(a.id, d.id);
+      return null;
+    }
+    return d.error ?? d.message ?? "Vapi sync failed";
+  } catch {
+    return "engine unreachable";
+  }
+}
+
 export function VoiceProviderCard() {
   const [provider, setProvider] = useState<VoiceProvider>("xai");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<VoiceProvider | null>(null);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
 
   useEffect(() => {
     fetchVoiceProvider().then((p) => {
@@ -36,13 +90,41 @@ export function VoiceProviderCard() {
     });
   }, []);
 
+  // Sync every voice agent into the engine that was just selected, so agents
+  // like a seeded receptionist exist there without a manual open-and-save each.
+  async function syncAllAgents(p: VoiceProvider) {
+    const { agents } = await fetchAgents();
+    const voice = agents.filter((a) => a.kind === "voice");
+    if (voice.length === 0) return;
+    const engineName = p === "xai" ? "xAI" : "Vapi";
+    const failures: string[] = [];
+    let done = 0;
+    for (const a of voice) {
+      setSyncNote(`Syncing ${a.name} to ${engineName}… (${done + 1}/${voice.length})`);
+      const err = await syncAgentTo(p, a);
+      if (err) failures.push(`${a.name}: ${err}`);
+      done++;
+    }
+    setSyncNote(null);
+    if (failures.length === 0) {
+      toast(`${voice.length === 1 ? `${voice[0].name} is` : `All ${voice.length} voice agents are`} now live on ${engineName}.`, "success");
+    } else {
+      toast(`Engine switched, but some agents didn't sync to ${engineName} — ${failures.join(" · ")}. Open those agents and Save to retry.`, "info");
+    }
+  }
+
   async function choose(p: VoiceProvider) {
     if (p === provider || saving) return;
     setSaving(p);
     const res = await saveVoiceProvider(p);
+    if (res.ok) {
+      setProvider(p);
+      toast(res.message, "success");
+      await syncAllAgents(p);
+    } else {
+      toast(res.message, "info");
+    }
     setSaving(null);
-    if (res.ok) setProvider(p);
-    toast(res.message, res.ok ? "success" : "info");
   }
 
   return (
@@ -52,7 +134,8 @@ export function VoiceProviderCard() {
       </h2>
       <p className="mt-1 max-w-2xl text-sm text-ink-500">
         Pick which engine your voice agents run on. The one you select is what works — the agent builder shows that
-        engine&apos;s voices and settings, and test calls connect to it.
+        engine&apos;s voices and settings, test calls connect to it, and switching automatically pushes your existing
+        voice agents into the engine you choose.
       </p>
 
       {loading ? (
@@ -93,6 +176,11 @@ export function VoiceProviderCard() {
             );
           })}
         </div>
+      )}
+      {syncNote && (
+        <p className="mt-3 flex items-center gap-2 text-xs font-medium text-brand-600">
+          <RefreshCw className="h-3.5 w-3.5 animate-spin" /> {syncNote}
+        </p>
       )}
       <p className="mt-3 text-xs text-ink-400">
         Note: phone numbers and outbound phone dialing always run through Vapi for now — xAI doesn&apos;t offer outbound
