@@ -10,7 +10,7 @@ import { fetchAgents, fetchVoiceNumbers, type AiAgent, type VoiceNumber } from "
 import { bindNumberToAgent } from "@/lib/voice-binding";
 
 const PROVIDER_LABEL: Record<string, string> = {
-  sip: "Custom SIP", ziwo: "Ziwo", goautodial: "Go Auto Dial", maqsam: "Maqsam", twilio: "Twilio (BYOT)", vocalcom: "Vocalcom", vapi: "Vapi",
+  sip: "Custom SIP", ziwo: "Ziwo", goautodial: "Go Auto Dial", maqsam: "Maqsam", twilio: "Twilio (BYOT)", vocalcom: "Vocalcom", vapi: "Vapi", landline: "Clinic Landline",
 };
 
 export default function VoiceAgentSettingsPage() {

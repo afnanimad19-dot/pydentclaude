@@ -276,20 +276,6 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {open && (
-          <div className="m-3 rounded-xl border border-brand-200 bg-brand-50 p-3.5">
-            <p className="text-xs font-semibold text-brand-800 dark:text-brand-300">Bright Smile Dental</p>
-            <p className="mt-1 text-xs leading-relaxed text-brand-700 dark:text-brand-400">
-              Your full practice workspace — patients, schedule, agents and channels in one place.
-            </p>
-            <Link
-              href="/dashboard/settings"
-              className="mt-2.5 inline-block rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
-            >
-              Workspace settings
-            </Link>
-          </div>
-        )}
       </aside>
 
       {/* Main */}
@@ -452,10 +438,10 @@ function CreateWorkspaceModal({ onClose }: { onClose: () => void }) {
     >
       <div className="space-y-4">
         <Field label="Workspace / clinic name">
-          <input className={inputCls} placeholder="Alchimie Polyclinic" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className={inputCls} placeholder="Example Clinic" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Clinic website (optional — used to build the agent's knowledge base)">
-          <input className={inputCls} placeholder="https://alchimiepolyclinic.ae" value={website} onChange={(e) => setWebsite(e.target.value)} />
+          <input className={inputCls} placeholder="https://example-clinic.com" value={website} onChange={(e) => setWebsite(e.target.value)} />
         </Field>
         <label className="flex items-start gap-2 rounded-xl border border-ink-200 px-3 py-2.5 text-sm">
           <input type="checkbox" checked={seedAgent} onChange={(e) => setSeedAgent(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#7c3aed]" />
