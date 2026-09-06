@@ -109,7 +109,11 @@ export function LivekitCard() {
                 {status.agentsError ? (
                   <p className="text-amber-600">Couldn&apos;t list agents — {status.agentsError}</p>
                 ) : !status.agents?.length ? (
-                  <p className="text-ink-500">None yet. Deploy the Pydent worker (livekit-agent/README.md) or build one in the LiveKit console.</p>
+                  <div className="space-y-1 text-ink-600">
+                    <p className="font-semibold text-amber-700">None yet — so nothing can answer a call on this project until an agent is deployed.</p>
+                    <p>If you already built an agent in the LiveKit console and it isn&apos;t listed here, it is either in a <strong>different LiveKit project</strong> (check the project switcher at the top-left of the LiveKit console — these keys belong to <span className="font-mono">{status.sipDomain?.replace(".sip.livekit.cloud", "") || "this project"}</span>) or it was never <strong>Deployed</strong> (Agent Builder → Deploy agent).</p>
+                    <p>To run the agents you build in Pydent, deploy the Pydent worker below — from GitHub in one click, or with the CLI.</p>
+                  </div>
                 ) : (
                   <ul className="space-y-1">
                     {status.agents.map((a) => (
@@ -176,7 +180,13 @@ export function LivekitCard() {
         </div>
 
         <div className="mt-3">
-          <p className="mb-1 text-xs font-semibold text-ink-700">2 · Deploy the worker (on any computer with the LiveKit CLI, from the repo&apos;s <span className="font-mono">livekit-agent/</span> folder)</p>
+          <p className="mb-1 text-xs font-semibold text-ink-700">2 · Deploy the worker — Option A: from GitHub, no software to install</p>
+          <ol className="list-decimal space-y-0.5 pl-4 text-xs text-ink-600">
+            <li>GitHub → your repo → <strong>Settings → Secrets and variables → Actions</strong> → add 5 secrets: <span className="font-mono">LIVEKIT_URL</span>, <span className="font-mono">LIVEKIT_API_KEY</span>, <span className="font-mono">LIVEKIT_API_SECRET</span> (from LiveKit → Settings → API keys), <span className="font-mono">LIVEKIT_WORKER_TOKEN</span> (the token above), <span className="font-mono">PYDENT_BASE</span> = <span className="font-mono">{typeof window !== "undefined" ? window.location.origin : "https://pydent.ai"}</span>.</li>
+            <li>GitHub → <strong>Actions → &quot;Deploy LiveKit agent&quot; → Run workflow</strong> → operation <strong>create</strong> (first time). Later code updates: run it again with <strong>deploy</strong>.</li>
+            <li>When it finishes (~3 min), click <strong>Test connection</strong> here — <span className="font-mono">{cfg.agentName || "pydent-agent"}</span> appears in the agents list.</li>
+          </ol>
+          <p className="mb-1 mt-3 text-xs font-semibold text-ink-700">Option B: with the LiveKit CLI on any computer, from the repo&apos;s <span className="font-mono">livekit-agent/</span> folder</p>
           <pre className="overflow-x-auto rounded-lg bg-ink-900 p-3 text-[11px] leading-relaxed text-ink-100"><code>{[
             "lk cloud auth",
             "cd livekit-agent && cp .env.example .env",

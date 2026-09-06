@@ -1,0 +1,44 @@
+# Deploy the Pydent LiveKit worker (livekit-agent/) to LiveKit Cloud from GitHub
+# — no LiveKit CLI needed on your computer.
+#
+# One-time setup in GitHub → Settings → Secrets and variables → Actions:
+#   LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET  (from LiveKit → Settings → API keys)
+#   LIVEKIT_WORKER_TOKEN  (from Pydent → Settings → LiveKit → "Generate worker token")
+#   PYDENT_BASE           (your Pydent URL, e.g. https://pydentai.netlify.app)
+#
+# Then: Actions → "Deploy LiveKit agent" → Run workflow → operation "create"
+# the FIRST time (registers the agent + writes livekit.toml back to the repo),
+# and "deploy" for every later code change.
+name: Deploy LiveKit agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "create (first time) or deploy (updates)"
+        required: true
+        default: deploy
+        type: choice
+        options: [create, deploy, status]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ${{ inputs.operation }} agent on LiveKit Cloud
+        uses: livekit/deploy-action@v2
+        with:
+          OPERATION: ${{ inputs.operation }}
+          WORKING_DIRECTORY: livekit-agent
+          SECRET_LIST: "PYDENT_BASE=${{ secrets.PYDENT_BASE }},LIVEKIT_WORKER_TOKEN=${{ secrets.LIVEKIT_WORKER_TOKEN }},AGENT_NAME=pydent-agent"
+        env:
+          LIVEKIT_URL: ${{ secrets.LIVEKIT_URL }}
+          LIVEKIT_API_KEY: ${{ secrets.LIVEKIT_API_KEY }}
+          LIVEKIT_API_SECRET: ${{ secrets.LIVEKIT_API_SECRET }}

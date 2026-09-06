@@ -19,7 +19,18 @@ and the very next call uses it. Nothing to sync, nothing to drift.
 
 ---
 
-## Deploy (one time, ~5 minutes)
+## Deploy from GitHub (no CLI needed) — recommended
+
+1. GitHub → your repo → **Settings → Secrets and variables → Actions** → add:
+   `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` (LiveKit → Settings →
+   API keys), `LIVEKIT_WORKER_TOKEN` (Pydent → Settings → LiveKit → Generate),
+   `PYDENT_BASE` (your Pydent URL).
+2. GitHub → **Actions → "Deploy LiveKit agent" → Run workflow** → `create` the
+   first time (registers the agent and commits `livekit.toml`), `deploy` for
+   later updates.
+3. Pydent → Settings → LiveKit → **Test connection**: `pydent-agent` is listed.
+
+## Deploy with the CLI (alternative, ~5 minutes)
 
 1. **Install the LiveKit CLI** and log in:
    ```bash
