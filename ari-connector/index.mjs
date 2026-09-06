@@ -2,18 +2,17 @@
 // answer with a Pydent AI voice agent.
 //
 //   Landline → clinic PBX (D-Link) → SIP → Asterisk → Stasis(pydent-agent)
-//        → THIS connector → audio ↔ AI engine (xAI Grok / Vapi)
+//        → THIS connector → asks Pydent which agent/engine → dials the engine
+//          over SIP (LiveKit or Vapi) and bridges the caller to it
 //
-// It runs on the same box as Asterisk. Asterisk hands each inbound call into the
-// Stasis app; this connector answers it, opens an AudioSocket media channel, asks
-// the Pydent backend which agent + engine to use, and bridges the caller's audio
-// to that engine. Tool calls (book/reschedule/cancel/email) run through Pydent's
-// existing /api/agents/tool-exec, so bookings from a phone call are real.
+// It runs on the same box as Asterisk and talks to ARI on localhost. Both
+// engines take calls over SIP, so the box never handles audio itself — it just
+// originates a SIP leg to the engine and bridges the two channels. Only
+// OUTBOUND connections to Pydent are made (device-token auth + a heartbeat so
+// the dashboard shows the box online); nothing reaches into the clinic network.
 //
-// Node 18+ (global fetch/WebSocket-free — we use the `ws` package for sockets).
+// Node 18+ (uses the `ws` package for the ARI events socket).
 
-import net from "node:net";
-import crypto from "node:crypto";
 import WebSocket from "ws";
 
 // ── config ────────────────────────────────────────────────────────────────────
@@ -23,20 +22,15 @@ const CFG = {
   ariSecret: process.env.ARI_SECRET || "",
   stasisApp: process.env.STASIS_APP || "pydent-agent",
   pydentBase: (process.env.PYDENT_BASE || "https://pydent.ai").replace(/\/+$/, ""),
-  // Per-box token from Pydent's "Save & pair box" screen — pairs this Pi to the
-  // clinic account and authenticates every OUTBOUND call to Pydent.
+  // Per-box token from Pydent's "Save & pair box" screen.
   deviceToken: process.env.PYDENT_DEVICE_TOKEN || "",
-  asHost: process.env.AUDIOSOCKET_HOST || "127.0.0.1",
-  asPort: Number(process.env.AUDIOSOCKET_PORT || 9092),
+  // PJSIP endpoint names on this box that route to each engine's SIP domain
+  // (see README: [livekit] → <project>.sip.livekit.cloud, [vapi] → sip.vapi.ai).
+  livekitEndpoint: process.env.LIVEKIT_PJSIP_ENDPOINT || "livekit",
+  vapiEndpoint: process.env.VAPI_PJSIP_ENDPOINT || "vapi",
 };
 
-// Live state reported to Pydent on each heartbeat.
 const STATE = { ariConnected: false };
-
-// xAI streams/accepts PCM16 at 24 kHz; Asterisk AudioSocket "slin" is 16-bit
-// mono at 8 kHz. We resample between the two.
-const AS_RATE = 8000;
-const XAI_RATE = 24000;
 
 function log(...a) { console.log(new Date().toISOString(), ...a); }
 function warn(...a) { console.warn(new Date().toISOString(), ...a); }
@@ -56,83 +50,29 @@ async function ari(method, path, params) {
   try { return text ? JSON.parse(text) : {}; } catch { return {}; }
 }
 
-// ── resampling (linear) ─────────────────────────────────────────────────────
-function resampleInt16(input, inRate, outRate) {
-  if (inRate === outRate) return input;
-  const ratio = outRate / inRate;
-  const outLen = Math.floor(input.length * ratio);
-  const out = new Int16Array(outLen);
-  for (let i = 0; i < outLen; i++) {
-    const srcPos = i / ratio;
-    const i0 = Math.floor(srcPos);
-    const i1 = Math.min(i0 + 1, input.length - 1);
-    const frac = srcPos - i0;
-    out[i] = (input[i0] * (1 - frac) + input[i1] * frac) | 0;
-  }
-  return out;
-}
-
-function bufToInt16(buf) {
-  return new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2));
-}
-function int16ToBuf(i16) {
-  return Buffer.from(i16.buffer, i16.byteOffset, i16.length * 2);
-}
-
-// ── AudioSocket protocol (Asterisk external media, encapsulation=audiosocket) ──
-// Frame: [type:1][len:2 BE][payload]. Types: 0x00 hangup, 0x01 uuid,
-// 0x10 audio (slin 16-bit LE 8kHz mono), 0xff error.
-const AS_HANGUP = 0x00, AS_UUID = 0x01, AS_AUDIO = 0x10, AS_ERROR = 0xff;
-
-function asFrame(type, payload = Buffer.alloc(0)) {
-  const head = Buffer.alloc(3);
-  head.writeUInt8(type, 0);
-  head.writeUInt16BE(payload.length, 1);
-  return Buffer.concat([head, payload]);
-}
-
-// Sessions keyed by the AudioSocket UUID we pass to externalMedia.
-const sessions = new Map(); // uuid -> Session
+// ── call sessions ─────────────────────────────────────────────────────────────
+const sessions = new Map(); // callerChannelId -> Session
 
 class Session {
-  constructor(uuid, channelId) {
-    this.uuid = uuid;
-    this.channelId = channelId;     // the caller channel in Stasis
+  constructor(channelId) {
+    this.channelId = channelId; // caller channel in Stasis
     this.bridgeId = null;
-    this.mediaChannelId = null;     // the externalMedia channel
-    this.asSocket = null;           // TCP socket from Asterisk
-    this.engineWs = null;           // xAI realtime socket
-    this.agentId = null;
+    this.legId = null;          // the SIP leg to the engine
     this.closed = false;
-    this.responseActive = false;
   }
-
-  // Send 24kHz PCM16 (from xAI) back to the caller as 8kHz AudioSocket audio.
-  sendAudioToCaller(pcm24) {
-    if (!this.asSocket || this.asSocket.destroyed) return;
-    const down = resampleInt16(pcm24, XAI_RATE, AS_RATE);
-    const buf = int16ToBuf(down);
-    // Chunk into 20ms frames (320 bytes @ 8kHz) so Asterisk paces playback.
-    for (let off = 0; off < buf.length; off += 320) {
-      this.asSocket.write(asFrame(AS_AUDIO, buf.subarray(off, Math.min(off + 320, buf.length))));
-    }
-  }
-
   async close(reason) {
     if (this.closed) return;
     this.closed = true;
-    log(`[${this.uuid.slice(0, 8)}] closing (${reason})`);
-    try { this.engineWs?.close(); } catch {}
-    try { this.asSocket?.end(); } catch {}
-    for (const id of [this.mediaChannelId, this.channelId]) {
+    log(`[${this.channelId.slice(-8)}] closing (${reason})`);
+    for (const id of [this.legId, this.channelId]) {
       if (id) { try { await ari("DELETE", `/channels/${id}`); } catch {} }
     }
     if (this.bridgeId) { try { await ari("DELETE", `/bridges/${this.bridgeId}`); } catch {} }
-    sessions.delete(this.uuid);
+    sessions.delete(this.channelId);
   }
 }
 
-// ── Pydent backend: who answers + which engine ────────────────────────────────
+// ── Pydent backend ────────────────────────────────────────────────────────────
 async function resolveCall(dialedNumber) {
   const res = await fetch(`${CFG.pydentBase}/api/telephony/ari-resolve`, {
     method: "POST",
@@ -144,162 +84,31 @@ async function resolveCall(dialedNumber) {
   return data;
 }
 
-// Outbound heartbeat: tell Pydent this box is alive and what state it's in, so
-// the dashboard shows "Box online" WITHOUT Pydent ever reaching into the clinic.
 async function sendHeartbeat() {
   try {
     await fetch(`${CFG.pydentBase}/api/telephony/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        deviceToken: CFG.deviceToken,
-        ariConnected: STATE.ariConnected,
-        stasisRegistered: STATE.ariConnected, // the events WS registers the app
-        activeCalls: sessions.size,
-      }),
+      body: JSON.stringify({ deviceToken: CFG.deviceToken, ariConnected: STATE.ariConnected, stasisRegistered: STATE.ariConnected, activeCalls: sessions.size }),
     });
   } catch (e) {
     warn("heartbeat failed:", e.message);
   }
 }
 
-async function runTool(agentId, name, args) {
-  try {
-    const res = await fetch(`${CFG.pydentBase}/api/agents/tool-exec`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agentId, name, args }),
-    });
-    const data = await res.json().catch(() => ({}));
-    return data.result ?? data.error ?? "Tool failed.";
-  } catch (e) {
-    return `Error: ${e.message || "could not reach Pydent to run the action."}`;
-  }
-}
-
-// ── xAI Grok realtime bridge ─────────────────────────────────────────────────
-function startXaiBridge(sess, cfg) {
-  const url = `${cfg.url}?model=${encodeURIComponent(cfg.model)}`;
-  const ws = new WebSocket(url, [`xai-client-secret.${cfg.token}`]);
-  sess.engineWs = ws;
-  sess.agentId = cfg.agentId;
-
-  ws.on("open", () => {
-    ws.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        voice: cfg.voice,
-        instructions: cfg.instructions,
-        turn_detection: { type: "server_vad" },
-        audio: {
-          input: {
-            format: { type: "audio/pcm", rate: XAI_RATE },
-            transport: "json",
-            ...(cfg.languageHint ? { transcription: { language_hint: cfg.languageHint } } : {}),
-          },
-          output: { format: { type: "audio/pcm", rate: XAI_RATE }, transport: "json" },
-        },
-        ...(Array.isArray(cfg.tools) && cfg.tools.length ? { tools: cfg.tools } : {}),
-      },
-    }));
-    if (cfg.greetFirst && cfg.firstMessage) {
-      ws.send(JSON.stringify({
-        type: "conversation.item.create",
-        item: { type: "force_message", role: "assistant", interruptible: true, content: [{ type: "output_text", text: cfg.firstMessage }] },
-      }));
-    }
-    log(`[${sess.uuid.slice(0, 8)}] xAI session open (${cfg.agentName})`);
-  });
-
-  ws.on("message", async (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw.toString()); } catch { return; }
-    const type = msg?.type ?? "";
-    if (type === "response.output_audio.delta" || type === "response.audio.delta") {
-      sess.responseActive = true;
-      if (typeof msg.delta === "string") {
-        const pcm = bufToInt16(Buffer.from(msg.delta, "base64"));
-        sess.sendAudioToCaller(pcm);
-      }
-    } else if (type === "response.done") {
-      sess.responseActive = false;
-    } else if (type === "input_audio_buffer.speech_started") {
-      // Barge-in: caller started talking — stop the model's current answer.
-      if (sess.responseActive) { try { ws.send(JSON.stringify({ type: "response.cancel" })); } catch {} sess.responseActive = false; }
-    } else if (type === "response.function_call_arguments.done") {
-      const name = msg?.name ?? msg?.function?.name ?? "";
-      const callId = msg?.call_id ?? msg?.callId ?? "";
-      let args = {};
-      try { args = typeof msg?.arguments === "string" ? JSON.parse(msg.arguments) : (msg?.arguments ?? {}); } catch {}
-      const result = await runTool(sess.agentId, name, args);
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: result } }));
-        ws.send(JSON.stringify({ type: "response.create" }));
-      }
-    } else if (type === "error") {
-      const detail = String(msg?.error?.message ?? msg?.message ?? "");
-      if (!/cancel|no active response|not.*active/i.test(detail)) warn(`[${sess.uuid.slice(0, 8)}] xAI:`, detail);
-    }
-  });
-
-  ws.on("close", () => { void sess.close("xai closed"); });
-  ws.on("error", (e) => { warn(`[${sess.uuid.slice(0, 8)}] xAI ws error:`, e.message); });
-}
-
-// Feed 8kHz AudioSocket audio up to xAI as 24kHz PCM16.
-function feedCallerAudioToXai(sess, slinBuf) {
-  const ws = sess.engineWs;
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const up = resampleInt16(bufToInt16(slinBuf), AS_RATE, XAI_RATE);
-  ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: int16ToBuf(up).toString("base64") }));
-}
-
-// ── Vapi bridge: hand the call to Vapi over SIP, let Vapi run the agent ───────
-async function bridgeToVapi(sess, cfg) {
-  // Originate a SIP leg to Vapi's inbound SIP with the assistant selected, and
-  // bridge the caller to it. Vapi handles audio + the agent, so we don't touch
-  // media here. (Vapi inbound SIP: sip:<assistantId>@sip.vapi.ai.)
+// ── bridge the caller to the engine over SIP ──────────────────────────────────
+// sipUri looks like sip:<user>@<domain>; we dial PJSIP/<user>@<endpoint>, where
+// <endpoint> is a PJSIP endpoint on this box whose contact is the engine's
+// domain. The leg re-enters Stasis (appArgs "engine-leg") and joins the bridge.
+async function bridgeToEngine(sess, cfg) {
+  const user = String(cfg.sipUri || "").replace(/^sip:/, "").split("@")[0] || "pydent";
+  const endpointName = cfg.engine === "vapi" ? CFG.vapiEndpoint : CFG.livekitEndpoint;
   const bridge = await ari("POST", "/bridges", { type: "mixing" });
   sess.bridgeId = bridge.id;
   await ari("POST", `/bridges/${bridge.id}/addChannel`, { channel: sess.channelId });
-  const endpoint = `PJSIP/${cfg.vapiAssistantId}@vapi`; // requires a "vapi" PJSIP endpoint on the box (see README)
-  const leg = await ari("POST", "/channels", { endpoint, app: CFG.stasisApp, appArgs: "vapi-leg" });
-  sess.mediaChannelId = leg.id;
-  // The leg joins the bridge when it enters Stasis (StasisStart handler).
-  sess._pendingVapiLeg = leg.id;
-  log(`[${sess.uuid.slice(0, 8)}] bridging caller to Vapi (${cfg.vapiAssistantId})`);
-}
-
-// ── AudioSocket TCP server ────────────────────────────────────────────────────
-function startAudioSocketServer() {
-  const server = net.createServer((socket) => {
-    let buf = Buffer.alloc(0);
-    let sess = null;
-    socket.on("data", (chunk) => {
-      buf = Buffer.concat([buf, chunk]);
-      // Parse as many complete frames as we have.
-      while (buf.length >= 3) {
-        const type = buf.readUInt8(0);
-        const len = buf.readUInt16BE(1);
-        if (buf.length < 3 + len) break;
-        const payload = buf.subarray(3, 3 + len);
-        buf = buf.subarray(3 + len);
-        if (type === AS_UUID) {
-          const uuid = payload.toString("hex").replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5");
-          sess = sessions.get(uuid) || [...sessions.values()].find((s) => s.uuid === uuid) || null;
-          if (sess) { sess.asSocket = socket; log(`[${uuid.slice(0, 8)}] AudioSocket attached`); }
-          else warn(`AudioSocket UUID with no session: ${uuid}`);
-        } else if (type === AS_AUDIO && sess && !sess.closed) {
-          if (sess.engineWs) feedCallerAudioToXai(sess, Buffer.from(payload));
-        } else if (type === AS_HANGUP || type === AS_ERROR) {
-          if (sess) void sess.close("audiosocket " + (type === AS_ERROR ? "error" : "hangup"));
-        }
-      }
-    });
-    socket.on("close", () => { if (sess) void sess.close("audiosocket closed"); });
-    socket.on("error", () => {});
-  });
-  server.listen(CFG.asPort, CFG.asHost, () => log(`AudioSocket server on ${CFG.asHost}:${CFG.asPort}`));
+  const leg = await ari("POST", "/channels", { endpoint: `PJSIP/${user}@${endpointName}`, app: CFG.stasisApp, appArgs: `engine-leg,${sess.channelId}`, timeout: 45 });
+  sess.legId = leg.id;
+  log(`[${sess.channelId.slice(-8)}] dialing ${cfg.engine} (${cfg.agentName}) → PJSIP/${user}@${endpointName}`);
 }
 
 // ── ARI events (Stasis) ───────────────────────────────────────────────────────
@@ -307,69 +116,33 @@ async function onStasisStart(ev) {
   const chan = ev.channel;
   const args = ev.args || [];
 
-  // The Vapi leg we originated re-enters Stasis — just add it to its bridge.
-  if (args[0] === "vapi-leg") {
-    for (const s of sessions.values()) {
-      if (s._pendingVapiLeg === chan.id && s.bridgeId) {
-        await ari("POST", `/bridges/${s.bridgeId}/addChannel`, { channel: chan.id });
-        s._pendingVapiLeg = null;
-        return;
-      }
-    }
+  // The engine leg we originated re-enters Stasis — add it to its bridge.
+  if (args[0] === "engine-leg") {
+    const sess = sessions.get(args[1]);
+    if (sess && sess.bridgeId) await ari("POST", `/bridges/${sess.bridgeId}/addChannel`, { channel: chan.id });
     return;
   }
 
-  const dialed = chan.dialplan?.exten || chan.caller?.number || "";
+  const dialed = chan.dialplan?.exten || "";
   log(`StasisStart: channel ${chan.id}, dialed "${dialed}"`);
   await ari("POST", `/channels/${chan.id}/answer`);
 
-  let cfg;
+  const sess = new Session(chan.id);
+  sessions.set(chan.id, sess);
   try {
-    cfg = await resolveCall(dialed);
+    const cfg = await resolveCall(dialed);
+    await bridgeToEngine(sess, cfg);
   } catch (e) {
-    warn("resolve failed:", e.message);
+    warn("could not connect the call:", e.message);
     try { await ari("POST", `/channels/${chan.id}/play`, { media: "sound:vm-goodbye" }); } catch {}
-    await ari("DELETE", `/channels/${chan.id}`);
-    return;
-  }
-
-  const uuid = crypto.randomUUID();
-  const sess = new Session(uuid, chan.id);
-  sessions.set(uuid, sess);
-
-  if (cfg.engine === "vapi") {
-    try { await bridgeToVapi(sess, cfg); } catch (e) { warn("vapi bridge failed:", e.message); await sess.close("vapi failed"); }
-    return;
-  }
-
-  // xAI path: bridge caller ↔ externalMedia (AudioSocket) ↔ xAI realtime.
-  try {
-    const bridge = await ari("POST", "/bridges", { type: "mixing" });
-    sess.bridgeId = bridge.id;
-    await ari("POST", `/bridges/${bridge.id}/addChannel`, { channel: chan.id });
-    const media = await ari("POST", "/channels/externalMedia", {
-      app: CFG.stasisApp,
-      external_host: `${CFG.asHost}:${CFG.asPort}`,
-      format: "slin",
-      encapsulation: "audiosocket",
-      transport: "tcp",
-      connection_type: "client",
-      direction: "both",
-      data: uuid,
-    });
-    sess.mediaChannelId = media.id;
-    await ari("POST", `/bridges/${bridge.id}/addChannel`, { channel: media.id });
-    startXaiBridge(sess, cfg);
-  } catch (e) {
-    warn("xai bridge setup failed:", e.message);
-    await sess.close("setup failed");
+    await sess.close("resolve/bridge failed");
   }
 }
 
 async function onStasisEnd(ev) {
   const id = ev.channel?.id;
   for (const s of sessions.values()) {
-    if (s.channelId === id || s.mediaChannelId === id) { await s.close("stasis end"); return; }
+    if (s.channelId === id || s.legId === id) { await s.close("stasis end"); return; }
   }
 }
 
@@ -399,9 +172,7 @@ function requireCfg() {
 
 requireCfg();
 log(`Pydent ARI connector starting — ARI ${CFG.ariUrl}, app ${CFG.stasisApp}, Pydent ${CFG.pydentBase}`);
-startAudioSocketServer();
 connectAriEvents();
-// Check in every 15s so the dashboard shows this box online.
 sendHeartbeat();
 setInterval(sendHeartbeat, 15000);
 

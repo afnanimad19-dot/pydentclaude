@@ -125,7 +125,7 @@ export default function CallLogsPage() {
       <Card className="overflow-hidden">
         {filtered.length === 0 ? (
           <p className="px-5 py-12 text-center text-sm text-ink-400">
-            No calls yet. Connect a Vapi assistant + phone number — calls appear here automatically (the assistant Server URL is set to <code>/api/vapi/events</code> on save).
+            No calls yet. Connect a phone number to a voice agent (or run a test call) — LiveKit and Vapi calls both appear here automatically, tagged by engine.
           </p>
         ) : (
           <>
@@ -170,7 +170,12 @@ export default function CallLogsPage() {
                         )}
                       </td>
                       <td className="px-4 py-3.5 text-ink-600">{(c.campaignId && campaignName[c.campaignId]) || "—"}</td>
-                      <td className="px-4 py-3.5 text-ink-700">{c.agentName || "—"}</td>
+                      <td className="px-4 py-3.5 text-ink-700">
+                        <span className="flex items-center gap-1.5">
+                          {c.agentName || "—"}
+                          <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase ${c.engine === "livekit" ? "bg-sky-500/15 text-sky-600" : "bg-violet-500/15 text-violet-600"}`}>{c.engine === "livekit" ? "LiveKit" : "Vapi"}</span>
+                        </span>
+                      </td>
                       <td className="px-4 py-3.5">
                         {c.recordingUrl ? <Play className="h-4 w-4 text-brand-500" /> : <span className="text-ink-300">—</span>}
                       </td>

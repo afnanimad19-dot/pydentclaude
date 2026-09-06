@@ -8,18 +8,18 @@ import { fetchVoiceProvider, saveVoiceProvider, fetchAgents, setAgentVapiId, typ
 
 // Settings card: choose which engine powers the clinic's voice agents. The
 // choice drives the whole voice experience — the agent builder shows that
-// provider's voices/models/settings, and test calls run on it.
+// provider's models/voices/settings, test calls run on it, and phone numbers
+// route through it.
 //
-// Switching ALSO pushes every existing voice agent into the newly selected
-// engine (xAI console mirror, or a Vapi assistant), because xAI/Vapi don't see
-// each other's agents: without this, an agent created under one engine (e.g. a
-// seeded receptionist) simply wouldn't exist on the other after a switch.
+// LiveKit needs no per-agent sync: the deployed Pydent worker reads each agent's
+// live config from Pydent on every call. Vapi keeps its own copy of each
+// assistant, so switching TO Vapi pushes every voice agent into Vapi.
 const OPTIONS: { id: VoiceProvider; name: string; desc: string; points: string[] }[] = [
   {
-    id: "xai",
-    name: "xAI Grok Voice",
-    desc: "Grok's realtime speech-to-speech models with xAI's voices (Eve, Ara, Rex, Sal, Leo).",
-    points: ["Voices & models by xAI", "In-browser calls + live booking tools", "Uses the X_AI_VOICE_KEY on the server"],
+    id: "livekit",
+    name: "LiveKit",
+    desc: "Your own LiveKit Cloud project: pick STT, LLM and TTS/voice per agent (Deepgram, OpenAI, Gemini, Inworld, Cartesia…), SIP phone numbers, live call logs.",
+    points: ["Per-agent STT / LLM / TTS + voice", "Edits in Pydent apply on the next call — nothing to sync", "SIP numbers + the clinic landline box"],
   },
   {
     id: "vapi",
@@ -29,21 +29,10 @@ const OPTIONS: { id: VoiceProvider; name: string; desc: string; points: string[]
   },
 ];
 
-// Push one saved voice agent into the target engine. Vapi gets the full config
-// (the server sanitizes grok-only models/voices); xAI mirrors from the saved
-// row server-side. Returns an error string, or null on success.
-async function syncAgentTo(p: VoiceProvider, a: AiAgent): Promise<string | null> {
+// Push one saved voice agent into Vapi (create-or-PATCH). Returns an error
+// string, or null on success. (LiveKit needs nothing — see above.)
+async function syncAgentToVapi(a: AiAgent): Promise<string | null> {
   try {
-    if (p === "xai") {
-      const r = await fetch("/api/xai/agents", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId: a.id }),
-      });
-      if (r.ok) return null;
-      const d = await r.json().catch(() => ({}));
-      return d.error ?? "xAI sync failed";
-    }
     const r = await fetch("/api/vapi/assistants", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -73,12 +62,12 @@ async function syncAgentTo(p: VoiceProvider, a: AiAgent): Promise<string | null>
     }
     return d.error ?? d.message ?? "Vapi sync failed";
   } catch {
-    return "engine unreachable";
+    return "Vapi unreachable";
   }
 }
 
 export function VoiceProviderCard() {
-  const [provider, setProvider] = useState<VoiceProvider>("xai");
+  const [provider, setProvider] = useState<VoiceProvider>("livekit");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<VoiceProvider | null>(null);
   const [syncNote, setSyncNote] = useState<string | null>(null);
@@ -90,27 +79,21 @@ export function VoiceProviderCard() {
     });
   }, []);
 
-  // Sync every voice agent into the engine that was just selected, so agents
-  // like a seeded receptionist exist there without a manual open-and-save each.
-  async function syncAllAgents(p: VoiceProvider) {
+  async function syncAllToVapi() {
     const { agents } = await fetchAgents();
     const voice = agents.filter((a) => a.kind === "voice");
     if (voice.length === 0) return;
-    const engineName = p === "xai" ? "xAI" : "Vapi";
     const failures: string[] = [];
     let done = 0;
     for (const a of voice) {
-      setSyncNote(`Syncing ${a.name} to ${engineName}… (${done + 1}/${voice.length})`);
-      const err = await syncAgentTo(p, a);
+      setSyncNote(`Syncing ${a.name} to Vapi… (${done + 1}/${voice.length})`);
+      const err = await syncAgentToVapi(a);
       if (err) failures.push(`${a.name}: ${err}`);
       done++;
     }
     setSyncNote(null);
-    if (failures.length === 0) {
-      toast(`${voice.length === 1 ? `${voice[0].name} is` : `All ${voice.length} voice agents are`} now live on ${engineName}.`, "success");
-    } else {
-      toast(`Engine switched, but some agents didn't sync to ${engineName} — ${failures.join(" · ")}. Open those agents and Save to retry.`, "info");
-    }
+    if (failures.length === 0) toast(`${voice.length === 1 ? `${voice[0].name} is` : `All ${voice.length} voice agents are`} now live on Vapi.`, "success");
+    else toast(`Engine switched, but some agents didn't sync to Vapi — ${failures.join(" · ")}. Open those agents and Save to retry.`, "info");
   }
 
   async function choose(p: VoiceProvider) {
@@ -120,7 +103,8 @@ export function VoiceProviderCard() {
     if (res.ok) {
       setProvider(p);
       toast(res.message, "success");
-      await syncAllAgents(p);
+      if (p === "vapi") await syncAllToVapi();
+      else toast("All voice agents now run on LiveKit — the worker reads each agent's settings live, so there's nothing to sync.", "success");
     } else {
       toast(res.message, "info");
     }
@@ -134,8 +118,7 @@ export function VoiceProviderCard() {
       </h2>
       <p className="mt-1 max-w-2xl text-sm text-ink-500">
         Pick which engine your voice agents run on. The one you select is what works — the agent builder shows that
-        engine&apos;s voices and settings, test calls connect to it, and switching automatically pushes your existing
-        voice agents into the engine you choose.
+        engine&apos;s models and voices, test calls connect to it, and phone numbers route through it.
       </p>
 
       {loading ? (
@@ -183,8 +166,7 @@ export function VoiceProviderCard() {
         </p>
       )}
       <p className="mt-3 text-xs text-ink-400">
-        Note: phone numbers and outbound phone dialing always run through Vapi for now — xAI doesn&apos;t offer outbound
-        calling yet. This switch controls the agent builder and in-browser calls.
+        LiveKit needs its credentials in the LiveKit card below and the Pydent worker deployed once (see livekit-agent/README.md).
       </p>
     </Card>
   );

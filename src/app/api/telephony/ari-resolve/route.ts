@@ -1,18 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { findDeviceByToken } from "@/lib/telephony";
-import { createXaiClientSecret, buildXaiInstructions, xaiAgentTools, resolveXaiVoice, xaiLanguageHint, XAI_REALTIME_URL } from "@/lib/xai-voice";
+import { getLivekitCreds, lkConfigured, lkSipDomain } from "@/lib/livekit";
 
 // Called by the on-prem Pydent ARI connector at the start of every inbound
-// landline call. Given the dialed number, it resolves WHICH agent answers and
-// WHICH engine (xAI Grok / Vapi) the workspace has selected, and returns
-// everything the connector needs to bridge the call:
-//   • engine "xai"  → a fresh ephemeral client secret + realtime session config
-//                     so the connector opens the xAI WebSocket itself.
-//   • engine "vapi" → the agent's Vapi assistant id, so the connector hands the
-//                     call to Vapi (SIP) instead of bridging audio itself.
-// The connector authenticates with a shared token (PYDENT_CONNECTOR_TOKEN) so a
-// leaked box can't be used to mint xAI secrets at will.
+// landline call. Given the box's device token it resolves WHICH agent answers
+// and WHICH engine (LiveKit / Vapi) the workspace selected, and returns the SIP
+// address the box should hand the call to:
+//   • engine "livekit" → sip:<number>@<project>.sip.livekit.cloud (the number's
+//                        inbound trunk + dispatch rule route it to the agent)
+//   • engine "vapi"    → the agent's Vapi assistant id (dialed via Vapi SIP)
+// Both engines take the call over SIP, so the box never bridges audio itself.
 export const runtime = "nodejs";
 
 function digits(s: string): string {
@@ -22,16 +20,15 @@ function digits(s: string): string {
 export async function POST(req: NextRequest) {
   const { deviceToken, token, ws: bodyWs, dialedNumber, agentId: forcedAgentId } = await req.json().catch(() => ({}));
 
-  // Preferred: a per-device token that pairs this box to its landline profile,
-  // so the box authenticates itself and we derive the workspace + agent from it —
-  // no ARI creds or workspace id ever travel from the cloud.
   let ws = bodyWs as string | undefined;
   let agentId: string | null = forcedAgentId ?? null;
+  let landlineNumber = "";
   if (deviceToken) {
     const device = await findDeviceByToken(String(deviceToken));
     if (!device) return NextResponse.json({ error: "Unknown device token — re-pair the box in Pydent." }, { status: 401 });
     ws = device.workspace_id;
     agentId = agentId ?? device.agent_id;
+    landlineNumber = device.number;
   } else {
     // Legacy fallback: shared connector token + explicit workspace id.
     const expected = process.env.PYDENT_CONNECTOR_TOKEN || "";
@@ -40,50 +37,38 @@ export async function POST(req: NextRequest) {
   }
   if (!ws) return NextResponse.json({ error: "Could not resolve the workspace for this box." }, { status: 400 });
 
-  // If we still don't have an agent, match the landline profile by dialed number
-  // (trailing digits, so formatting differences don't matter).
   if (!agentId) {
     const { data: nums } = await supabase.from("voice_numbers").select("number, agent_id, provider").eq("workspace_id", ws).eq("provider", "landline");
     const want = digits(dialedNumber).slice(-7);
     const hit = (nums ?? []).find((n) => want && digits(n.number).endsWith(want)) ?? (nums ?? [])[0];
     agentId = hit?.agent_id ?? null;
+    landlineNumber = landlineNumber || hit?.number || "";
   }
   if (!agentId) return NextResponse.json({ error: "No voice agent is assigned to this landline yet." }, { status: 404 });
 
   const { data: agent } = await supabase.from("agents").select("*").eq("id", agentId).maybeSingle();
   if (!agent) return NextResponse.json({ error: "Assigned agent not found." }, { status: 404 });
 
-  // Which engine does this workspace drive its voice agents with?
   const { data: pref } = await supabase.from("connections").select("account_label").eq("workspace_id", ws).eq("provider", "voice_engine").limit(1).maybeSingle();
-  const engine = pref?.account_label === "vapi" ? "vapi" : "xai";
+  const engine = pref?.account_label === "vapi" ? "vapi" : "livekit";
 
   if (engine === "vapi") {
     if (!agent.vapi_assistant_id) {
       return NextResponse.json({ error: `Voice engine is Vapi but "${agent.name}" isn't synced to Vapi yet — open the agent and Save it once.` }, { status: 409 });
     }
-    return NextResponse.json({ ok: true, engine: "vapi", agentId, agentName: agent.name, vapiAssistantId: agent.vapi_assistant_id });
+    return NextResponse.json({ ok: true, engine: "vapi", agentId, agentName: agent.name, vapiAssistantId: agent.vapi_assistant_id, sipUri: `sip:${agent.vapi_assistant_id}@sip.vapi.ai` });
   }
 
-  // xAI: mint a short-lived client secret and hand back the realtime config,
-  // mirroring what the in-browser session route returns.
-  const secret = await createXaiClientSecret();
-  if (!secret.ok || !secret.token) return NextResponse.json({ error: secret.error ?? "Could not start an xAI session." }, { status: 503 });
-
-  const vs = (agent.voice_settings ?? {}) as Record<string, unknown>;
+  const creds = await getLivekitCreds(ws);
+  if (!lkConfigured(creds)) return NextResponse.json({ error: "Voice engine is LiveKit but LiveKit isn't configured — add it in Settings → Connections → LiveKit." }, { status: 503 });
+  const number = digits(landlineNumber || dialedNumber);
   return NextResponse.json({
     ok: true,
-    engine: "xai",
+    engine: "livekit",
     agentId,
     agentName: agent.name,
-    token: secret.token,
-    url: XAI_REALTIME_URL,
-    model: /^grok-voice/.test(String(agent.model ?? "")) ? agent.model : "grok-voice-latest",
-    voice: resolveXaiVoice(agent.voice),
-    instructions: buildXaiInstructions(agent),
-    tools: xaiAgentTools(agent),
-    firstMessage: agent.first_message || `Hi, this is ${agent.name} from the dental office. How can I help?`,
-    greetFirst: (agent.first_message_mode ?? "assistant_first") !== "user_first",
-    languageHint: xaiLanguageHint(agent.language),
-    maxSilenceSec: Number(vs.maxSilenceDuration ?? 30) || 30,
+    sipDomain: lkSipDomain(creds.url),
+    sipUri: `sip:${number || "pydent"}@${lkSipDomain(creds.url)}`,
+    note: "Make sure this number has a LiveKit inbound trunk + dispatch rule (Phone Numbers → Add → LiveKit (SIP)) so the call is routed to the agent.",
   });
 }

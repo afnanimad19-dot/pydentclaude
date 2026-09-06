@@ -1,0 +1,8 @@
+# Generated for you by `lk agent create` (or `lk agent config`) — copy to
+# livekit.toml. The agent name here is what Pydent dispatches ("pydent-agent"
+# by default; must match the Agent name in Pydent → Settings → LiveKit).
+[project]
+  subdomain = "<your-project-subdomain>"
+
+[agent]
+  id = "<agent-id-from-livekit>"

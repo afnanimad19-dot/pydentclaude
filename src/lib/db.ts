@@ -490,6 +490,8 @@ export interface VoiceSettings {
   transferMessage: string;  // what the agent says before transferring
   // Post-Call Data Extraction
   extractionFields: ExtractionField[];
+  // LiveKit engine: STT / LLM / TTS models + voice (see lib/livekit-models.ts).
+  livekit?: import("@/lib/livekit-models").LivekitAgentSettings;
 }
 
 export function defaultVoiceSettings(): VoiceSettings {
@@ -1779,8 +1781,8 @@ function lauraBase(clinicName: string, knowledgeBase: string): Omit<AiAgent, "id
     kind: "voice",
     role: "Receptionist",
     status: "Live",
-    model: "grok-voice-latest",
-    voice: "Ara · warm friendly female",
+    model: "openai/gpt-4.1-mini",
+    voice: "Ashley · Inworld TTS-2",
     voiceId: null,
     firstMessage: `Thank you for calling ${clinic}! This is Laura — how can I help you today?`,
     language: "English + Arabic",
@@ -1846,13 +1848,8 @@ export async function seedInboundReceptionist(
   }
   const res = await createAgent(lauraBase(clinicName, kb));
   if (!res.ok) return { ok: false, message: res.message, kbImported };
-  // Mirror her into the workspace's voice engine right away (new workspaces
-  // default to xAI) so she shows up in the console without an open-and-save.
-  if (res.id) {
-    try {
-      await fetch("/api/xai/agents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agentId: res.id }) });
-    } catch { /* console mirror is best-effort — calls work either way */ }
-  }
+  // On LiveKit (the default engine) nothing needs mirroring: the deployed
+  // worker reads her config from Pydent on every call.
   return {
     ok: true,
     kbImported,
@@ -1860,6 +1857,49 @@ export async function seedInboundReceptionist(
       ? "Laura (inbound voice receptionist) is ready — knowledge base imported from the website."
       : "Laura (inbound voice receptionist) is ready. Website import didn't return text — open the agent and use “Fetch site” to add it.",
   };
+}
+
+// ------------------------------------------------------- LiveKit (per-clinic)
+// Each clinic can run its voice agents on its own LiveKit Cloud project. The
+// secret is write-only in the UI (never returned). Falls back to the global
+// LIVEKIT_* env vars when unset. Migration 0059.
+export interface LivekitConfig {
+  url: string;
+  apiKey: string;
+  apiSecretSet: boolean; // whether a secret is stored (the value is never read back)
+  agentName: string;
+  enabled: boolean;
+}
+
+export const emptyLivekitConfig: LivekitConfig = { url: "", apiKey: "", apiSecretSet: false, agentName: "pydent-agent", enabled: true };
+
+export async function fetchLivekitConfig(): Promise<LivekitConfig> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data } = await supabase.from("livekit_config").select("url, api_key, api_secret, agent_name, enabled").eq("workspace_id", ws).maybeSingle();
+    if (!data) return emptyLivekitConfig;
+    return { url: data.url ?? "", apiKey: data.api_key ?? "", apiSecretSet: !!data.api_secret, agentName: data.agent_name || "pydent-agent", enabled: data.enabled !== false };
+  } catch {
+    return emptyLivekitConfig;
+  }
+}
+
+export async function saveLivekitConfig(c: { url: string; apiKey: string; apiSecret?: string; agentName: string; enabled: boolean }): Promise<{ ok: boolean; message: string }> {
+  const ws = await getWorkspaceId();
+  if (!ws) return { ok: false, message: "Sign in first." };
+  let url = c.url.trim().replace(/\/+$/, "");
+  if (url && !/^wss?:\/\//i.test(url)) url = `wss://${url}`;
+  const row: Record<string, unknown> = { url, api_key: c.apiKey.trim(), agent_name: c.agentName.trim() || "pydent-agent", enabled: c.enabled, updated_at: new Date().toISOString() };
+  if (c.apiSecret && c.apiSecret.trim()) row.api_secret = c.apiSecret.trim(); // leave blank to keep the stored secret
+  const { data: existing } = await supabase.from("livekit_config").select("workspace_id").eq("workspace_id", ws).maybeSingle();
+  const { error } = existing
+    ? await supabase.from("livekit_config").update(row).eq("workspace_id", ws)
+    : await supabase.from("livekit_config").insert({ workspace_id: ws, ...row });
+  if (error) {
+    if (/livekit_config|schema cache|does not exist/i.test(error.message)) return { ok: false, message: "Run migration 0059_livekit_config.sql in the Supabase SQL Editor first." };
+    return { ok: false, message: error.message };
+  }
+  return { ok: true, message: "LiveKit settings saved — click Test connection to verify." };
 }
 
 // ---------------------------------------------------------- hyperfx (per-clinic)
@@ -2019,6 +2059,7 @@ export interface VoiceCallRecord {
   campaignId: string | null;
   messages: CallMessage[];
   structuredData: Record<string, unknown>;
+  engine: "vapi" | "livekit"; // which voice engine took the call (shown as a tag)
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -2067,6 +2108,7 @@ function rowToVoiceCall(r: any): VoiceCallRecord {
     campaignId: r.campaign_id ?? null,
     messages: normalizeCallMessages(r.messages),
     structuredData: (r.structured_data && typeof r.structured_data === "object") ? r.structured_data : {},
+    engine: r.engine === "livekit" || r.structured_data?.engine === "livekit" ? "livekit" : "vapi",
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -2367,7 +2409,7 @@ export interface VoiceNumber {
   nickname: string;
   agentId: string | null;
   direction: "inbound" | "outbound" | "both";
-  provider: "vapi" | "twilio" | "sip" | "ziwo" | "goautodial" | "maqsam" | "vocalcom" | "landline";
+  provider: "vapi" | "twilio" | "sip" | "ziwo" | "goautodial" | "maqsam" | "vocalcom" | "landline" | "livekit";
   concurrency: number;
   // The id Vapi assigns the number once it's registered — lets us PATCH it to
   // re-route inbound to a different agent without deleting/recreating.
@@ -2833,20 +2875,20 @@ export async function fetchWaStats(): Promise<WaStats> {
   return out;
 }
 
-// -------------------------------------------------- voice engine (xAI / Vapi)
+// ----------------------------------------------- voice engine (LiveKit / Vapi)
 // Which provider powers the clinic's voice agents. Stored as a row in the
 // connections table (provider "voice_engine", choice in account_label) so no
-// migration is needed. Default: xAI Grok Voice.
-export type VoiceProvider = "xai" | "vapi";
+// migration is needed. Default: LiveKit. (A legacy "xai" value reads as LiveKit.)
+export type VoiceProvider = "livekit" | "vapi";
 
 export async function fetchVoiceProvider(): Promise<VoiceProvider> {
   try {
     const ws = await getWorkspaceId();
     // limit(1): if duplicate rows ever exist, don't error out — read one.
     const { data } = await supabase.from("connections").select("account_label").eq("workspace_id", ws).eq("provider", "voice_engine").limit(1).maybeSingle();
-    return data?.account_label === "vapi" ? "vapi" : "xai";
+    return data?.account_label === "vapi" ? "vapi" : "livekit";
   } catch {
-    return "xai";
+    return "livekit";
   }
 }
 
@@ -2862,7 +2904,7 @@ export async function saveVoiceProvider(p: VoiceProvider): Promise<{ ok: boolean
     if (error) return { ok: false, message: `Could not save the voice engine: ${error.message}` };
     const now = await fetchVoiceProvider();
     if (now !== p) return { ok: false, message: "The engine choice didn't persist — check the connections table permissions and try again." };
-    return { ok: true, message: p === "xai" ? "Voice engine set to xAI Grok Voice." : "Voice engine set to Vapi." };
+    return { ok: true, message: p === "livekit" ? "Voice engine set to LiveKit." : "Voice engine set to Vapi." };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Could not save the voice engine." };
   }

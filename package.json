@@ -9,9 +9,12 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@livekit/protocol": "^1.51.0",
     "@supabase/supabase-js": "^2.108.1",
     "@vapi-ai/web": "^2.5.2",
     "docx": "^9.7.1",
+    "livekit-client": "^2.22.2",
+    "livekit-server-sdk": "^2.18.0",
     "lucide-react": "^1.17.0",
     "mammoth": "^1.12.0",
     "next": "16.2.9",

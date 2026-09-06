@@ -28,6 +28,7 @@ import { Field, inputCls } from "@/components/modal";
 import { WhatsAppConfigForm } from "@/components/dashboard/whatsapp-config";
 import { OpenDentalConfigCard } from "@/components/dashboard/opendental-config";
 import { VoiceProviderCard } from "@/components/dashboard/voice-provider-card";
+import { LivekitCard } from "@/components/dashboard/livekit-card";
 import { HyperfxCard } from "@/components/dashboard/hyperfx-card";
 import { AppsMarketplace } from "@/components/dashboard/apps-marketplace";
 import { WebsiteConfigCard } from "@/components/dashboard/website-config";
@@ -228,6 +229,7 @@ export default function SettingsPage() {
       {tab === "connections" && (
         <div className="space-y-4">
           <VoiceProviderCard />
+          <LivekitCard />
           <HyperfxCard />
           <AppsMarketplace />
           <ConnCard

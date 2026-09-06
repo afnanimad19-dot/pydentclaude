@@ -117,21 +117,51 @@ Then call the landline. The assigned agent answers.
 
 ---
 
-## Vapi mode
+## How a call reaches the engine (LiveKit or Vapi)
 
-When the workspace's engine is **Vapi**, the connector bridges the caller to Vapi
-over SIP instead of streaming audio itself. That requires a PJSIP endpoint named
-`vapi` on the box pointing at Vapi's inbound SIP (`sip.vapi.ai`). If you stay on
-xAI Grok (the default), you can ignore this.
+Both engines take calls over **SIP**, so the box never touches audio: on each
+call the connector asks Pydent which engine/agent applies and dials a SIP leg
+to it, bridging the caller. Define one PJSIP endpoint per engine on the box
+(`/etc/asterisk/pjsip.conf`):
 
-## Notes / tuning
+```ini
+[livekit]
+type=endpoint
+context=from-dlink
+disallow=all
+allow=ulaw,alaw,opus
+aors=livekit
+[livekit]
+type=aor
+contact=sip:<project>.sip.livekit.cloud        ; Pydent → Settings → LiveKit → Test connection shows this
+[livekit]
+type=identify
+endpoint=livekit
+match=<project>.sip.livekit.cloud
 
-- Audio is resampled 8 kHz (AudioSocket `slin`) ↔ 24 kHz (xAI PCM16) with a
-  linear resampler. If you hear pitch/speed artifacts, that's the knob to tune —
-  switch `externalMedia` `format` to `slin16` (16 kHz) and set `AS_RATE = 16000`
-  in `index.mjs` for a shorter resample and cleaner audio.
-- Barge-in (caller interrupts the agent) is handled via xAI
-  `input_audio_buffer.speech_started` → `response.cancel`.
-- Bookings/reschedules/cancels and email go through Pydent's
-  `/api/agents/tool-exec`, the exact path the web test call uses — so a phone
-  booking lands on the Pydent calendar + Google Calendar just like chat.
+[vapi]
+type=endpoint
+context=from-dlink
+disallow=all
+allow=ulaw,alaw
+aors=vapi
+[vapi]
+type=aor
+contact=sip:sip.vapi.ai
+```
+
+Then in Pydent → Phone Numbers → Add → **LiveKit (SIP)**, add the clinic's
+landline number: Pydent creates the LiveKit inbound trunk + dispatch rule for the
+chosen agent, and shows the SIP address. Put the box's public IP in *Allowed
+source IPs* (or set the SIP auth username/password and mirror them in the
+`[livekit]` endpoint's `outbound_auth`) so LiveKit accepts the box's calls.
+
+Switch the engine in Pydent → Settings → Voice engine; the box follows.
+
+## Notes
+
+- Bookings/reschedules/cancels and email run through Pydent's
+  `/api/agents/tool-exec` inside the engine agent — so a phone booking lands on
+  the Pydent calendar + Google Calendar just like chat.
+- Call logs: LiveKit calls appear in Pydent → Call Logs tagged **LiveKit**
+  (worker transcript + LiveKit webhook); Vapi calls via the Vapi server URL.

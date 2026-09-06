@@ -11,16 +11,18 @@ import {
   deleteVoiceNumber,
   updateVoiceNumber,
   fetchAgents,
+  getWorkspaceId,
   type VoiceNumber,
   type SipCategory,
   type AiAgent,
 } from "@/lib/db";
 import { bindNumberToAgent } from "@/lib/voice-binding";
 
-type ProviderKey = "landline" | "sip" | "ziwo" | "goautodial" | "maqsam" | "twilio" | "vocalcom";
+type ProviderKey = "landline" | "livekit" | "sip" | "ziwo" | "goautodial" | "maqsam" | "twilio" | "vocalcom";
 
 const PROVIDERS: { key: ProviderKey; name: string; desc: string; icon: typeof Phone; color: string }[] = [
   { key: "landline", name: "Clinic Landline (on-prem)", desc: "Your existing landline answers with the AI agent — via a small on-prem box (Raspberry Pi / mini-PC).", icon: Home, color: "text-brand-500 bg-brand-500/10" },
+  { key: "livekit", name: "LiveKit (SIP)", desc: "Connect a number from any carrier (Twilio, Telnyx, Ziwo…) to a LiveKit agent over SIP.", icon: Radio, color: "text-sky-500 bg-sky-500/10" },
   { key: "sip", name: "Custom SIP Trunk", desc: "Connect your own SIP trunk configuration", icon: Server, color: "text-violet-500 bg-violet-500/10" },
   { key: "ziwo", name: "Ziwo", desc: "Add extensions from your Ziwo account", icon: Radio, color: "text-fuchsia-500 bg-fuchsia-500/10" },
   { key: "goautodial", name: "Go Auto Dial", desc: "Connect extensions from Go Auto Dial system", icon: PhoneForwarded, color: "text-emerald-500 bg-emerald-500/10" },
@@ -30,7 +32,7 @@ const PROVIDERS: { key: ProviderKey; name: string; desc: string; icon: typeof Ph
 ];
 
 const PROVIDER_LABEL: Record<string, string> = {
-  landline: "Clinic Landline (on-prem)", sip: "Custom SIP Trunk", ziwo: "Ziwo", goautodial: "Go Auto Dial", maqsam: "Maqsam", twilio: "BYOT Phone", vocalcom: "Vocalcom Hermes", vapi: "Vapi",
+  landline: "Clinic Landline (on-prem)", livekit: "LiveKit (SIP)", sip: "Custom SIP Trunk", ziwo: "Ziwo", goautodial: "Go Auto Dial", maqsam: "Maqsam", twilio: "BYOT Phone", vocalcom: "Vocalcom Hermes", vapi: "Vapi",
 };
 
 // Per-provider credential fields (stored in config; live connection done in the
@@ -283,6 +285,7 @@ function PairingModal({ n, onClose }: { n: VoiceNumber; onClose: () => void }) {
 function EditNumberModal({ n, agents, onClose, onSaved }: { n: VoiceNumber; agents: AiAgent[]; onClose: () => void; onSaved: () => void }) {
   const common = { agents, onClose, onAdded: onSaved, existing: n };
   if (n.provider === "landline") return <LandlineForm {...common} />;
+  if (n.provider === "livekit") return <LivekitSipForm {...common} />;
   if (n.provider === "sip") return <SipForm {...common} />;
   if (n.provider === "twilio") return <TwilioForm {...common} />;
   return <ProviderForm provider={n.provider as ProviderKey} {...common} />;
@@ -310,6 +313,7 @@ function AddNumberModal({ agents, onClose, onAdded }: { agents: AiAgent[]; onClo
     );
   }
   if (provider === "landline") return <LandlineForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
+  if (provider === "livekit") return <LivekitSipForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
   if (provider === "sip") return <SipForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
   if (provider === "twilio") return <TwilioForm agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
   return <ProviderForm provider={provider} agents={agents} onBack={() => setProvider(null)} onClose={onClose} onAdded={onAdded} />;
@@ -688,6 +692,87 @@ function LandlineForm({ agents, onBack, onClose, onAdded, existing }: { agents: 
         </div>
       </div>
       <ModalFooter onClose={onClose} submitLabel={saving ? "Saving…" : existing ? "Save changes" : "Save & pair box"} onSubmit={submit} />
+    </Modal>
+  );
+}
+
+// LiveKit (SIP): a carrier number that rings straight into a LiveKit agent.
+// Saving creates the inbound trunk + dispatch rule on LiveKit (via
+// /api/livekit/phone) and shows the SIP address to point the carrier / PBX at.
+function LivekitSipForm({ agents, onBack, onClose, onAdded, existing }: { agents: AiAgent[]; onBack?: () => void; onClose: () => void; onAdded: () => void; existing?: VoiceNumber }) {
+  const ex = existing?.config ?? {};
+  const [number, setNumber] = useState(existing?.number ?? "");
+  const [nickname, setNickname] = useState(existing?.nickname ?? "");
+  const [agentId, setAgentId] = useState(existing?.agentId ?? "");
+  const [authUsername, setAuthUsername] = useState((ex.authUsername as string) ?? "");
+  const [authPassword, setAuthPassword] = useState((ex.authPassword as string) ?? "");
+  const [allowedAddresses, setAllowedAddresses] = useState(Array.isArray(ex.allowedAddresses) ? (ex.allowedAddresses as string[]).join(", ") : "");
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<{ sipUri: string; message: string } | null>(null);
+
+  async function submit() {
+    const num = number.trim();
+    if (!num) { toast("Enter the phone number (E.164, e.g. +9714…).", "info"); return; }
+    setSaving(true);
+    const ws = await getWorkspaceId();
+    const addrs = allowedAddresses.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    // Recreate on LiveKit (remove the previous trunk/rule when editing).
+    if (existing && (ex.livekitTrunkId || ex.livekitRuleId)) {
+      await fetch("/api/livekit/phone", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ws, trunkId: ex.livekitTrunkId, ruleId: ex.livekitRuleId }) }).catch(() => {});
+    }
+    const res = await fetch("/api/livekit/phone", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ws, number: num, agentId: agentId || null, authUsername: authUsername.trim(), authPassword, allowedAddresses: addrs, nickname }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) { setSaving(false); toast(data.error ?? "LiveKit setup failed.", "info"); return; }
+    const cfg = { ...ex, authUsername: authUsername.trim(), authPassword, allowedAddresses: addrs, livekitTrunkId: data.trunkId, livekitRuleId: data.ruleId, sipUri: data.sipUri, sipDomain: data.sipDomain, numberType: "national", scope: "Global", status: "active" };
+    const saved = existing
+      ? await updateVoiceNumber(existing.id, { number: num, nickname, agentId: agentId || null, direction: "inbound", config: cfg })
+      : await createVoiceNumber({ number: num, nickname, agentId: agentId || null, direction: "inbound", provider: "livekit", concurrency: 1, config: cfg });
+    setSaving(false);
+    if (!saved.ok) { toast(saved.message, "info"); return; }
+    setResult({ sipUri: data.sipUri, message: data.message });
+    onAdded();
+  }
+
+  if (result) {
+    return (
+      <Modal open onClose={onClose} title="Number connected on LiveKit" subtitle="Point your carrier at this SIP address and calls ring into the agent." z={existing ? "z-[60]" : undefined}>
+        <div className="space-y-3">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 text-xs text-emerald-700">{result.message}</div>
+          <p className="text-xs font-semibold text-ink-700">Forward the number (SIP URI) to:</p>
+          <CopyChip text={result.sipUri} block />
+          <p className="text-[11px] text-ink-400">Twilio: Elastic SIP Trunking → Origination URI. Telnyx: SIP Connection → FQDN. Ziwo/Maqsam: SIP forwarding. Clinic Asterisk box: the connector dials this automatically.</p>
+        </div>
+        <div className="mt-4 flex justify-end"><button onClick={onClose} className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Done</button></div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal open onClose={onClose} title={existing ? "Edit LiveKit number" : "Connect a number to LiveKit"} subtitle="Any carrier number, delivered to a LiveKit agent over SIP." wide z={existing ? "z-[60]" : undefined}>
+      <BackBar onBack={onBack} />
+      <div className="space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Phone number (E.164)"><input className={inputCls} placeholder="+97143985241" value={number} onChange={(e) => setNumber(e.target.value)} /></Field>
+          <Field label="Label / nickname"><input className={inputCls} placeholder="Reception line" value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
+          <Field label="Voice agent that answers">
+            <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+              <option value="">Choose agent…</option>
+              {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
+            </select>
+          </Field>
+          <Field label="Allowed source IPs (optional, comma-separated)"><input className={inputCls} placeholder="54.172.60.0/23, 81.x.x.x" value={allowedAddresses} onChange={(e) => setAllowedAddresses(e.target.value)} /></Field>
+          <Field label="SIP auth username (optional)"><input className={inputCls} placeholder="clinic-trunk" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} /></Field>
+          <Field label="SIP auth password (optional)"><input type="password" className={inputCls} value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} /></Field>
+        </div>
+        <div className="flex items-start gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-xs text-ink-500">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Pydent creates the LiveKit inbound trunk (this number, restricted to the IPs / credentials above) and a dispatch rule that drops every caller into a room with the chosen agent. You then forward the number from your carrier to the SIP address shown after saving.
+        </div>
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Connecting…" : existing ? "Save changes" : "Connect to LiveKit"} onSubmit={submit} />
     </Modal>
   );
 }

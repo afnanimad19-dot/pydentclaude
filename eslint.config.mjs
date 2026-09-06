@@ -18,6 +18,8 @@ const eslintConfig = defineConfig([
     "opendental-connector/**",
     // The ARI connector is a separate Node app that runs on the clinic's box.
     "ari-connector/**",
+    // The LiveKit worker is a Python agent deployed to LiveKit Cloud.
+    "livekit-agent/**",
   ]),
 ]);
 

@@ -27,7 +27,6 @@ import {
   Mic,
   PhoneOff,
   Play,
-  Square,
   Download,
   SlidersHorizontal,
   ChevronDown,
@@ -67,47 +66,16 @@ import {
   type TeamChat,
 } from "@/lib/db";
 import { History } from "lucide-react";
+import { LIVEKIT_STT, LIVEKIT_LLM, LIVEKIT_TTS, LIVEKIT_DEFAULTS, livekitVoiceLabel, type LivekitAgentSettings } from "@/lib/livekit-models";
 
 const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4.1-mini"];
 const ANTHROPIC_MODELS = ["anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4", "anthropic/claude-opus-4.1"];
 const VAPI_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1"];
 
-// Voice rosters per engine. Which one the builder/test call uses is decided by
-// the Voice engine card in Settings (fetchVoiceProvider).
-// Baseline built-in roster (kept in sync with XAI_VOICES in lib/xai-voice.ts);
-// the picker also loads the live account list — custom voices included.
-const XAI_VOICE_LABELS = [
-  "Eve · natural female (default)",
-  "Ara · warm friendly female",
-  "Rex · confident clear male",
-  "Sal · calm neutral male",
-  "Leo · energetic male",
-  "Gork · laid-back male",
-  "Altair · flagship",
-  "Atlas · flagship",
-  "Carina · flagship",
-  "Castor · flagship",
-  "Celeste · flagship",
-  "Cosmo · flagship",
-  "Helios · flagship",
-  "Helix · flagship",
-  "Iris · flagship",
-  "Kepler · flagship",
-  "Lumen · flagship",
-  "Luna · flagship",
-  "Lux · flagship",
-  "Naksh · flagship",
-  "Orion · flagship",
-  "Perseus · flagship",
-  "Rigel · flagship",
-  "Sirius · flagship",
-  "Ursa · flagship",
-  "Zagan · flagship",
-  "Zenith · flagship",
-];
-const XAI_VOICE_MODELS = ["grok-voice-latest", "grok-voice-think-fast-1.0"];
-
-const VOICES = XAI_VOICE_LABELS; // default roster (xAI is the default engine)
+// Which engine the builder/test call uses is decided by the Voice engine card
+// in Settings (fetchVoiceProvider). LiveKit voices are chosen per agent from
+// LIVEKIT_TTS (lib/livekit-models.ts); this is just the default label.
+const VOICES = [livekitVoiceLabel(LIVEKIT_DEFAULTS)];
 
 // Mirrors the server-side mapping in /api/vapi/assistants (Vapi engine only).
 const VOICE_IDS: Record<string, string> = {
@@ -146,119 +114,70 @@ const CHANNEL_ICONS: Record<string, typeof MessageCircle> = {
   email: Mail,
 };
 
-// xAI voice picker: a dropdown of EVERY voice on the clinic's xAI account —
-// the built-in five plus any custom/cloned voices from their Voice Library
-// (loaded live via /api/xai/voices) — with a Preview button that speaks a
-// sample line in the selected voice (/api/xai/tts).
-function XaiVoicePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [voices, setVoices] = useState<{ id: string; label: string }[]>(
-    XAI_VOICE_LABELS.map((l) => ({ id: l.split(" ")[0].toLowerCase(), label: l }))
-  );
-  const [liveList, setLiveList] = useState<boolean | null>(null);
-  const [playing, setPlaying] = useState(false);
-  const [loadingPreview, setLoadingPreview] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const urlsRef = useRef<Record<string, string>>({});
-
-  useEffect(() => {
-    fetch("/api/xai/voices")
-      .then((r) => r.json())
-      .then((d) => {
-        if (Array.isArray(d.voices) && d.voices.length) setVoices(d.voices);
-        setLiveList(d.live === true);
-      })
-      .catch(() => setLiveList(false));
-    const urls = urlsRef.current;
-    return () => {
-      audioRef.current?.pause();
-      for (const u of Object.values(urls)) URL.revokeObjectURL(u);
-    };
-  }, []);
-
-  // The id of the currently selected voice (label match first, then embedded
-  // custom id, then builtin-name match).
-  function selectedId(): string {
-    const hit = voices.find((v) => v.label === value);
-    if (hit) return hit.id;
-    const custom = /\(([A-Za-z0-9_-]{2,64})\)\s*$/.exec(value ?? "");
-    if (custom) return custom[1];
-    const l = (value ?? "").toLowerCase();
-    for (const v of voices) if (l.includes(v.id.toLowerCase())) return v.id;
-    return "eve";
-  }
-
-  async function preview() {
-    audioRef.current?.pause();
-    if (playing) {
-      setPlaying(false);
-      return;
-    }
-    const id = selectedId();
-    setPreviewError(null);
-    setLoadingPreview(true);
-    try {
-      let url = urlsRef.current[id];
-      if (!url) {
-        // v=2 busts browser copies cached before the per-voice fix.
-        const res = await fetch(`/api/xai/tts?voice=${encodeURIComponent(id)}&v=2`);
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}));
-          throw new Error(d.error ?? "Preview failed.");
-        }
-        url = URL.createObjectURL(await res.blob());
-        urlsRef.current[id] = url;
-      }
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = () => setPlaying(false);
-      await audio.play();
-      setPlaying(true);
-    } catch (e) {
-      setPreviewError(e instanceof Error ? e.message : "Could not play the preview.");
-      setPlaying(false);
-    } finally {
-      setLoadingPreview(false);
-    }
-  }
-
-  const known = voices.some((v) => v.label === value);
+// LiveKit model picker: the STT / LLM / TTS models and the voice for one agent
+// (LiveKit Inference identifiers, see lib/livekit-models.ts). Stored in
+// voiceSettings.livekit and read live by the Pydent worker on every call. A
+// custom voice id can be typed for any provider voice not in the short list.
+function LivekitModelPicker({ value, onChange }: { value: LivekitAgentSettings; onChange: (v: LivekitAgentSettings) => void }) {
+  const tts = LIVEKIT_TTS.find((m) => m.id === value.tts) ?? LIVEKIT_TTS[0];
+  const knownVoice = tts.voices.some((v) => v.id === value.voice);
+  const set = (patch: Partial<LivekitAgentSettings>) => onChange({ ...value, ...patch });
   return (
-    <div>
-      <div className="flex items-center gap-2">
-        <select
-          className={`${inputCls} min-w-0 flex-1`}
-          value={known ? value : ""}
-          onChange={(e) => { audioRef.current?.pause(); setPlaying(false); onChange(e.target.value); }}
-        >
-          {!known && <option value="" disabled>{value ? `${value} (previous engine — pick a Grok voice)` : "Choose a voice…"}</option>}
-          {voices.map((v) => (
-            <option key={v.id} value={v.label}>{v.label}</option>
-          ))}
+    <div className="grid gap-4 md:grid-cols-2">
+      <Field label="Speech-to-text (STT)">
+        <select className={inputCls} value={value.stt} onChange={(e) => set({ stt: e.target.value })}>
+          {LIVEKIT_STT.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
-        <button
-          type="button"
-          onClick={() => void preview()}
-          title={playing ? "Stop preview" : "Hear this voice"}
-          className="flex shrink-0 items-center gap-1.5 rounded-xl border border-ink-200 px-3 py-2.5 text-sm font-medium text-brand-600 hover:bg-brand-50"
+      </Field>
+      <Field label="STT language">
+        <select className={inputCls} value={value.sttLanguage} onChange={(e) => set({ sttLanguage: e.target.value })}>
+          <option value="">Auto-detect (recommended for mixed English / Arabic)</option>
+          <option value="en">English</option>
+          <option value="ar">Arabic</option>
+          <option value="hi">Hindi</option>
+          <option value="ur">Urdu</option>
+          <option value="ru">Russian</option>
+          <option value="fr">French</option>
+          <option value="es">Spanish</option>
+        </select>
+      </Field>
+      <Field label="Language model (LLM)">
+        <select className={inputCls} value={value.llm} onChange={(e) => set({ llm: e.target.value })}>
+          {LIVEKIT_LLM.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          {!LIVEKIT_LLM.some((m) => m.id === value.llm) && value.llm && <option value={value.llm}>{value.llm}</option>}
+        </select>
+      </Field>
+      <Field label="Interruptions (caller talking over the agent)">
+        <select className={inputCls} value={value.interruptions} onChange={(e) => set({ interruptions: e.target.value as LivekitAgentSettings["interruptions"] })}>
+          <option value="adaptive">Adaptive — natural back-and-forth (recommended)</option>
+          <option value="eager">Eager — stop the agent as soon as the caller speaks</option>
+          <option value="off">Off — the agent finishes its sentence</option>
+        </select>
+      </Field>
+      <Field label="Text-to-speech (TTS) model">
+        <select
+          className={inputCls}
+          value={tts.id}
+          onChange={(e) => {
+            const next = LIVEKIT_TTS.find((m) => m.id === e.target.value) ?? LIVEKIT_TTS[0];
+            set({ tts: next.id, voice: next.voices[0]?.id ?? "" });
+          }}
         >
-          {loadingPreview ? (
-            <span className="animate-pulse text-xs">Loading…</span>
-          ) : playing ? (
-            <><Square className="h-3.5 w-3.5 fill-current" /> Stop</>
-          ) : (
-            <><Play className="h-3.5 w-3.5" /> Preview</>
-          )}
-        </button>
-      </div>
-      <p className="mt-1 text-[11px] text-ink-400">
-        {liveList === true
-          ? "Live list from your xAI account — custom voices from the Voice Library appear here automatically."
-          : liveList === false
-          ? "Showing the built-in roster — couldn't load your xAI account's live list (check X_AI_VOICE_KEY / credits). Previews still work once the key is valid."
-          : "All xAI voices — custom voices added in xAI's Voice Library appear here automatically."}
+          {LIVEKIT_TTS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+        </select>
+      </Field>
+      <Field label="Voice">
+        <select className={inputCls} value={knownVoice ? value.voice : "__custom"} onChange={(e) => set({ voice: e.target.value === "__custom" ? "" : e.target.value })}>
+          {tts.voices.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+          <option value="__custom">Custom voice id…</option>
+        </select>
+        {!knownVoice && (
+          <input className={`${inputCls} mt-2`} placeholder="Paste the provider's voice id / name" value={value.voice} onChange={(e) => set({ voice: e.target.value })} />
+        )}
+      </Field>
+      <p className="text-[11px] text-ink-400 md:col-span-2">
+        Arabic-ready combo: Deepgram Nova-3 (STT) + Inworld TTS-2 or Cartesia Sonic 3.6 (voice). Changes apply on the very next call — the LiveKit worker reads this agent&apos;s settings live.
       </p>
-      {previewError && <p className="mt-1 text-[11px] text-amber-600">{previewError}</p>}
     </div>
   );
 }
@@ -1083,7 +1002,7 @@ export function AgentModal({
   const [voiceLibOpen, setVoiceLibOpen] = useState(false);
   // Which engine powers voice agents (Settings → Voice engine). Drives which
   // voices/models/settings this builder shows and how the agent is synced.
-  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("xai");
+  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("livekit");
   useEffect(() => { fetchVoiceProvider().then(setVoiceProvider); }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
@@ -1220,24 +1139,10 @@ export function AgentModal({
 
     let message = res.message;
     let vapiOk = true; // non-voice agents don't need Vapi
-    if (res.ok && form.kind === "voice" && voiceProvider === "xai") {
-      // Mirror the agent into the xAI console (Voice → Agents) so it's visible
-      // and phone-deployable there too. Non-blocking: calls work either way,
-      // since sessions are built per-call from the saved agent.
-      const agentId = res.id ?? initial?.id ?? savedAgentId;
-      let synced = "";
-      try {
-        const xr = await fetch("/api/xai/agents", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentId }),
-        });
-        const xd = await xr.json().catch(() => ({}));
-        synced = xr.ok ? " and synced to your xAI console (Voice → Agents)" : ` (xAI console sync failed: ${xd.error ?? "unreachable"} — calls still work)`;
-      } catch {
-        synced = " (xAI console sync unreachable — calls still work)";
-      }
-      message = `${initial || savedAgentId ? "Agent saved" : "Agent created"} — runs on Grok voice (xAI)${synced}.`;
+    if (res.ok && form.kind === "voice" && voiceProvider === "livekit") {
+      // LiveKit needs no sync: the deployed Pydent worker reads this agent's
+      // settings from Pydent at the start of every call.
+      message = `${initial || savedAgentId ? "Agent saved" : "Agent created"} — runs on LiveKit; the next call uses these settings.`;
     }
     if (res.ok && form.kind === "voice" && voiceProvider === "vapi") {
       vapiOk = false;
@@ -1309,7 +1214,7 @@ export function AgentModal({
             {form.kind === "voice" ? <PhoneCall className="h-5 w-5 text-brand-600 dark:text-brand-300" /> : <MessageCircle className="h-5 w-5 text-brand-600 dark:text-brand-300" />}
             <div>
               <p className="text-sm font-semibold text-ink-900">{form.kind === "voice" ? "Voice agent" : "Chat agent"}</p>
-              <p className="text-xs text-ink-500">{form.kind === "voice" ? (voiceProvider === "xai" ? "Voice — runs on Grok voice (xAI). Switch engines in Settings → Voice engine." : "Voice — runs on Vapi + ElevenLabs. Switch engines in Settings → Voice engine.") : "WhatsApp · Instagram · SMS · Email — replies in the inbox."}</p>
+              <p className="text-xs text-ink-500">{form.kind === "voice" ? (voiceProvider === "livekit" ? "Voice — runs on LiveKit (your STT / LLM / TTS choices below). Switch engines in Settings → Voice engine." : "Voice — runs on Vapi + ElevenLabs. Switch engines in Settings → Voice engine.") : "WhatsApp · Instagram · SMS · Email — replies in the inbox."}</p>
             </div>
           </div>
 
@@ -1338,27 +1243,24 @@ export function AgentModal({
                 ))}
               </select>
             </Field>
-            <Field label={form.kind === "chat" ? "AI model" : voiceProvider === "xai" ? "Voice model (Grok · xAI)" : "Model (Vapi)"}>
-              <select className={inputCls} value={form.model} onChange={(e) => set("model", e.target.value)}>
-                {form.kind === "chat" ? (
-                  <>
-                    <optgroup label="OpenAI">
-                      {OPENAI_MODELS.map((m) => <option key={m}>{m}</option>)}
-                    </optgroup>
-                    <optgroup label="Anthropic">
-                      {ANTHROPIC_MODELS.map((m) => <option key={m}>{m}</option>)}
-                    </optgroup>
-                  </>
-                ) : voiceProvider === "xai" ? (
-                  <>
-                    {XAI_VOICE_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
-                    {!/^grok-voice/.test(form.model) && <option value={form.model}>{form.model} (legacy — pick a Grok model)</option>}
-                  </>
-                ) : (
-                  VAPI_MODELS.map((m) => <option key={m} value={`openai/${m}`}>{m}</option>)
-                )}
-              </select>
-            </Field>
+            {(form.kind === "chat" || voiceProvider === "vapi") && (
+              <Field label={form.kind === "chat" ? "AI model" : "Model (Vapi)"}>
+                <select className={inputCls} value={form.model} onChange={(e) => set("model", e.target.value)}>
+                  {form.kind === "chat" ? (
+                    <>
+                      <optgroup label="OpenAI">
+                        {OPENAI_MODELS.map((m) => <option key={m}>{m}</option>)}
+                      </optgroup>
+                      <optgroup label="Anthropic">
+                        {ANTHROPIC_MODELS.map((m) => <option key={m}>{m}</option>)}
+                      </optgroup>
+                    </>
+                  ) : (
+                    VAPI_MODELS.map((m) => <option key={m} value={`openai/${m}`}>{m}</option>)
+                  )}
+                </select>
+              </Field>
+            )}
             <Field label="Language">
               <select className={inputCls} value={form.language} onChange={(e) => set("language", e.target.value)}>
                 {LANGUAGES.map((l) => (
@@ -1366,11 +1268,20 @@ export function AgentModal({
                 ))}
               </select>
             </Field>
-            {form.kind === "voice" && voiceProvider === "xai" && (
-              <div className="md:col-span-2">
-                <Field label="Voice (xAI) — pick from the dropdown, tap Preview to hear it">
-                  <XaiVoicePicker value={form.voice} onChange={(v) => set("voice", v)} />
-                </Field>
+            {form.kind === "voice" && voiceProvider === "livekit" && (
+              <div className="md:col-span-2 rounded-xl border border-ink-100 bg-ink-50/40 p-4">
+                <p className="mb-3 text-xs font-semibold text-ink-700">LiveKit models &amp; voice for this agent</p>
+                <LivekitModelPicker
+                  value={{ ...LIVEKIT_DEFAULTS, ...(form.voiceSettings.livekit ?? {}) }}
+                  onChange={(lk) =>
+                    setForm((f) => ({
+                      ...f,
+                      model: lk.llm,
+                      voice: livekitVoiceLabel(lk),
+                      voiceSettings: { ...f.voiceSettings, livekit: lk },
+                    }))
+                  }
+                />
               </div>
             )}
             {form.kind === "voice" && voiceProvider === "vapi" && (
@@ -1533,33 +1444,18 @@ export function AgentModal({
               onChange={(v) => set("voiceSettings", v)}
             />
           )}
-          {form.kind === "voice" && voiceProvider === "xai" && (
+          {form.kind === "voice" && voiceProvider === "livekit" && (
             <div className="mt-4 space-y-2 rounded-xl border border-ink-100 bg-ink-50/40 p-4 text-xs text-ink-500">
               <p>
-                <strong className="font-semibold text-ink-700">Grok voice (xAI)</strong> — turn detection, barge-in
-                interruptions, noise handling and transcription are built into the Grok voice model, so there&apos;s nothing
-                extra to tune here. Pick the voice and model above; the first message below is spoken word-for-word. Built-in
-                live <strong className="font-semibold text-ink-700">web search</strong> is included (clinic facts still come only
-                from the knowledge base). You can switch engines any time in Settings → Voice engine.
+                <strong className="font-semibold text-ink-700">LiveKit</strong> — turn detection, barge-in and noise handling are
+                handled by the Pydent worker on LiveKit using the STT / LLM / TTS models chosen above. The first message below is
+                spoken word-for-word. Max call length and silence timeouts come from the Advanced settings; everything here applies
+                on the very next call — nothing to sync.
               </p>
               <p>
-                <strong className="font-semibold text-ink-700">Deploy to a phone number:</strong> saving mirrors this agent into
-                your{" "}
-                <a href="https://console.x.ai" target="_blank" rel="noopener noreferrer" className="font-medium text-brand-600 underline">
-                  xAI console
-                </a>{" "}
-                (Voice → Agents). Open it there → <em>Deployment</em> → add a Direct SIP number: point a number from Twilio, Telnyx,
-                Plivo or any SIP trunk at <code className="rounded bg-ink-100 px-1">sip:{"{number}"}@sip.voice.x.ai;transport=tls</code>.{" "}
-                <a
-                  href="https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech/sip#telephony-providers"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-medium text-brand-600 underline"
-                >
-                  Provider steps
-                </a>
-                . Connectors (Gmail / Google Calendar) need a one-time login in the console; on calls through Pydent, email and
-                calendar already work via your connected accounts.
+                <strong className="font-semibold text-ink-700">Phone number:</strong> Phone Numbers → Add → <em>LiveKit (SIP)</em> — Pydent
+                creates the LiveKit trunk + dispatch rule for this agent and shows the SIP address to forward your carrier number
+                (or the clinic&apos;s Asterisk box) to.
               </p>
             </div>
           )}
@@ -1852,7 +1748,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   const callRef = useRef<any>(null);
   const transcriptRef = useRef<{ speaker: string; text: string }[]>([]);
   const savedRef = useRef(false);
-  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("xai");
+  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("livekit");
   useEffect(() => { fetchVoiceProvider().then(setVoiceProvider); }, []);
 
   // Voice tests are saved into the SAME per-agent history as the chat tests, so
@@ -1883,10 +1779,11 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
     setTranscript((t) => [...t, line]);
   };
 
-  // Grok voice (xAI) — the default engine.
-  async function startXai() {
-    const { XaiRealtimeCall } = await import("@/lib/xai-realtime-client");
-    const call = new XaiRealtimeCall();
+  // LiveKit — the default engine. The worker for this agent is dispatched into
+  // the room automatically by the join token's room config.
+  async function startLivekit() {
+    const { LivekitWebCall } = await import("@/lib/livekit-web-call");
+    const call = new LivekitWebCall();
     callRef.current = call;
     await call.start(agent.id, {
       onState: (s: "live" | "ended" | "error") => {
@@ -1978,7 +1875,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
     setTranscript([]);
     try {
       if (voiceProvider === "vapi") await startVapi();
-      else await startXai();
+      else await startLivekit();
     } catch (e) {
       setState("error");
       setError(e instanceof Error ? e.message : "Could not start the call.");
@@ -2001,7 +1898,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
         onClose();
       }}
       title={`Test call — talk to ${agent.name}`}
-      subtitle={`Live web call on ${voiceProvider === "vapi" ? "Vapi" : "Grok voice (xAI)"} — allow microphone access when your browser asks.`}
+      subtitle={`Live web call on ${voiceProvider === "vapi" ? "Vapi" : "LiveKit"} — allow microphone access when your browser asks.`}
       wide
     >
       <div className="mb-1 flex items-center justify-between">
@@ -2048,7 +1945,7 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
 
         <p className="text-sm font-medium text-ink-700">
           {state === "idle" && "Ready — start the call and speak like a patient."}
-          {state === "connecting" && (voiceProvider === "vapi" ? "Connecting to Vapi…" : "Connecting to Grok voice…")}
+          {state === "connecting" && (voiceProvider === "vapi" ? "Connecting to Vapi…" : "Connecting to LiveKit…")}
           {state === "live" && (assistantSpeaking ? `${agent.name} is speaking…` : "Listening — say something!")}
           {state === "ended" && "Call ended."}
           {state === "error" && "Call failed."}
