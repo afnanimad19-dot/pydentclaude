@@ -83,17 +83,101 @@ export function dispatchMetadata(pydentAgentId: string, ws: string, extra?: Reco
   return JSON.stringify({ pydentAgentId, ws, ...(extra ?? {}) });
 }
 
-export function agentRoomConfig(c: LivekitCreds, metadata: string): RoomConfiguration {
-  return new RoomConfiguration({ agents: [new RoomAgentDispatch({ agentName: c.agentName, metadata })] });
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// Which deployed LiveKit agent answers for a Pydent agent: the agent's own
+// binding (an agent built in the LiveKit console) or the workspace's Pydent
+// worker. Returns { name, external } — external = a console-built agent.
+export function boundLivekitAgent(agent: any, c: LivekitCreds): { name: string; external: boolean } {
+  const bound = String(agent?.voice_settings?.livekit?.agentName ?? "").trim();
+  if (bound && bound !== c.agentName) return { name: bound, external: true };
+  return { name: c.agentName, external: false };
+}
+
+// Job metadata for a call. Besides the ids the Pydent worker uses, it carries
+// the agent's LIVE instructions + greeting so a console-built (Agent Builder)
+// agent can reference them as {{metadata.instructions}} / {{metadata.greeting}}
+// — that is what makes edits in Pydent apply to that agent in real time.
+export function builderMetadata(agent: any, ws: string, origin: string, extra?: Record<string, unknown>): string {
+  const cfg = livekitAgentConfig(agent, ws, origin);
+  return JSON.stringify({
+    pydentAgentId: cfg.agentId,
+    ws,
+    agentName: cfg.agentName,
+    instructions: cfg.instructions,
+    greeting: cfg.greeting,
+    language: String(agent?.language ?? ""),
+    canBook: cfg.canBook,
+    canReschedule: cfg.canReschedule,
+    canCancel: cfg.canCancel,
+    ...(extra ?? {}),
+  });
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+export function agentRoomConfig(c: LivekitCreds, metadata: string, agentName?: string): RoomConfiguration {
+  return new RoomConfiguration({ agents: [new RoomAgentDispatch({ agentName: agentName || c.agentName, metadata })] });
 }
 
 // A join token for the browser test call; the room config auto-dispatches the
-// worker for this agent the moment the room is created.
-export async function mintRoomToken(c: LivekitCreds, room: string, identity: string, metadata: string): Promise<string> {
+// (bound) agent the moment the room is created.
+export async function mintRoomToken(c: LivekitCreds, room: string, identity: string, metadata: string, agentName?: string): Promise<string> {
   const at = new AccessToken(c.apiKey, c.apiSecret, { identity, ttl: "1h" });
   at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: true });
-  at.roomConfig = agentRoomConfig(c, metadata);
+  at.roomConfig = agentRoomConfig(c, metadata, agentName);
   return at.toJwt();
+}
+
+// ── LiveKit Cloud agent management (list the agents deployed on the project) ──
+// Same Twirp API the `lk agent list` CLI uses; it authenticates with a project
+// token carrying the agent admin grant. Returns names + deployment status —
+// LiveKit does NOT expose a console-built agent's instructions/models here.
+export interface CloudAgentInfo {
+  agentId: string;
+  agentName: string;
+  version: string;
+  status: string;
+  deployedAt: string | null;
+}
+
+async function agentAdminJwt(c: LivekitCreds): Promise<string> {
+  const { SignJWT } = await import("jose");
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ agent: { admin: true } })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuer(c.apiKey)
+    .setSubject(c.apiKey)
+    .setNotBefore(now - 5)
+    .setExpirationTime(now + 600)
+    .sign(new TextEncoder().encode(c.apiSecret));
+}
+
+export async function listCloudAgents(c: LivekitCreds): Promise<CloudAgentInfo[]> {
+  const token = await agentAdminJwt(c);
+  const res = await fetch(`${lkHttpUrl(c.url)}/twirp/livekit.CloudAgent/ListAgents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: "{}",
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`ListAgents ${res.status}: ${text.slice(0, 200)}`);
+  }
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const data: any = await res.json().catch(() => ({}));
+  const agents: any[] = data.agents ?? data.Agents ?? [];
+  return agents.map((a) => {
+    const deps: any[] = a.agentDeployments ?? a.agent_deployments ?? [];
+    const status = deps.map((d) => d.status ?? "").filter(Boolean).join(", ");
+    const dep = a.deployedAt ?? a.deployed_at;
+    return {
+      agentId: String(a.agentId ?? a.agent_id ?? ""),
+      agentName: String(a.agentName ?? a.agent_name ?? ""),
+      version: String(a.version ?? ""),
+      status: status || "unknown",
+      deployedAt: dep ? (typeof dep === "string" ? dep : new Date(Number(dep.seconds ?? 0) * 1000).toISOString()) : null,
+    };
+  });
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

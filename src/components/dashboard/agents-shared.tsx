@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
+import { toast } from "@/components/toast";
 import { VoiceLibrary } from "@/components/dashboard/voice-library";
 import {
   fetchAgents,
@@ -122,8 +123,43 @@ function LivekitModelPicker({ value, onChange }: { value: LivekitAgentSettings; 
   const tts = LIVEKIT_TTS.find((m) => m.id === value.tts) ?? LIVEKIT_TTS[0];
   const knownVoice = tts.voices.some((v) => v.id === value.voice);
   const set = (patch: Partial<LivekitAgentSettings>) => onChange({ ...value, ...patch });
+  // Agents deployed on the clinic's LiveKit project (console-built + the worker).
+  const [deployed, setDeployed] = useState<{ agentName: string; status: string }[]>([]);
+  const [workerName, setWorkerName] = useState("pydent-agent");
+  const [deployedErr, setDeployedErr] = useState<string | null>(null);
+  useEffect(() => {
+    getWorkspaceId().then((ws) =>
+      fetch(`/api/livekit/agents?ws=${ws ?? ""}`)
+        .then((r) => r.json())
+        .then((d) => { setDeployed(d.agents ?? []); setWorkerName(d.workerAgentName ?? "pydent-agent"); if (!d.ok) setDeployedErr(d.error ?? null); })
+        .catch(() => setDeployedErr("Could not reach LiveKit."))
+    );
+  }, []);
+  const external = !!value.agentName && value.agentName !== workerName;
+  const consoleAgents = deployed.filter((a) => a.agentName !== workerName);
   return (
     <div className="grid gap-4 md:grid-cols-2">
+      <div className="md:col-span-2">
+        <Field label="LiveKit agent that answers (deployed on your LiveKit project)">
+          <select className={inputCls} value={external ? value.agentName : ""} onChange={(e) => set({ agentName: e.target.value })}>
+            <option value="">Pydent worker ({workerName}) — models &amp; voice chosen below, edits apply instantly</option>
+            {consoleAgents.map((a) => <option key={a.agentName} value={a.agentName}>{a.agentName} — built in the LiveKit console ({a.status})</option>)}
+            {external && !consoleAgents.some((a) => a.agentName === value.agentName) && <option value={value.agentName}>{value.agentName} (not found on the project right now)</option>}
+          </select>
+        </Field>
+        {deployedErr && <p className="mt-1 text-[11px] text-amber-600">{deployedErr}</p>}
+        {external && (
+          <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50/60 p-3 text-[11px] text-ink-600">
+            <p className="font-semibold text-ink-800">Using your console-built agent &quot;{value.agentName}&quot;.</p>
+            <p className="mt-1">LiveKit keeps that agent&apos;s STT / LLM / TTS and voice inside its builder (there is no API to change them from here). To make <em>this</em> agent&apos;s instructions and greeting apply in real time, open it in the LiveKit console once and set:</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              <li>Instructions → <code className="rounded bg-ink-100 px-1">{"{{metadata.instructions}}"}</code></li>
+              <li>Greeting → <code className="rounded bg-ink-100 px-1">{"{{metadata.greeting}}"}</code></li>
+            </ul>
+            <p className="mt-1">Pydent sends both on every call, so anything you edit here is live on the next call. Tools (booking, email) run through the Pydent worker only — switch to it for those.</p>
+          </div>
+        )}
+      </div>
       <Field label="Speech-to-text (STT)">
         <select className={inputCls} value={value.stt} onChange={(e) => set({ stt: e.target.value })}>
           {LIVEKIT_STT.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
@@ -227,6 +263,7 @@ export function AgentsView({
   const [editAgent, setEditAgent] = useState<AiAgent | null>(null);
   const [testAgent, setTestAgent] = useState<AiAgent | null>(null);
   const [callAgent, setCallAgent] = useState<AiAgent | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const refresh = useCallback(() => {
     fetchAgents().then((r) => {
@@ -272,16 +309,28 @@ export function AgentsView({
         <DemoBanner context="Agents table not found — run supabase/migrations/0002 and 0003 in the SQL Editor." />
       )}
 
+      {importOpen && <ImportLivekitAgentModal onClose={() => setImportOpen(false)} onImported={() => { setImportOpen(false); refresh(); }} />}
       <PageHeader
         title={title}
         subtitle={subtitle}
         actions={
-          <button
-            onClick={() => setModalOpen(true)}
-            className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-          >
-            <Plus className="h-4 w-4" /> New agent
-          </button>
+          <div className="flex items-center gap-2">
+            {defaultKind === "voice" && (
+              <button
+                onClick={() => setImportOpen(true)}
+                className="flex items-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50"
+                title="Bring an agent you built in the LiveKit console into Pydent"
+              >
+                <History className="h-4 w-4" /> Import from LiveKit
+              </button>
+            )}
+            <button
+              onClick={() => setModalOpen(true)}
+              className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
+              <Plus className="h-4 w-4" /> New agent
+            </button>
+          </div>
         }
       />
 
@@ -1979,6 +2028,104 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
         )}
       </div>
       )}
+    </Modal>
+  );
+}
+
+// ------------------------------------------------- import from LiveKit
+// Brings an agent built in the LiveKit console (Agent Builder) into Pydent as a
+// bound voice agent. LiveKit's API lists deployed agents (name/status) but does
+// NOT return the builder's prompt or models, so the instructions/greeting are
+// entered here once — after that Pydent is the source of truth: it sends them
+// as {{metadata.instructions}} / {{metadata.greeting}} on every call.
+function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
+  const [deployed, setDeployed] = useState<{ agentName: string; status: string }[]>([]);
+  const [workerName, setWorkerName] = useState("pydent-agent");
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [picked, setPicked] = useState("");
+  const [name, setName] = useState("");
+  const [greeting, setGreeting] = useState("Thank you for calling! How can I help you today?");
+  const [instructions, setInstructions] = useState("You are the clinic's friendly phone receptionist. Answer questions about the clinic, help callers book, reschedule or cancel appointments, and keep replies short and natural.");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getWorkspaceId().then((ws) =>
+      fetch(`/api/livekit/agents?ws=${ws ?? ""}`)
+        .then((r) => r.json())
+        .then((d) => {
+          setWorkerName(d.workerAgentName ?? "pydent-agent");
+          const list = (d.agents ?? []).filter((a: { agentName: string }) => a.agentName !== (d.workerAgentName ?? "pydent-agent"));
+          setDeployed(list);
+          if (!d.ok) setErr(d.error ?? "Could not list LiveKit agents.");
+          if (list[0]) { setPicked(list[0].agentName); setName(list[0].agentName); }
+        })
+        .catch(() => setErr("Could not reach LiveKit."))
+        .finally(() => setLoading(false))
+    );
+  }, []);
+
+  async function submit() {
+    if (!picked) { toast("Pick the LiveKit agent to import.", "info"); return; }
+    setSaving(true);
+    const res = await createAgent({
+      name: name.trim() || picked,
+      kind: "voice",
+      role: "Receptionist",
+      status: "Live",
+      model: LIVEKIT_DEFAULTS.llm,
+      voice: `LiveKit console agent · ${picked}`,
+      voiceId: null,
+      firstMessage: greeting.trim(),
+      language: "English + Arabic",
+      agentIdentity: "",
+      instructions: instructions.trim(),
+      behavior: "",
+      knowledgeBase: "",
+      canBook: true,
+      canReschedule: true,
+      canCancel: true,
+      channels: ["voice"],
+      purpose: "inbound",
+      firstMessageMode: "assistant_first",
+      kbFiles: [],
+      voiceSettings: { ...defaultVoiceSettings(), livekit: { ...LIVEKIT_DEFAULTS, agentName: picked } },
+    });
+    setSaving(false);
+    if (!res.ok) { toast(res.message, "info"); return; }
+    toast(`Imported "${picked}" — edit it here; set its LiveKit instructions/greeting to {{metadata.instructions}} / {{metadata.greeting}} once for live updates.`, "success");
+    onImported();
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Import an agent from LiveKit" subtitle="Bind an agent you built in the LiveKit console to Pydent, so you edit it here and it applies on the next call." wide>
+      <div className="space-y-4">
+        {loading ? (
+          <p className="py-6 text-center text-sm text-ink-500">Loading your LiveKit agents…</p>
+        ) : (
+          <>
+            {err && <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">{err}</p>}
+            <Field label="LiveKit agent (deployed on your project)">
+              <select className={inputCls} value={picked} onChange={(e) => { setPicked(e.target.value); if (!name.trim()) setName(e.target.value); }}>
+                {deployed.length === 0 && <option value="">No console-built agents found (only the worker &quot;{workerName}&quot;)</option>}
+                {deployed.map((a) => <option key={a.agentName} value={a.agentName}>{a.agentName} — {a.status}</option>)}
+              </select>
+            </Field>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Name in Pydent"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+              <Field label="Greeting (first message)"><input className={inputCls} value={greeting} onChange={(e) => setGreeting(e.target.value)} /></Field>
+            </div>
+            <Field label="Instructions (paste what the agent has in LiveKit — LiveKit can't send it to us)">
+              <textarea className={`${inputCls} min-h-28`} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
+            </Field>
+            <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-3 text-[11px] text-ink-600">
+              <p className="font-semibold text-ink-800">To make Pydent edits apply in real time to this LiveKit agent:</p>
+              <p className="mt-1">Open it in the LiveKit console once and set Instructions to <code className="rounded bg-ink-100 px-1">{"{{metadata.instructions}}"}</code> and the Greeting to <code className="rounded bg-ink-100 px-1">{"{{metadata.greeting}}"}</code>. Pydent sends both on every call. Its STT / LLM / TTS stay as configured in the LiveKit builder.</p>
+            </div>
+          </>
+        )}
+      </div>
+      <ModalFooter onClose={onClose} submitLabel={saving ? "Importing…" : "Import agent"} onSubmit={submit} />
     </Modal>
   );
 }

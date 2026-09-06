@@ -30,7 +30,11 @@ export function LivekitCard() {
   const [secret, setSecret] = useState("");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [status, setStatus] = useState<{ ok: boolean; rooms?: number; sipDomain?: string; agentName?: string; workerToken?: boolean; source?: string; error?: string } | null>(null);
+  const [status, setStatus] = useState<{
+    ok: boolean; rooms?: number; sipDomain?: string; agentName?: string; workerToken?: boolean; source?: string; error?: string;
+    agents?: { agentId: string; agentName: string; version: string; status: string; deployedAt: string | null }[];
+    agentsError?: string; workerDeployed?: boolean;
+  } | null>(null);
 
   useEffect(() => { fetchLivekitConfig().then(setCfg); }, []);
 
@@ -98,6 +102,26 @@ export function LivekitCard() {
               <p className="flex items-center gap-1.5 font-semibold"><CheckCircle2 className="h-4 w-4" /> Connected to LiveKit ({status.source === "workspace" ? "this clinic's project" : "shared project"}) — {status.rooms} active room{status.rooms === 1 ? "" : "s"}.</p>
               <p className="text-ink-600">SIP domain for phone numbers / the clinic box: {status.sipDomain ? <CopyChip text={status.sipDomain} /> : "—"}</p>
               <p className="text-ink-600">Worker agent name: <span className="font-mono">{status.agentName}</span>{status.workerToken ? "" : " — LIVEKIT_WORKER_TOKEN is not set on the server yet (needed for the worker to read agent settings)."}</p>
+              <div className="mt-2 rounded-lg border border-ink-100 bg-surface p-2.5">
+                <p className="mb-1 font-semibold text-ink-700">Agents deployed on this LiveKit project</p>
+                {status.agentsError ? (
+                  <p className="text-amber-600">Couldn&apos;t list agents — {status.agentsError}</p>
+                ) : !status.agents?.length ? (
+                  <p className="text-ink-500">None yet. Deploy the Pydent worker (livekit-agent/README.md) or build one in the LiveKit console.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {status.agents.map((a) => (
+                      <li key={a.agentId} className="flex items-center justify-between gap-2 text-ink-700">
+                        <span className="font-mono">{a.agentName}</span>
+                        <span className="text-ink-400">{a.status}{a.version ? ` · v${a.version}` : ""}{a.agentName === status.agentName ? " · Pydent worker" : " · console-built"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {status.agents && status.agents.length > 0 && !status.workerDeployed && (
+                  <p className="mt-1.5 text-amber-600">The Pydent worker &quot;{status.agentName}&quot; isn&apos;t deployed. Console-built agents still work (bind them in the agent builder); deploy the worker for per-agent model/voice control.</p>
+                )}
+              </div>
             </div>
           ) : (
             <p className="flex items-start gap-1.5"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> {status.error}</p>

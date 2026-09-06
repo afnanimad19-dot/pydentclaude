@@ -11,6 +11,12 @@ export interface LivekitAgentSettings {
   tts: string;          // e.g. "inworld/inworld-tts-2"
   voice: string;        // provider voice id / name, e.g. "Ashley"
   interruptions: "adaptive" | "eager" | "off";
+  // Which deployed LiveKit agent answers for this Pydent agent. "" = the Pydent
+  // worker (full control: models/voice/instructions all from Pydent). Any other
+  // value = an agent you built/deployed in the LiveKit console (Agent Builder);
+  // Pydent then dispatches THAT agent with its live instructions + greeting as
+  // job metadata ({{metadata.instructions}} / {{metadata.greeting}} templates).
+  agentName: string;
 }
 
 export const LIVEKIT_DEFAULTS: LivekitAgentSettings = {
@@ -20,6 +26,7 @@ export const LIVEKIT_DEFAULTS: LivekitAgentSettings = {
   tts: "inworld/inworld-tts-2",
   voice: "Ashley",
   interruptions: "adaptive",
+  agentName: "",
 };
 
 export const LIVEKIT_STT: { id: string; label: string; arabic: boolean }[] = [

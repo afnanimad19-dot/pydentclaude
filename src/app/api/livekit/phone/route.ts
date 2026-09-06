@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { getLivekitCreds, lkConfigured, lkSipDomain, sipClient, agentRoomConfig, dispatchMetadata } from "@/lib/livekit";
+import { getLivekitCreds, lkConfigured, lkSipDomain, sipClient, agentRoomConfig, builderMetadata, boundLivekitAgent, requestOrigin } from "@/lib/livekit";
 
 // Connect a phone number to a LiveKit agent. LiveKit receives calls over SIP,
 // so a carrier (Twilio / Telnyx / Ziwo / the clinic PBX) forwards the number to
@@ -17,11 +17,16 @@ export async function POST(req: NextRequest) {
   if (!lkConfigured(creds)) return NextResponse.json({ error: "LiveKit isn't configured — add the URL, API key and secret in Settings → Connections → LiveKit." }, { status: 503 });
 
   let agentName = "";
+  let agentRow: Record<string, unknown> | null = null;
   if (agentId) {
-    const { data: a } = await supabase.from("agents").select("id, name, workspace_id").eq("id", String(agentId)).maybeSingle();
+    const { data: a } = await supabase.from("agents").select("*").eq("id", String(agentId)).maybeSingle();
     if (!a || String(a.workspace_id) !== String(ws)) return NextResponse.json({ error: "Agent not found in this workspace." }, { status: 404 });
     agentName = a.name;
+    agentRow = a;
   }
+  // The number dispatches the agent's bound LiveKit agent (console-built or the
+  // Pydent worker) with the agent's LIVE instructions/greeting as metadata.
+  const bound = agentRow ? boundLivekitAgent(agentRow, creds) : { name: creds.agentName, external: false };
 
   const sip = sipClient(creds);
   const num = String(number).trim();
@@ -39,7 +44,7 @@ export async function POST(req: NextRequest) {
         name: `pydent-${wsShort}-${num}`,
         trunkIds: [trunk.sipTrunkId],
         metadata: JSON.stringify({ ws, agentId: agentId ?? null }),
-        ...(agentId ? { roomConfig: agentRoomConfig(creds, dispatchMetadata(String(agentId), String(ws), { source: "phone", number: num })) } : {}),
+        ...(agentRow ? { roomConfig: agentRoomConfig(creds, builderMetadata(agentRow, String(ws), requestOrigin(req), { source: "phone", number: num }), bound.name) } : {}),
       }
     );
     return NextResponse.json({
