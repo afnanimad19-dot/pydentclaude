@@ -34,6 +34,8 @@ export function LivekitCard() {
     ok: boolean; rooms?: number; sipDomain?: string; agentName?: string; workerToken?: boolean; source?: string; error?: string;
     agents?: { agentId: string; agentName: string; version: string; status: string; deployedAt: string | null }[];
     agentsError?: string; workerDeployed?: boolean;
+    hints?: string[]; rawError?: string;
+    diagnostics?: { urlHost: string; keyPreview: string; keyLength: number; secretLength: number };
   } | null>(null);
 
   useEffect(() => { fetchLivekitConfig().then(setCfg); }, []);
@@ -124,7 +126,20 @@ export function LivekitCard() {
               </div>
             </div>
           ) : (
-            <p className="flex items-start gap-1.5"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> {status.error}</p>
+            <div className="space-y-2">
+              <p className="flex items-start gap-1.5 font-semibold"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> {status.error}</p>
+              {status.diagnostics && (
+                <p className="text-ink-600">
+                  Checked: URL host <span className="font-mono">{status.diagnostics.urlHost || "—"}</span> · API key <span className="font-mono">{status.diagnostics.keyPreview}</span> ({status.diagnostics.keyLength} chars) · secret {status.diagnostics.secretLength} chars.
+                </p>
+              )}
+              {status.hints && status.hints.length > 0 && (
+                <ul className="list-disc space-y-1 pl-4 text-ink-700">
+                  {status.hints.map((h, i) => <li key={i}>{h}</li>)}
+                </ul>
+              )}
+              {status.rawError && <p className="font-mono text-[10px] text-ink-400">LiveKit said: {status.rawError}</p>}
+            </div>
           )}
         </div>
       )}

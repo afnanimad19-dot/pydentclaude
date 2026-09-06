@@ -1893,13 +1893,26 @@ export function generateWorkerToken(): string {
   return "pyw_" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// People paste straight from LiveKit's "environment variables" block, so a value
+// may arrive as `LIVEKIT_API_KEY=APIxxxx`, wrapped in quotes, or with spaces.
+// Strip all of that so what's stored is the bare value LiveKit expects.
+export function cleanLivekitValue(v: string): string {
+  let s = (v ?? "").trim();
+  s = s.replace(/^(export\s+)?LIVEKIT_[A-Z_]+\s*=\s*/i, "");
+  s = s.replace(/^["'`]+|["'`,;]+$/g, "").trim();
+  return s;
+}
+
 export async function saveLivekitConfig(c: { url: string; apiKey: string; apiSecret?: string; agentName: string; enabled: boolean; workerToken?: string }): Promise<{ ok: boolean; message: string }> {
   const ws = await getWorkspaceId();
   if (!ws) return { ok: false, message: "Sign in first." };
-  let url = c.url.trim().replace(/\/+$/, "");
+  let url = cleanLivekitValue(c.url).replace(/\/+$/, "");
+  if (url && /^https?:\/\//i.test(url)) url = url.replace(/^http/i, "ws"); // project URL pasted as https → wss
   if (url && !/^wss?:\/\//i.test(url)) url = `wss://${url}`;
-  const row: Record<string, unknown> = { url, api_key: c.apiKey.trim(), agent_name: c.agentName.trim() || "pydent-agent", enabled: c.enabled, updated_at: new Date().toISOString() };
-  if (c.apiSecret && c.apiSecret.trim()) row.api_secret = c.apiSecret.trim(); // leave blank to keep the stored secret
+  const apiKey = cleanLivekitValue(c.apiKey);
+  const apiSecret = cleanLivekitValue(c.apiSecret ?? "");
+  const row: Record<string, unknown> = { url, api_key: apiKey, agent_name: c.agentName.trim() || "pydent-agent", enabled: c.enabled, updated_at: new Date().toISOString() };
+  if (apiSecret) row.api_secret = apiSecret; // leave blank to keep the stored secret
   if (c.workerToken !== undefined) row.worker_token = c.workerToken;
   const { data: existing } = await supabase.from("livekit_config").select("workspace_id").eq("workspace_id", ws).maybeSingle();
   const write = (r: Record<string, unknown>) =>
