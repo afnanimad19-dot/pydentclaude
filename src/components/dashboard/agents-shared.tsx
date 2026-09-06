@@ -2065,16 +2065,21 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
     );
   }, []);
 
+  const [manual, setManual] = useState("");
+  const [submitErr, setSubmitErr] = useState<string | null>(null);
+
   async function submit() {
-    if (!picked) { toast("Pick the LiveKit agent to import.", "info"); return; }
+    const target = (picked || manual).trim();
+    if (!target) { setSubmitErr("Pick the LiveKit agent to import — or type its exact agent name from the LiveKit console."); return; }
+    setSubmitErr(null);
     setSaving(true);
     const res = await createAgent({
-      name: name.trim() || picked,
+      name: name.trim() || target,
       kind: "voice",
       role: "Receptionist",
       status: "Live",
       model: LIVEKIT_DEFAULTS.llm,
-      voice: `LiveKit console agent · ${picked}`,
+      voice: `LiveKit console agent · ${target}`,
       voiceId: null,
       firstMessage: greeting.trim(),
       language: "English + Arabic",
@@ -2089,11 +2094,11 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
       purpose: "inbound",
       firstMessageMode: "assistant_first",
       kbFiles: [],
-      voiceSettings: { ...defaultVoiceSettings(), livekit: { ...LIVEKIT_DEFAULTS, agentName: picked } },
+      voiceSettings: { ...defaultVoiceSettings(), livekit: { ...LIVEKIT_DEFAULTS, agentName: target } },
     });
     setSaving(false);
-    if (!res.ok) { toast(res.message, "info"); return; }
-    toast(`Imported "${picked}" — edit it here; set its LiveKit instructions/greeting to {{metadata.instructions}} / {{metadata.greeting}} once for live updates.`, "success");
+    if (!res.ok) { setSubmitErr(`Could not save the agent: ${res.message}`); return; }
+    toast(`Imported "${target}" — edit it here; set its LiveKit instructions/greeting to {{metadata.instructions}} / {{metadata.greeting}} once for live updates.`, "success");
     onImported();
   }
 
@@ -2107,10 +2112,16 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
             {err && <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">{err}</p>}
             <Field label="LiveKit agent (deployed on your project)">
               <select className={inputCls} value={picked} onChange={(e) => { setPicked(e.target.value); if (!name.trim()) setName(e.target.value); }}>
-                {deployed.length === 0 && <option value="">No console-built agents found (only the worker &quot;{workerName}&quot;)</option>}
+                {deployed.length === 0 && <option value="">No console-built agents found (only the worker &quot;{workerName}&quot;) — type the name below</option>}
                 {deployed.map((a) => <option key={a.agentName} value={a.agentName}>{a.agentName} — {a.status}</option>)}
               </select>
             </Field>
+            {deployed.length === 0 && (
+              <Field label="Or type the agent name exactly as shown in the LiveKit console (Agents → name)">
+                <input className={inputCls} placeholder="my-clinic-agent" value={manual} onChange={(e) => { setManual(e.target.value); if (!name.trim()) setName(e.target.value); }} />
+              </Field>
+            )}
+            {submitErr && <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">{submitErr}</p>}
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Name in Pydent"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
               <Field label="Greeting (first message)"><input className={inputCls} value={greeting} onChange={(e) => setGreeting(e.target.value)} /></Field>

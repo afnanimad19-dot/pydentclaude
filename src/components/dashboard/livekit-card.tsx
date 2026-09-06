@@ -5,7 +5,7 @@ import { Radio, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { Card } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
-import { fetchLivekitConfig, saveLivekitConfig, getWorkspaceId, emptyLivekitConfig, type LivekitConfig } from "@/lib/db";
+import { fetchLivekitConfig, saveLivekitConfig, getWorkspaceId, emptyLivekitConfig, generateWorkerToken, type LivekitConfig } from "@/lib/db";
 
 // Settings → Connections: the clinic's LiveKit Cloud project. Paste the values
 // LiveKit shows when you create an API key (WebSocket URL, API key, API
@@ -129,10 +129,55 @@ export function LivekitCard() {
         </div>
       )}
 
-      <p className="mt-3 text-[11px] text-ink-400">
-        One-time setup: deploy the Pydent worker to your LiveKit project (livekit-agent/README.md — <span className="font-mono">lk agent create</span>), set the same
-        <span className="font-mono"> LIVEKIT_WORKER_TOKEN</span> on the server, and add the webhook <span className="font-mono">/api/livekit/webhook</span> in LiveKit for live call logs.
-      </p>
+      {/* Pydent worker — the one LiveKit agent that runs every Pydent-built agent */}
+      <div className="mt-5 rounded-xl border border-ink-100 bg-ink-50/40 p-4">
+        <p className="text-sm font-semibold text-ink-900">Pydent worker (runs your Pydent-built agents on LiveKit)</p>
+        <p className="mt-1 text-xs text-ink-500">
+          Agents you create in Pydent don&apos;t appear one-by-one in the LiveKit console — LiveKit has no API for that. Instead ONE worker
+          (<span className="font-mono">{cfg.agentName || "pydent-agent"}</span>) is deployed to your project and reads each agent&apos;s settings from Pydent on every call,
+          so every edit here is live on the next call. Deploy it once (about 5 minutes).
+        </p>
+
+        <div className="mt-3">
+          <p className="mb-1 text-xs font-semibold text-ink-700">1 · Worker token — Pydent makes this (it is not from LiveKit)</p>
+          {cfg.workerToken ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <CopyChip text={cfg.workerToken} />
+              <button
+                onClick={async () => { const t = generateWorkerToken(); const r = await saveLivekitConfig({ url: cfg.url, apiKey: cfg.apiKey, agentName: cfg.agentName, enabled: cfg.enabled, workerToken: t }); toast(r.ok ? "New worker token generated — update the worker's .env and redeploy." : r.message, r.ok ? "success" : "info"); if (r.ok) setCfg({ ...cfg, workerToken: t }); }}
+                className="text-xs font-medium text-ink-500 underline hover:text-ink-800"
+              >
+                Regenerate
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={async () => { const t = generateWorkerToken(); const r = await saveLivekitConfig({ url: cfg.url, apiKey: cfg.apiKey, agentName: cfg.agentName, enabled: cfg.enabled, workerToken: t }); toast(r.ok ? "Worker token generated." : r.message, r.ok ? "success" : "info"); if (r.ok) setCfg({ ...cfg, workerToken: t }); }}
+              className="rounded-lg border border-brand-300 px-3 py-1.5 text-xs font-semibold text-brand-600 hover:bg-brand-50"
+            >
+              Generate worker token
+            </button>
+          )}
+        </div>
+
+        <div className="mt-3">
+          <p className="mb-1 text-xs font-semibold text-ink-700">2 · Deploy the worker (on any computer with the LiveKit CLI, from the repo&apos;s <span className="font-mono">livekit-agent/</span> folder)</p>
+          <pre className="overflow-x-auto rounded-lg bg-ink-900 p-3 text-[11px] leading-relaxed text-ink-100"><code>{[
+            "lk cloud auth",
+            "cd livekit-agent && cp .env.example .env",
+            "# put these in .env:",
+            `LIVEKIT_URL=${cfg.url || "wss://<your-project>.livekit.cloud"}`,
+            `LIVEKIT_API_KEY=${cfg.apiKey || "<api key>"}`,
+            "LIVEKIT_API_SECRET=<the API secret>",
+            `PYDENT_BASE=${typeof window !== "undefined" ? window.location.origin : "https://pydent.ai"}`,
+            `LIVEKIT_WORKER_TOKEN=${cfg.workerToken || "<click Generate above>"}`,
+            `AGENT_NAME=${cfg.agentName || "pydent-agent"}`,
+            "# then:",
+            "lk agent create --secrets-file .env",
+          ].join("\n")}</code></pre>
+          <p className="mt-1 text-[11px] text-ink-400">After it says deployed, click <strong>Test connection</strong> above — the worker should appear in the agents list. Then add the webhook <span className="font-mono">/api/livekit/webhook</span> in LiveKit (Settings → Webhooks) for live call logs.</p>
+        </div>
+      </div>
     </Card>
   );
 }

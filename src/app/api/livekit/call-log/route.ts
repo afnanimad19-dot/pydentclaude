@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { workerTokenOk } from "@/lib/livekit";
+import { resolveWorkerToken } from "@/lib/livekit";
 
 // The deployed LiveKit worker posts here when a call ends: the transcript,
 // caller number, timing and which agent handled it. Stored in voice_calls
@@ -26,11 +26,11 @@ async function upsert(roomKey: string, row: Record<string, any>) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  const auth = workerTokenOk(body.token);
+  const auth = await resolveWorkerToken(body.token);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: 401 });
 
   const room = String(body.room ?? "");
-  const ws = String(body.ws ?? "");
+  const ws = auth.ws ?? String(body.ws ?? "");
   if (!room || !ws) return NextResponse.json({ error: "room and ws are required." }, { status: 400 });
 
   const messages: any[] = Array.isArray(body.messages) ? body.messages : [];

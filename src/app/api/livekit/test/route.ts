@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getLivekitCreds, lkConfigured, lkSipDomain, roomService, listCloudAgents, type CloudAgentInfo } from "@/lib/livekit";
+import { getLivekitCreds, lkConfigured, lkSipDomain, roomService, listCloudAgents, workerTokenConfigured, type CloudAgentInfo } from "@/lib/livekit";
 
 // Settings → LiveKit "Test connection": proves the URL + API key/secret work by
 // listing rooms through the server API, and reports the project's SIP domain
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
       rooms: rooms.length,
       sipDomain: lkSipDomain(creds.url),
       agentName: creds.agentName,
-      workerToken: !!(process.env.LIVEKIT_WORKER_TOKEN || "").trim(),
+      workerToken: await workerTokenConfigured(ws ? String(ws) : null),
       agents,
       agentsError: agentsError || undefined,
       workerDeployed: agents.some((a) => a.agentName === creds.agentName),

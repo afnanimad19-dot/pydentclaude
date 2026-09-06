@@ -1869,32 +1869,48 @@ export interface LivekitConfig {
   apiSecretSet: boolean; // whether a secret is stored (the value is never read back)
   agentName: string;
   enabled: boolean;
+  // Token the deployed Pydent worker uses to authenticate to Pydent. Generated
+  // here (Settings → LiveKit → Generate) — it is NOT something LiveKit issues.
+  workerToken: string;
 }
 
-export const emptyLivekitConfig: LivekitConfig = { url: "", apiKey: "", apiSecretSet: false, agentName: "pydent-agent", enabled: true };
+export const emptyLivekitConfig: LivekitConfig = { url: "", apiKey: "", apiSecretSet: false, agentName: "pydent-agent", enabled: true, workerToken: "" };
 
 export async function fetchLivekitConfig(): Promise<LivekitConfig> {
   try {
     const ws = await getWorkspaceId();
-    const { data } = await supabase.from("livekit_config").select("url, api_key, api_secret, agent_name, enabled").eq("workspace_id", ws).maybeSingle();
+    const { data } = await supabase.from("livekit_config").select("url, api_key, api_secret, agent_name, enabled, worker_token").eq("workspace_id", ws).maybeSingle();
     if (!data) return emptyLivekitConfig;
-    return { url: data.url ?? "", apiKey: data.api_key ?? "", apiSecretSet: !!data.api_secret, agentName: data.agent_name || "pydent-agent", enabled: data.enabled !== false };
+    return { url: data.url ?? "", apiKey: data.api_key ?? "", apiSecretSet: !!data.api_secret, agentName: data.agent_name || "pydent-agent", enabled: data.enabled !== false, workerToken: data.worker_token ?? "" };
   } catch {
     return emptyLivekitConfig;
   }
 }
 
-export async function saveLivekitConfig(c: { url: string; apiKey: string; apiSecret?: string; agentName: string; enabled: boolean }): Promise<{ ok: boolean; message: string }> {
+export function generateWorkerToken(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return "pyw_" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function saveLivekitConfig(c: { url: string; apiKey: string; apiSecret?: string; agentName: string; enabled: boolean; workerToken?: string }): Promise<{ ok: boolean; message: string }> {
   const ws = await getWorkspaceId();
   if (!ws) return { ok: false, message: "Sign in first." };
   let url = c.url.trim().replace(/\/+$/, "");
   if (url && !/^wss?:\/\//i.test(url)) url = `wss://${url}`;
   const row: Record<string, unknown> = { url, api_key: c.apiKey.trim(), agent_name: c.agentName.trim() || "pydent-agent", enabled: c.enabled, updated_at: new Date().toISOString() };
   if (c.apiSecret && c.apiSecret.trim()) row.api_secret = c.apiSecret.trim(); // leave blank to keep the stored secret
+  if (c.workerToken !== undefined) row.worker_token = c.workerToken;
   const { data: existing } = await supabase.from("livekit_config").select("workspace_id").eq("workspace_id", ws).maybeSingle();
-  const { error } = existing
-    ? await supabase.from("livekit_config").update(row).eq("workspace_id", ws)
-    : await supabase.from("livekit_config").insert({ workspace_id: ws, ...row });
+  const write = (r: Record<string, unknown>) =>
+    existing ? supabase.from("livekit_config").update(r).eq("workspace_id", ws) : supabase.from("livekit_config").insert({ workspace_id: ws, ...r });
+  let { error } = await write(row);
+  if (error && /worker_token/.test(error.message)) {
+    // Column arrives with migration 0060 — save the rest and say so.
+    delete row.worker_token;
+    ({ error } = await write(row));
+    if (!error) return { ok: true, message: "Saved — but the worker token was NOT stored: run migration 0060_livekit_worker_token.sql in Supabase, then Generate again." };
+  }
   if (error) {
     if (/livekit_config|schema cache|does not exist/i.test(error.message)) return { ok: false, message: "Run migration 0059_livekit_config.sql in the Supabase SQL Editor first." };
     return { ok: false, message: error.message };

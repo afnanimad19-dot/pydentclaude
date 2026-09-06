@@ -29,8 +29,8 @@ and the very next call uses it. Nothing to sync, nothing to drift.
 2. **Secrets** — copy `.env.example` → `.env` and fill it in:
    - `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` — from LiveKit Cloud → Settings → API keys
    - `PYDENT_BASE` — your Pydent URL
-   - `LIVEKIT_WORKER_TOKEN` — any long random string; set the **same** value as
-     `LIVEKIT_WORKER_TOKEN` in Pydent's Netlify environment
+   - `LIVEKIT_WORKER_TOKEN` — generated in Pydent → Settings → Connections →
+     LiveKit → **Generate worker token** (copy it here; nothing to set on Netlify)
    - `AGENT_NAME` — `pydent-agent` (must match Pydent → Settings → LiveKit → Agent name)
 3. **Create + deploy** from this folder:
    ```bash

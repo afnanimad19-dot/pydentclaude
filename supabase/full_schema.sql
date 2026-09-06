@@ -1,5 +1,5 @@
 -- ============================================================================
--- Pydent — FULL SCHEMA (all migrations 0001–0059 combined, in order)
+-- Pydent — FULL SCHEMA (all migrations 0001–0060 combined, in order)
 -- Paste this whole file into the Supabase SQL Editor of a NEW project and Run.
 -- It creates every table, index, policy and function. Safe to re-run.
 -- This is SCHEMA ONLY — it does not include your existing rows/data.
@@ -2190,4 +2190,15 @@ create index if not exists voice_calls_engine_idx on voice_calls (workspace_id, 
 
 -- Existing "xai" engine preference rows become LiveKit.
 update connections set account_label = 'livekit' where provider = 'voice_engine' and account_label = 'xai';
+
+
+-- ============================================================================
+-- 0060_livekit_worker_token.sql
+-- ============================================================================
+
+-- Pydent — migration 60: per-workspace LiveKit worker token.
+-- The deployed Pydent LiveKit worker authenticates to Pydent with this token
+-- (generated in Settings → LiveKit; never needs a server env var). Idempotent.
+alter table livekit_config add column if not exists worker_token text not null default '';
+create index if not exists livekit_config_worker_token_idx on livekit_config (worker_token);
 

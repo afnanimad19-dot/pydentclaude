@@ -226,11 +226,30 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string) {
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 // Shared secret the deployed worker presents to Pydent's LiveKit endpoints.
-export function workerTokenOk(token: unknown): { ok: boolean; error?: string } {
-  const expected = (process.env.LIVEKIT_WORKER_TOKEN || "").trim();
-  if (!expected) return { ok: false, error: "LIVEKIT_WORKER_TOKEN is not set on the server — add it to the Pydent environment and to the worker's secrets." };
-  if (String(token ?? "") !== expected) return { ok: false, error: "Unauthorized worker." };
-  return { ok: true };
+// Generated per workspace in Settings → LiveKit (livekit_config.worker_token);
+// a global LIVEKIT_WORKER_TOKEN env var also works. Resolves the workspace the
+// token belongs to, so the worker can never read another clinic's agents.
+export async function resolveWorkerToken(token: unknown): Promise<{ ok: boolean; ws?: string; error?: string }> {
+  const t = String(token ?? "").trim();
+  if (!t) return { ok: false, error: "Missing worker token." };
+  const envTok = (process.env.LIVEKIT_WORKER_TOKEN || "").trim();
+  if (envTok && t === envTok) return { ok: true };
+  try {
+    const { data } = await supabase.from("livekit_config").select("workspace_id").eq("worker_token", t).limit(1).maybeSingle();
+    if (data?.workspace_id) return { ok: true, ws: String(data.workspace_id) };
+  } catch { /* column may not be migrated yet */ }
+  return { ok: false, error: "Unauthorized worker — generate the worker token in Pydent → Settings → LiveKit and put it in the worker's LIVEKIT_WORKER_TOKEN." };
+}
+
+export async function workerTokenConfigured(ws: string | null | undefined): Promise<boolean> {
+  if ((process.env.LIVEKIT_WORKER_TOKEN || "").trim()) return true;
+  if (!ws) return false;
+  try {
+    const { data } = await supabase.from("livekit_config").select("worker_token").eq("workspace_id", ws).maybeSingle();
+    return !!data?.worker_token;
+  } catch {
+    return false;
+  }
 }
 
 export function requestOrigin(req: { headers: Headers; nextUrl?: { origin: string } }): string {
