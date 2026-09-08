@@ -159,7 +159,7 @@ async function callXaiChat(body: Record<string, unknown>) {
 
 // OpenRouter first (the agent's configured model), Grok as automatic fallback
 // when OpenRouter refuses for credit/size reasons.
-async function resilientChat(apiKey: string, model: string, body: Record<string, unknown>) {
+export async function resilientChat(apiKey: string, model: string, body: Record<string, unknown>) {
   try {
     return await callOpenRouter(apiKey, model, body);
   } catch (e) {

@@ -68,6 +68,14 @@ import {
 } from "@/lib/db";
 import { History } from "lucide-react";
 import { LIVEKIT_STT, LIVEKIT_LLM, LIVEKIT_TTS, LIVEKIT_DEFAULTS, livekitVoiceLabel, type LivekitAgentSettings } from "@/lib/livekit-models";
+import { normalizeVoiceSettings, validateVoiceSettings } from "@/lib/agent-config";
+import {
+  AgentToolsPanel,
+  AgentAdvancedPanel,
+  PostCallPanel,
+  PrivacyPanel,
+  BackgroundAudioField,
+} from "@/components/dashboard/agent-advanced";
 
 const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4.1-mini"];
 const ANTHROPIC_MODELS = ["anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4", "anthropic/claude-opus-4.1"];
@@ -181,13 +189,6 @@ function LivekitModelPicker({ value, onChange }: { value: LivekitAgentSettings; 
         <select className={inputCls} value={value.llm} onChange={(e) => set({ llm: e.target.value })}>
           {LIVEKIT_LLM.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
           {!LIVEKIT_LLM.some((m) => m.id === value.llm) && value.llm && <option value={value.llm}>{value.llm}</option>}
-        </select>
-      </Field>
-      <Field label="Interruptions (caller talking over the agent)">
-        <select className={inputCls} value={value.interruptions} onChange={(e) => set({ interruptions: e.target.value as LivekitAgentSettings["interruptions"] })}>
-          <option value="adaptive">Adaptive — natural back-and-forth (recommended)</option>
-          <option value="eager">Eager — stop the agent as soon as the caller speaks</option>
-          <option value="off">Off — the agent finishes its sentence</option>
         </select>
       </Field>
       <Field label="Text-to-speech (TTS) model">
@@ -1039,9 +1040,13 @@ export function AgentModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [form, setForm] = useState<Omit<AiAgent, "id" | "vapiAssistantId">>(
-    initial ? { ...initial } : { ...emptyForm(), kind: defaultKind }
-  );
+  // Load through normalizeVoiceSettings so an agent saved before these settings
+  // existed opens with the documented defaults filled in (and a hand-edited or
+  // out-of-range blob is clamped) instead of undefined controls.
+  const [form, setForm] = useState<Omit<AiAgent, "id" | "vapiAssistantId">>(() => {
+    const base = initial ? { ...initial } : { ...emptyForm(), kind: defaultKind };
+    return { ...base, voiceSettings: normalizeVoiceSettings(base.voiceSettings, base) };
+  });
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   // The Vapi assistant id, tracked in state so repeated saves in the same open
@@ -1053,6 +1058,7 @@ export function AgentModal({
   // voices/models/settings this builder shows and how the agent is synced.
   const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("livekit");
   useEffect(() => { fetchVoiceProvider().then(setVoiceProvider); }, []);
+  const [tab, setTab] = useState("agent");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileTexts, setFileTexts] = useState<Record<string, string>>({});
   const [extracting, setExtracting] = useState<string[]>([]);
@@ -1164,6 +1170,13 @@ export function AgentModal({
       setResult({ ok: false, message: "Give your agent a name." });
       return;
     }
+    if (form.kind === "voice") {
+      const problems = validateVoiceSettings(form.voiceSettings);
+      if (problems.length) {
+        setResult({ ok: false, message: problems.join(" ") });
+        return;
+      }
+    }
     setSaving(true);
     const uploadedText = form.kbFiles
       .map((name) => (fileTexts[name] ? `--- ${name} ---\n${fileTexts[name]}` : ""))
@@ -1242,6 +1255,30 @@ export function AgentModal({
   const abilities = ABILITIES_BY_ROLE[form.role] ?? ["canBook", "canReschedule", "canCancel"];
   const abilityLabels = { canBook: "Book appointments", canReschedule: "Reschedule / change times", canCancel: "Cancel appointments" } as const;
 
+  // Which sections this agent actually has. The advanced voice controls are
+  // implemented by the Pydent LiveKit worker, so they only appear for LiveKit
+  // voice agents — Vapi agents keep the settings Vapi supports, unchanged.
+  const isVoice = form.kind === "voice";
+  const isLivekitVoice = isVoice && voiceProvider === "livekit";
+  const TABS = [
+    { id: "agent", label: "Agent details" },
+    ...(isVoice ? [{ id: "conversation", label: "Conversation" }] : []),
+    { id: "prompt", label: "Prompt" },
+    ...(isLivekitVoice ? [{ id: "tools", label: "Tools" }] : []),
+    ...(isVoice ? [{ id: "advanced", label: "Advanced" }] : []),
+    ...(isLivekitVoice ? [{ id: "data", label: "Post-call & privacy" }] : []),
+    { id: "knowledge", label: "Knowledge base" },
+    ...(!isVoice ? [{ id: "channels", label: "Abilities & channels" }] : []),
+  ];
+  // The tab set changes when the engine loads or the agent kind flips, so the
+  // active tab is derived rather than stored — the user is never left staring
+  // at a tab that no longer exists.
+  const activeTab = TABS.some((t) => t.id === tab) ? tab : "agent";
+
+  // Cross-field problems the browser can catch before saving. The same checks
+  // run again server-side, so a stale tab or a scripted PUT can't slip past.
+  const configErrors = isVoice ? validateVoiceSettings(form.voiceSettings) : [];
+
   return (
     <>
     <Modal
@@ -1267,373 +1304,447 @@ export function AgentModal({
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Agent name">
-              <input className={inputCls} placeholder="Nora" value={form.name} onChange={(e) => set("name", e.target.value)} />
-            </Field>
-            <Field label="Agent type">
-              <select
-                className={inputCls}
-                value={form.role}
-                onChange={(e) => {
-                  const role = e.target.value as (typeof ROLES)[number];
-                  const allowed = ABILITIES_BY_ROLE[role];
-                  setForm((f) => ({
-                    ...f,
-                    role,
-                    canBook: allowed.includes("canBook") ? f.canBook : false,
-                    canReschedule: allowed.includes("canReschedule") ? f.canReschedule : false,
-                    canCancel: allowed.includes("canCancel") ? f.canCancel : false,
-                  }));
-                }}
+          <div className="mb-5 flex flex-wrap gap-1 border-b border-ink-200">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={`-mb-px rounded-t-lg border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                  activeTab === t.id
+                    ? "border-brand-600 text-brand-600 dark:text-brand-300"
+                    : "border-transparent text-ink-500 hover:text-ink-800"
+                }`}
               >
-                {ROLES.map((r) => (
-                  <option key={r}>{r}</option>
-                ))}
-              </select>
-            </Field>
-            {(form.kind === "chat" || voiceProvider === "vapi") && (
-              <Field label={form.kind === "chat" ? "AI model" : "Model (Vapi)"}>
-                <select className={inputCls} value={form.model} onChange={(e) => set("model", e.target.value)}>
-                  {form.kind === "chat" ? (
-                    <>
-                      <optgroup label="OpenAI">
-                        {OPENAI_MODELS.map((m) => <option key={m}>{m}</option>)}
-                      </optgroup>
-                      <optgroup label="Anthropic">
-                        {ANTHROPIC_MODELS.map((m) => <option key={m}>{m}</option>)}
-                      </optgroup>
-                    </>
-                  ) : (
-                    VAPI_MODELS.map((m) => <option key={m} value={`openai/${m}`}>{m}</option>)
-                  )}
-                </select>
-              </Field>
-            )}
-            <Field label="Language">
-              <select className={inputCls} value={form.language} onChange={(e) => set("language", e.target.value)}>
-                {LANGUAGES.map((l) => (
-                  <option key={l}>{l}</option>
-                ))}
-              </select>
-            </Field>
-            {form.kind === "voice" && voiceProvider === "livekit" && (
-              <div className="md:col-span-2 rounded-xl border border-ink-100 bg-ink-50/40 p-4">
-                <p className="mb-3 text-xs font-semibold text-ink-700">LiveKit models &amp; voice for this agent</p>
-                <LivekitModelPicker
-                  value={{ ...LIVEKIT_DEFAULTS, ...(form.voiceSettings.livekit ?? {}) }}
-                  onChange={(lk) =>
-                    setForm((f) => ({
-                      ...f,
-                      model: lk.llm,
-                      voice: livekitVoiceLabel(lk),
-                      voiceSettings: { ...f.voiceSettings, livekit: lk },
-                    }))
-                  }
-                />
-              </div>
-            )}
-            {form.kind === "voice" && voiceProvider === "vapi" && (
-              <>
-                <Field label="Voice (ElevenLabs)">
-                  <button
-                    type="button"
-                    onClick={() => setVoiceLibOpen(true)}
-                    className="flex w-full items-center justify-between gap-2 rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-left text-sm text-ink-800 hover:border-brand-400"
-                  >
-                    <span className="truncate">{form.voice || "Choose a voice…"}</span>
-                    <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-brand-600">
-                      <Play className="h-3.5 w-3.5" /> Browse &amp; preview
-                    </span>
-                  </button>
-                </Field>
-                <Field label="Transcriber">
-                  <select
-                    className={inputCls}
-                    value={form.voiceSettings.transcriber}
-                    onChange={(e) => set("voiceSettings", { ...form.voiceSettings, transcriber: e.target.value as "nova-2" | "nova-3" })}
-                  >
-                    <option value="nova-2">Deepgram · Nova-2 (multilingual)</option>
-                    <option value="nova-3">Deepgram · Nova-3 (English)</option>
-                  </select>
-                </Field>
-              </>
-            )}
+                {t.label}
+              </button>
+            ))}
           </div>
 
-          {form.kind === "voice" && (
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              <Field label="Who speaks first?">
+          {configErrors.length > 0 && (
+            <div className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+              <p className="font-semibold">Fix these before saving:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs">
+                {configErrors.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {activeTab === "agent" && (
+            <>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Agent name">
+                <input className={inputCls} placeholder="Nora" value={form.name} onChange={(e) => set("name", e.target.value)} />
+              </Field>
+              <Field label="Agent type">
                 <select
                   className={inputCls}
-                  value={form.firstMessageMode}
-                  onChange={(e) => set("firstMessageMode", e.target.value as typeof form.firstMessageMode)}
+                  value={form.role}
+                  onChange={(e) => {
+                    const role = e.target.value as (typeof ROLES)[number];
+                    const allowed = ABILITIES_BY_ROLE[role];
+                    setForm((f) => ({
+                      ...f,
+                      role,
+                      canBook: allowed.includes("canBook") ? f.canBook : false,
+                      canReschedule: allowed.includes("canReschedule") ? f.canReschedule : false,
+                      canCancel: allowed.includes("canCancel") ? f.canCancel : false,
+                    }));
+                  }}
                 >
-                  <option value="assistant_first">Assistant speaks first</option>
-                  <option value="user_first">Assistant waits for caller</option>
-                  <option value="assistant_first_generated">Assistant speaks first (AI-generated opening)</option>
+                  {ROLES.map((r) => (
+                    <option key={r}>{r}</option>
+                  ))}
                 </select>
               </Field>
-              <Field label="Use this agent for">
-                <select className={inputCls} value={form.purpose} onChange={(e) => set("purpose", e.target.value as typeof form.purpose)}>
-                  <option value="inbound">Inbound calls</option>
-                  <option value="outbound">Outbound calls</option>
-                  <option value="both">Both</option>
+              {(form.kind === "chat" || voiceProvider === "vapi") && (
+                <Field label={form.kind === "chat" ? "AI model" : "Model (Vapi)"}>
+                  <select className={inputCls} value={form.model} onChange={(e) => set("model", e.target.value)}>
+                    {form.kind === "chat" ? (
+                      <>
+                        <optgroup label="OpenAI">
+                          {OPENAI_MODELS.map((m) => <option key={m}>{m}</option>)}
+                        </optgroup>
+                        <optgroup label="Anthropic">
+                          {ANTHROPIC_MODELS.map((m) => <option key={m}>{m}</option>)}
+                        </optgroup>
+                      </>
+                    ) : (
+                      VAPI_MODELS.map((m) => <option key={m} value={`openai/${m}`}>{m}</option>)
+                    )}
+                  </select>
+                </Field>
+              )}
+              <Field label="Language">
+                <select className={inputCls} value={form.language} onChange={(e) => set("language", e.target.value)}>
+                  {LANGUAGES.map((l) => (
+                    <option key={l}>{l}</option>
+                  ))}
                 </select>
               </Field>
-              {form.firstMessageMode !== "user_first" && (
-                <div className="md:col-span-2">
-                  <Field label="First message">
-                    <input
+              {form.kind === "voice" && voiceProvider === "livekit" && (
+                <div className="md:col-span-2 rounded-xl border border-ink-100 bg-ink-50/40 p-4">
+                  <p className="mb-3 text-xs font-semibold text-ink-700">LiveKit models &amp; voice for this agent</p>
+                  <LivekitModelPicker
+                    value={{ ...LIVEKIT_DEFAULTS, ...(form.voiceSettings.livekit ?? {}) }}
+                    onChange={(lk) =>
+                      setForm((f) => ({
+                        ...f,
+                        model: lk.llm,
+                        voice: livekitVoiceLabel(lk),
+                        voiceSettings: { ...f.voiceSettings, livekit: lk },
+                      }))
+                    }
+                  />
+                </div>
+              )}
+              {form.kind === "voice" && voiceProvider === "vapi" && (
+                <>
+                  <Field label="Voice (ElevenLabs)">
+                    <button
+                      type="button"
+                      onClick={() => setVoiceLibOpen(true)}
+                      className="flex w-full items-center justify-between gap-2 rounded-xl border border-ink-200 bg-surface px-3 py-2.5 text-left text-sm text-ink-800 hover:border-brand-400"
+                    >
+                      <span className="truncate">{form.voice || "Choose a voice…"}</span>
+                      <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-brand-600">
+                        <Play className="h-3.5 w-3.5" /> Browse &amp; preview
+                      </span>
+                    </button>
+                  </Field>
+                  <Field label="Transcriber">
+                    <select
                       className={inputCls}
-                      placeholder="Thank you for calling Bright Smile Dental, this is Nora. How can I help?"
-                      value={form.firstMessage}
-                      onChange={(e) => set("firstMessage", e.target.value)}
+                      value={form.voiceSettings.transcriber}
+                      onChange={(e) => set("voiceSettings", { ...form.voiceSettings, transcriber: e.target.value as "nova-2" | "nova-3" })}
+                    >
+                      <option value="nova-2">Deepgram · Nova-2 (multilingual)</option>
+                      <option value="nova-3">Deepgram · Nova-3 (English)</option>
+                    </select>
+                  </Field>
+                </>
+              )}
+            </div>
+
+              {isLivekitVoice && (
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <BackgroundAudioField
+                    value={form.voiceSettings}
+                    onChange={(v) => set("voiceSettings", v)}
+                  />
+                </div>
+              )}
+            <div className="mt-5">
+              <Field label="Status">
+                <select className={inputCls} value={form.status} onChange={(e) => set("status", e.target.value as AiAgent["status"])}>
+                  <option>Draft</option>
+                  <option>Live</option>
+                  <option>Paused</option>
+                </select>
+              </Field>
+            </div>
+            </>
+          )}
+
+          {activeTab === "conversation" && (
+            <>
+            {form.kind === "voice" && (
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <Field label="Who speaks first?">
+                  <select
+                    className={inputCls}
+                    value={form.firstMessageMode}
+                    onChange={(e) => set("firstMessageMode", e.target.value as typeof form.firstMessageMode)}
+                  >
+                    <option value="assistant_first">Assistant speaks first</option>
+                    <option value="user_first">Assistant waits for caller</option>
+                    <option value="assistant_first_generated">Assistant speaks first (AI-generated opening)</option>
+                  </select>
+                </Field>
+                <Field label="Use this agent for">
+                  <select className={inputCls} value={form.purpose} onChange={(e) => set("purpose", e.target.value as typeof form.purpose)}>
+                    <option value="inbound">Inbound calls</option>
+                    <option value="outbound">Outbound calls</option>
+                    <option value="both">Both</option>
+                  </select>
+                </Field>
+                {form.firstMessageMode !== "user_first" && (
+                  <div className="md:col-span-2">
+                    <Field label="First message">
+                      <input
+                        className={inputCls}
+                        placeholder="Thank you for calling Bright Smile Dental, this is Nora. How can I help?"
+                        value={form.firstMessage}
+                        onChange={(e) => set("firstMessage", e.target.value)}
+                      />
+                    </Field>
+                  </div>
+                )}
+              </div>
+            )}
+            </>
+          )}
+
+          {activeTab === "prompt" && (
+            <>
+            {/* Voice agents use the Callab-style Prompt Configuration (Identity /
+                Tasks / Style Guardrails). Chat agents keep the simple Instructions
+                + Behavior boxes, as before. */}
+            {form.kind === "voice" ? (
+              <div className="mt-5 rounded-xl border border-ink-200 p-4">
+                <div className="mb-1 flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-brand-500" />
+                  <p className="text-sm font-semibold text-ink-900">Prompt Configuration</p>
+                </div>
+                <p className="mb-4 text-xs text-ink-400">Describe the AI&apos;s identity, tasks, and style guardrails.</p>
+
+                <div className="space-y-4">
+                  <Field label="Agent Identity — who the agent is, its tone and role">
+                    <textarea
+                      rows={3}
+                      className={inputCls}
+                      placeholder="Sarah is the AI-powered receptionist for Bright Smile Dental. She is the first point of contact for all calls, handling patient inquiries, booking appointments, and providing clinic information. Sarah is warm, professional, and reassuring."
+                      value={form.agentIdentity}
+                      onChange={(e) => set("agentIdentity", e.target.value)}
+                    />
+                  </Field>
+
+                  <Field label="Tasks — the specific goals and actions the agent performs">
+                    <textarea
+                      rows={4}
+                      className={inputCls}
+                      placeholder={
+                        "• Greet the caller and ask how you can help.\n" +
+                        "• Answer questions about services, hours, pricing and insurance from the knowledge base.\n" +
+                        "• When they want to book: confirm the treatment, check real availability, collect name/phone/email, and book.\n" +
+                        "• Reschedule or cancel an existing appointment when asked."
+                      }
+                      value={form.instructions}
+                      onChange={(e) => set("instructions", e.target.value)}
+                    />
+                  </Field>
+
+                  <Field label="Style Guardrails — phrases to use or avoid, and the conversational flow">
+                    <textarea
+                      rows={4}
+                      className={inputCls}
+                      placeholder={
+                        "• Keep replies short — 1-2 sentences. Ask only one question at a time.\n" +
+                        "• Never ask the same question twice — remember what the patient already told you.\n" +
+                        "• Don't repeat the greeting on every message.\n" +
+                        "• Before offering times, check real availability; only offer open slots.\n" +
+                        "• If you don't know something, say you'll check with the team — never make up clinical advice."
+                      }
+                      value={form.behavior}
+                      onChange={(e) => set("behavior", e.target.value)}
                     />
                   </Field>
                 </div>
+              </div>
+            ) : (
+              <>
+                <div className="mt-4">
+                  <Field label="Instructions — role, goal, what to say">
+                    <textarea
+                      rows={4}
+                      className={inputCls}
+                      placeholder="You are Sarah, the receptionist for Bright Smile Dental. Your goal is to answer questions and BOOK appointments. Greet by name, confirm the service they want, check available times, and book. Keep replies to 1-2 short sentences."
+                      value={form.instructions}
+                      onChange={(e) => set("instructions", e.target.value)}
+                    />
+                  </Field>
+                </div>
+
+                <div className="mt-4">
+                  <Field label="Behavior — rules, tone & negative rules (what NOT to do)">
+                    <textarea
+                      rows={4}
+                      className={inputCls}
+                      placeholder={
+                        "• Never ask the same question twice — remember what the patient already told you.\n" +
+                        "• Ask only one question at a time.\n" +
+                        "• Don't repeat the greeting on every message.\n" +
+                        "• Before offering times, check real availability; only offer open slots.\n" +
+                        "• If you don't know something, say you'll check with the team — never make up clinical advice."
+                      }
+                      value={form.behavior}
+                      onChange={(e) => set("behavior", e.target.value)}
+                    />
+                  </Field>
+                  <p className="mt-1.5 text-xs text-ink-400">
+                    Behavior is separate from Instructions: instructions say <em>what</em> the agent does; behavior says <em>how</em> it acts — the rules that stop repeated questions and keep replies natural.
+                  </p>
+                </div>
+              </>
+            )}
+            </>
+          )}
+
+          {activeTab === "tools" && (
+            <AgentToolsPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+          )}
+
+          {activeTab === "advanced" && (
+            <>
+            {form.kind === "voice" && voiceProvider === "vapi" && (
+              <VoiceAdvancedSettings
+                value={form.voiceSettings}
+                onChange={(v) => set("voiceSettings", v)}
+              />
+            )}
+            {form.kind === "voice" && voiceProvider === "livekit" && (
+              <div className="mt-4 space-y-2 rounded-xl border border-ink-100 bg-ink-50/40 p-4 text-xs text-ink-500">
+                <p>
+                  <strong className="font-semibold text-ink-700">LiveKit</strong> — every control below is read by the Pydent worker
+                  at the start of each call, per agent. Nothing to sync and nothing to redeploy: save here and the very next call uses
+                  it. Voice activity detection, turn detection, barge-in and noise reduction are applied to the live audio pipeline;
+                  the check-in and duration limits are enforced by the worker itself.
+                </p>
+                <p>
+                  <strong className="font-semibold text-ink-700">Phone number:</strong> Phone Numbers → Add → <em>LiveKit (SIP)</em> — Pydent
+                  creates the LiveKit trunk + dispatch rule for this agent and shows the SIP address to forward your carrier number
+                  (or the clinic&apos;s Asterisk box) to.
+                </p>
+              </div>
+            )}
+              {isLivekitVoice && (
+                <div className="mt-4">
+                  <AgentAdvancedPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+                </div>
+              )}
+            </>
+          )}
+
+          {activeTab === "data" && (
+            <div className="space-y-4">
+              <PostCallPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+              <PrivacyPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+            </div>
+          )}
+
+          {activeTab === "knowledge" && (
+            <div className="mt-4">
+              <p className="mb-1.5 text-sm font-medium text-ink-700">
+                Knowledge base — upload documents{form.kbFiles.length > 0 ? ` (${form.kbFiles.length})` : ""}
+              </p>
+              <p className="mb-2 text-xs text-ink-400">
+                The agent&apos;s brain: hours, pricing, insurance, FAQs, promos. It answers only from these documents. Upload as many as you need.
+              </p>
+              <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-2.5">
+                <span className="text-xs font-medium text-ink-500">Import from your website:</span>
+                <input
+                  className="min-w-48 flex-1 rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400"
+                  placeholder="https://www.yourclinic.com"
+                  value={websiteUrl}
+                  onChange={(e) => setWebsiteUrl(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={importWebsite}
+                  disabled={importingWeb || !websiteUrl.trim()}
+                  className="shrink-0 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {importingWeb ? "Reading…" : "Fetch site"}
+                </button>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".txt,.md,.csv,.json,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,.tif,.tiff,.gif,.bmp"
+                className="hidden"
+                onChange={(e) => onFiles(e.target.files)}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-ink-300 py-4 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600 disabled:opacity-50 dark:hover:text-brand-300"
+              >
+                <Upload className="h-4 w-4" /> Upload documents (.txt, .md, .csv, .pdf, .docx, or a scanned image — text is read automatically)
+              </button>
+              {extracting.length > 0 && (
+                <p className="mt-2 text-xs text-brand-600">Reading {extracting.join(", ")}…</p>
+              )}
+              {form.kbFiles.length > 0 && (
+                <ul className="mt-2 space-y-1.5">
+                  {form.kbFiles.map((f) => {
+                    const failed = (fileTexts[f] ?? "").startsWith("[Could not read");
+                    const hasText = !failed && !!kbTextFor(f);
+                    return (
+                    <li key={f} className="flex items-center justify-between rounded-lg border border-ink-100 bg-ink-50 px-3 py-2 text-sm text-ink-700">
+                      <span className="flex items-center gap-2">
+                        <FileText className={`h-4 w-4 ${failed ? "text-rose-500" : "text-brand-500"}`} /> {f}
+                        {failed ? (
+                          <span className="text-xs text-rose-500">couldn&apos;t read</span>
+                        ) : fileTexts[f] ? (
+                          <span className="text-xs text-emerald-600">{fileTexts[f].length.toLocaleString()} chars read</span>
+                        ) : null}
+                      </span>
+                      <span className="flex items-center gap-0.5">
+                        {hasText && (
+                          <button onClick={() => downloadKbFile(f)} title="Download the extracted text" className="rounded p-1 text-ink-400 hover:text-brand-600">
+                            <Download className="h-4 w-4" />
+                          </button>
+                        )}
+                        <button onClick={() => removeFile(f)} title="Remove from the knowledge base" className="rounded p-1 text-ink-400 hover:text-rose-500">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </span>
+                    </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
           )}
 
-          {/* Voice agents use the Callab-style Prompt Configuration (Identity /
-              Tasks / Style Guardrails). Chat agents keep the simple Instructions
-              + Behavior boxes, as before. */}
-          {form.kind === "voice" ? (
-            <div className="mt-5 rounded-xl border border-ink-200 p-4">
-              <div className="mb-1 flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-brand-500" />
-                <p className="text-sm font-semibold text-ink-900">Prompt Configuration</p>
-              </div>
-              <p className="mb-4 text-xs text-ink-400">Describe the AI&apos;s identity, tasks, and style guardrails.</p>
-
-              <div className="space-y-4">
-                <Field label="Agent Identity — who the agent is, its tone and role">
-                  <textarea
-                    rows={3}
-                    className={inputCls}
-                    placeholder="Sarah is the AI-powered receptionist for Bright Smile Dental. She is the first point of contact for all calls, handling patient inquiries, booking appointments, and providing clinic information. Sarah is warm, professional, and reassuring."
-                    value={form.agentIdentity}
-                    onChange={(e) => set("agentIdentity", e.target.value)}
-                  />
-                </Field>
-
-                <Field label="Tasks — the specific goals and actions the agent performs">
-                  <textarea
-                    rows={4}
-                    className={inputCls}
-                    placeholder={
-                      "• Greet the caller and ask how you can help.\n" +
-                      "• Answer questions about services, hours, pricing and insurance from the knowledge base.\n" +
-                      "• When they want to book: confirm the treatment, check real availability, collect name/phone/email, and book.\n" +
-                      "• Reschedule or cancel an existing appointment when asked."
-                    }
-                    value={form.instructions}
-                    onChange={(e) => set("instructions", e.target.value)}
-                  />
-                </Field>
-
-                <Field label="Style Guardrails — phrases to use or avoid, and the conversational flow">
-                  <textarea
-                    rows={4}
-                    className={inputCls}
-                    placeholder={
-                      "• Keep replies short — 1-2 sentences. Ask only one question at a time.\n" +
-                      "• Never ask the same question twice — remember what the patient already told you.\n" +
-                      "• Don't repeat the greeting on every message.\n" +
-                      "• Before offering times, check real availability; only offer open slots.\n" +
-                      "• If you don't know something, say you'll check with the team — never make up clinical advice."
-                    }
-                    value={form.behavior}
-                    onChange={(e) => set("behavior", e.target.value)}
-                  />
-                </Field>
-              </div>
-            </div>
-          ) : (
+          {activeTab === "channels" && (
             <>
-              <div className="mt-4">
-                <Field label="Instructions — role, goal, what to say">
-                  <textarea
-                    rows={4}
-                    className={inputCls}
-                    placeholder="You are Sarah, the receptionist for Bright Smile Dental. Your goal is to answer questions and BOOK appointments. Greet by name, confirm the service they want, check available times, and book. Keep replies to 1-2 short sentences."
-                    value={form.instructions}
-                    onChange={(e) => set("instructions", e.target.value)}
-                  />
-                </Field>
-              </div>
-
-              <div className="mt-4">
-                <Field label="Behavior — rules, tone & negative rules (what NOT to do)">
-                  <textarea
-                    rows={4}
-                    className={inputCls}
-                    placeholder={
-                      "• Never ask the same question twice — remember what the patient already told you.\n" +
-                      "• Ask only one question at a time.\n" +
-                      "• Don't repeat the greeting on every message.\n" +
-                      "• Before offering times, check real availability; only offer open slots.\n" +
-                      "• If you don't know something, say you'll check with the team — never make up clinical advice."
-                    }
-                    value={form.behavior}
-                    onChange={(e) => set("behavior", e.target.value)}
-                  />
-                </Field>
-                <p className="mt-1.5 text-xs text-ink-400">
-                  Behavior is separate from Instructions: instructions say <em>what</em> the agent does; behavior says <em>how</em> it acts — the rules that stop repeated questions and keep replies natural.
-                </p>
-              </div>
-            </>
-          )}
-
-          {form.kind === "voice" && voiceProvider === "vapi" && (
-            <VoiceAdvancedSettings
-              value={form.voiceSettings}
-              onChange={(v) => set("voiceSettings", v)}
-            />
-          )}
-          {form.kind === "voice" && voiceProvider === "livekit" && (
-            <div className="mt-4 space-y-2 rounded-xl border border-ink-100 bg-ink-50/40 p-4 text-xs text-ink-500">
-              <p>
-                <strong className="font-semibold text-ink-700">LiveKit</strong> — turn detection, barge-in and noise handling are
-                handled by the Pydent worker on LiveKit using the STT / LLM / TTS models chosen above. The first message below is
-                spoken word-for-word. Max call length and silence timeouts come from the Advanced settings; everything here applies
-                on the very next call — nothing to sync.
-              </p>
-              <p>
-                <strong className="font-semibold text-ink-700">Phone number:</strong> Phone Numbers → Add → <em>LiveKit (SIP)</em> — Pydent
-                creates the LiveKit trunk + dispatch rule for this agent and shows the SIP address to forward your carrier number
-                (or the clinic&apos;s Asterisk box) to.
-              </p>
-            </div>
-          )}
-
-          <div className="mt-4">
-            <p className="mb-1.5 text-sm font-medium text-ink-700">
-              Knowledge base — upload documents{form.kbFiles.length > 0 ? ` (${form.kbFiles.length})` : ""}
-            </p>
-            <p className="mb-2 text-xs text-ink-400">
-              The agent&apos;s brain: hours, pricing, insurance, FAQs, promos. It answers only from these documents. Upload as many as you need.
-            </p>
-            <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-2.5">
-              <span className="text-xs font-medium text-ink-500">Import from your website:</span>
-              <input
-                className="min-w-48 flex-1 rounded-lg border border-ink-200 bg-surface px-2.5 py-1.5 text-sm text-ink-800 outline-none placeholder:text-ink-400 focus:border-brand-400"
-                placeholder="https://www.yourclinic.com"
-                value={websiteUrl}
-                onChange={(e) => setWebsiteUrl(e.target.value)}
-              />
-              <button
-                type="button"
-                onClick={importWebsite}
-                disabled={importingWeb || !websiteUrl.trim()}
-                className="shrink-0 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
-              >
-                {importingWeb ? "Reading…" : "Fetch site"}
-              </button>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".txt,.md,.csv,.json,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,.tif,.tiff,.gif,.bmp"
-              className="hidden"
-              onChange={(e) => onFiles(e.target.files)}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-ink-300 py-4 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600 disabled:opacity-50 dark:hover:text-brand-300"
-            >
-              <Upload className="h-4 w-4" /> Upload documents (.txt, .md, .csv, .pdf, .docx, or a scanned image — text is read automatically)
-            </button>
-            {extracting.length > 0 && (
-              <p className="mt-2 text-xs text-brand-600">Reading {extracting.join(", ")}…</p>
-            )}
-            {form.kbFiles.length > 0 && (
-              <ul className="mt-2 space-y-1.5">
-                {form.kbFiles.map((f) => {
-                  const failed = (fileTexts[f] ?? "").startsWith("[Could not read");
-                  const hasText = !failed && !!kbTextFor(f);
-                  return (
-                  <li key={f} className="flex items-center justify-between rounded-lg border border-ink-100 bg-ink-50 px-3 py-2 text-sm text-ink-700">
-                    <span className="flex items-center gap-2">
-                      <FileText className={`h-4 w-4 ${failed ? "text-rose-500" : "text-brand-500"}`} /> {f}
-                      {failed ? (
-                        <span className="text-xs text-rose-500">couldn&apos;t read</span>
-                      ) : fileTexts[f] ? (
-                        <span className="text-xs text-emerald-600">{fileTexts[f].length.toLocaleString()} chars read</span>
-                      ) : null}
-                    </span>
-                    <span className="flex items-center gap-0.5">
-                      {hasText && (
-                        <button onClick={() => downloadKbFile(f)} title="Download the extracted text" className="rounded p-1 text-ink-400 hover:text-brand-600">
-                          <Download className="h-4 w-4" />
-                        </button>
-                      )}
-                      <button onClick={() => removeFile(f)} title="Remove from the knowledge base" className="rounded p-1 text-ink-400 hover:text-rose-500">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </span>
-                  </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-
-          {form.kind === "chat" && (
-            <>
-              <p className="mb-2 mt-5 text-sm font-medium text-ink-700">Abilities (based on agent type)</p>
-              <div className="flex flex-wrap gap-4">
-                {abilities.map((k) => (
-                  <label key={k} className="flex items-center gap-2 text-sm text-ink-600">
-                    <input
-                      type="checkbox"
-                      checked={form[k]}
-                      onChange={(e) => set(k, e.target.checked)}
-                      className="h-4 w-4 accent-[#7c3aed]"
-                    />
-                    {abilityLabels[k]}
+            {form.kind === "chat" && (
+              <>
+                <p className="mb-2 mt-5 text-sm font-medium text-ink-700">Abilities (based on agent type)</p>
+                <div className="flex flex-wrap gap-4">
+                  {abilities.map((k) => (
+                    <label key={k} className="flex items-center gap-2 text-sm text-ink-600">
+                      <input
+                        type="checkbox"
+                        checked={form[k]}
+                        onChange={(e) => set(k, e.target.checked)}
+                        className="h-4 w-4 accent-[#7c3aed]"
+                      />
+                      {abilityLabels[k]}
+                    </label>
+                  ))}
+                  <label className="flex items-center gap-2 text-sm text-ink-600">
+                    <input type="checkbox" checked readOnly className="h-4 w-4 accent-[#7c3aed]" />
+                    Answer FAQs from the knowledge base
                   </label>
-                ))}
-                <label className="flex items-center gap-2 text-sm text-ink-600">
-                  <input type="checkbox" checked readOnly className="h-4 w-4 accent-[#7c3aed]" />
-                  Answer FAQs from the knowledge base
-                </label>
-              </div>
+                </div>
 
-              <p className="mb-2 mt-5 text-sm font-medium text-ink-700">Channels this agent covers</p>
-              <div className="flex flex-wrap gap-2">
-                {CHAT_CHANNELS.map((c) => {
-                  const activeCh = form.channels.includes(c);
-                  return (
-                    <button
-                      key={c}
-                      onClick={() =>
-                        set("channels", activeCh ? form.channels.filter((x) => x !== c) : [...form.channels, c])
-                      }
-                      className={`rounded-full px-3.5 py-1.5 text-sm font-medium capitalize transition-colors ${
-                        activeCh ? "bg-brand-600 text-white" : "border border-ink-200 text-ink-600 hover:bg-ink-50"
-                      }`}
-                    >
-                      {c}
-                    </button>
-                  );
-                })}
-              </div>
+                <p className="mb-2 mt-5 text-sm font-medium text-ink-700">Channels this agent covers</p>
+                <div className="flex flex-wrap gap-2">
+                  {CHAT_CHANNELS.map((c) => {
+                    const activeCh = form.channels.includes(c);
+                    return (
+                      <button
+                        key={c}
+                        onClick={() =>
+                          set("channels", activeCh ? form.channels.filter((x) => x !== c) : [...form.channels, c])
+                        }
+                        className={`rounded-full px-3.5 py-1.5 text-sm font-medium capitalize transition-colors ${
+                          activeCh ? "bg-brand-600 text-white" : "border border-ink-200 text-ink-600 hover:bg-ink-50"
+                        }`}
+                      >
+                        {c}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
             </>
           )}
-
-          <div className="mt-5">
-            <Field label="Status">
-              <select className={inputCls} value={form.status} onChange={(e) => set("status", e.target.value as AiAgent["status"])}>
-                <option>Draft</option>
-                <option>Live</option>
-                <option>Paused</option>
-              </select>
-            </Field>
-          </div>
 
           <ModalFooter
             onClose={onClose}

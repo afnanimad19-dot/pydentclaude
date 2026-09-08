@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { resolveWorkerToken } from "@/lib/livekit";
+import { runPostCallExtraction } from "@/lib/post-call";
+import type { ExtractionField } from "@/lib/db";
 
 // The deployed LiveKit worker posts here when a call ends: the transcript,
 // caller number, timing and which agent handled it. Stored in voice_calls
@@ -16,9 +18,10 @@ async function upsert(roomKey: string, row: Record<string, any>) {
     existing ? supabase.from("voice_calls").update(r).eq("id", existing.id) : supabase.from("voice_calls").insert({ vapi_call_id: roomKey, ...r });
   let { error } = await write(row);
   // Older DBs: drop columns that may not be migrated yet and retry.
-  if (error && /engine|to_phone|ended_reason|messages|structured_data|campaign_id/.test(error.message)) {
+  if (error && /engine|to_phone|ended_reason|messages|structured_data|campaign_id|latency_metrics|config_version|extracted_data/.test(error.message)) {
     const slim = { ...row };
     delete slim.engine; delete slim.to_phone; delete slim.ended_reason; delete slim.messages; delete slim.structured_data; delete slim.campaign_id;
+    delete slim.latency_metrics; delete slim.config_version;
     ({ error } = await write(slim));
   }
   return error;
@@ -33,10 +36,20 @@ export async function POST(req: NextRequest) {
   const ws = auth.ws ?? String(body.ws ?? "");
   if (!room || !ws) return NextResponse.json({ error: "room and ws are required." }, { status: 400 });
 
-  const messages: any[] = Array.isArray(body.messages) ? body.messages : [];
+  // Privacy (Data Storage Preference) decides what may be persisted:
+  //   store_analyze -> transcript + analysis (summary/extraction)
+  //   store_only    -> transcript, no analysis
+  //   no_store      -> metadata only: no transcript, no messages, no analysis
+  const privacy = ["store_analyze", "store_only", "no_store"].includes(String(body.privacy))
+    ? String(body.privacy)
+    : "store_analyze";
+  const analyze = privacy === "store_analyze" && body.analyze !== false;
+  const storeTranscript = privacy !== "no_store";
+
+  const messages: any[] = storeTranscript && Array.isArray(body.messages) ? body.messages : [];
   const transcript = messages.length
     ? messages.map((m: any) => `${m.role === "assistant" ? (body.agentName || "Agent") : "Caller"}: ${String(m.text ?? m.content ?? "").trim()}`).filter((l: string) => !/:\s*$/.test(l)).join("\n")
-    : String(body.transcript ?? "");
+    : storeTranscript ? String(body.transcript ?? "") : "";
   const started = body.startedAt ? new Date(body.startedAt) : null;
   const ended = body.endedAt ? new Date(body.endedAt) : new Date();
   const duration = started ? Math.max(0, Math.round((ended.getTime() - started.getTime()) / 1000)) : Number(body.durationSec ?? 0) || 0;
@@ -57,8 +70,24 @@ export async function POST(req: NextRequest) {
     outcome: String(body.outcome ?? ""),
     messages: messages.map((m: any, i: number) => ({ role: m.role === "assistant" ? "bot" : "user", message: String(m.text ?? m.content ?? ""), secondsFromStart: Number(m.secondsFromStart ?? i) })),
     engine: "livekit",
-    structured_data: { engine: "livekit", room, source: body.source ?? "", ...(body.structuredData && typeof body.structuredData === "object" ? body.structuredData : {}) },
+    structured_data: { engine: "livekit", room, source: body.source ?? "", privacy, ...(body.structuredData && typeof body.structuredData === "object" ? body.structuredData : {}) },
+    latency_metrics: body.latencyMetrics && typeof body.latencyMetrics === "object" ? body.latencyMetrics : {},
+    config_version: Number(body.configVersion) || 1,
   });
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+
+  // Post-call data extraction. Runs only when the agent's privacy setting
+  // allows analysis, and AFTER the call row is saved — it never delays the
+  // worker's shutdown (the worker does not await the result).
+  const fields = Array.isArray(body.extractionFields) ? (body.extractionFields as ExtractionField[]) : [];
+  if (analyze && fields.length && transcript.trim()) {
+    void runPostCallExtraction({
+      callKey: `lk:${room}`,
+      transcript,
+      fields,
+      agentName: String(body.agentName ?? "the agent"),
+    });
+  }
+
+  return NextResponse.json({ ok: true, extraction: analyze && fields.length ? "queued" : "skipped" });
 }

@@ -1,3 +1,12 @@
-livekit-agents[inference]>=1.4
+# NOTE: livekit-agents has no "[inference]" extra (that was a bad pin and made
+# pip warn on every build) — livekit.agents.inference ships in the base package.
+livekit-agents>=1.8,<2
+
+# VAD sliders (silero) and noise reduction. The worker degrades gracefully to
+# LiveKit's built-in defaults if these are missing, but install them so the
+# Agent Speaking / Noise Reduction settings actually take effect.
+livekit-plugins-silero>=1.2
+livekit-plugins-noise-cancellation>=0.2
+
 aiohttp>=3.9
 python-dotenv>=1.0

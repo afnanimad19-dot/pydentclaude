@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test --experimental-strip-types --import ./tests/alias-loader-register.mjs tests/*.test.mjs"
   },
   "dependencies": {
     "@livekit/protocol": "^1.51.0",

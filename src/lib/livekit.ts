@@ -2,6 +2,7 @@ import { AccessToken, RoomServiceClient, SipClient, WebhookReceiver, RoomConfigu
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { languageRule } from "@/lib/agent-reply";
 import { LIVEKIT_DEFAULTS, livekitSttLanguage, type LivekitAgentSettings } from "@/lib/livekit-models";
+import { normalizeVoiceSettings, AGENT_CONFIG_VERSION } from "@/lib/agent-config";
 
 // LiveKit voice engine — server helpers. Credentials are per workspace
 // (livekit_config, migration 0059) with env fallback, so one Pydent install can
@@ -181,10 +182,23 @@ export async function listCloudAgents(c: LivekitCreds): Promise<CloudAgentInfo[]
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// Everything the worker needs to run one agent, built from the saved row.
+// Everything the worker needs to run ONE call for ONE agent. Resolved per call
+// (never cached globally) from the agent row, normalized + clamped server-side
+// so a corrupt config can't reach the worker, and containing only safe values —
+// no provider keys, no Supabase keys, no LiveKit secret.
 export function livekitAgentConfig(agent: any, ws: string, origin: string) {
-  const vs = (agent.voice_settings ?? {}) as Record<string, any>;
-  const lk: LivekitAgentSettings = { ...LIVEKIT_DEFAULTS, ...(vs.livekit ?? {}) };
+  const vs = normalizeVoiceSettings(agent.voice_settings, {
+    canBook: !!agent.can_book,
+    canReschedule: !!agent.can_reschedule,
+    canCancel: !!agent.can_cancel,
+  });
+  const lk: LivekitAgentSettings = { ...LIVEKIT_DEFAULTS, ...((agent.voice_settings?.livekit ?? {}) as Partial<LivekitAgentSettings>) };
+  const tools = (vs as any).tools as Record<string, boolean>;
+
+  // The three prompt sections stay separate in the database (agent_identity /
+  // instructions / behavior columns). They are compiled into the final system
+  // prompt HERE, at call time, so editing any one of them changes the next call.
+  const canBook = !!tools.book_appointment;
   const instructions = [
     `You are ${agent.name}, an AI voice agent for a dental clinic, on a live phone call.`,
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
@@ -195,30 +209,97 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string) {
     agent.behavior && `STYLE GUARDRAILS:\n${agent.behavior}`,
     agent.knowledge_base && `KNOWLEDGE BASE (answer ONLY from this — the clinic's real doctors, services, prices, hours):\n${String(agent.knowledge_base).slice(0, 48000)}`,
     "VOICE OUTPUT RULES: plain spoken sentences only — no markdown, lists, emojis or URLs; one or two short sentences per turn; say numbers, prices, times and emails the way a person would.",
-    agent.can_book ? "BOOKING: use get_available_slots first and offer real open times. Collect details ONE question at a time (name → email → phone), read back ONE summary, and only after the caller confirms call book_appointment. Never say it's booked unless the tool succeeded." : "You cannot book yourself — take their preferred time and say the team will confirm.",
-    agent.can_reschedule ? "RESCHEDULE: confirm the new time, then call reschedule_appointment." : "",
-    agent.can_cancel ? "CANCEL: confirm with the caller, then call cancel_appointment." : "",
-    "EMAIL: when the caller asks for something by email, call send_email with the address they gave you.",
+    canBook
+      ? "BOOKING: use get_available_slots first and offer real open times. Collect details ONE question at a time (name → email → phone), read back ONE summary, and only after the caller confirms call book_appointment. Never say it's booked unless the tool succeeded."
+      : "You cannot book yourself — take their preferred time and say the team will confirm.",
+    tools.reschedule_appointment ? "RESCHEDULE: confirm the new time, then call reschedule_appointment." : "",
+    tools.cancel_appointment ? "CANCEL: confirm with the caller, then call cancel_appointment." : "",
+    tools.send_email ? "EMAIL: when the caller asks for something by email, call send_email with the address they gave you." : "",
+    tools.transfer_call && vs.transferNumber
+      ? `TRANSFER: if the caller needs a human, say "${vs.transferMessage || "Let me put you through to the team."}" and then call transfer_call.`
+      : "",
   ].filter(Boolean).join("\n\n");
 
   return {
+    configVersion: AGENT_CONFIG_VERSION,
     agentId: String(agent.id),
     agentName: String(agent.name),
     ws,
+    // Compiled prompt + the raw sections (kept separate for debugging//audit).
     instructions,
+    promptSections: {
+      identity: String(agent.agent_identity ?? ""),
+      tasks: String(agent.instructions ?? ""),
+      styleGuardrails: String(agent.behavior ?? ""),
+    },
     greeting: agent.first_message || `Hi, this is ${agent.name} from the dental office. How can I help?`,
     greetFirst: (agent.first_message_mode ?? "assistant_first") !== "user_first",
+
+    // ── Models (LiveKit Inference identifiers) ──
     stt: lk.stt,
     sttLanguage: lk.sttLanguage || livekitSttLanguage(agent.language),
     llm: lk.llm || (/^(openai|google|xai|moonshotai)\//.test(agent.model ?? "") ? agent.model : LIVEKIT_DEFAULTS.llm),
     tts: lk.tts,
     voice: lk.voice,
-    interruptions: lk.interruptions,
-    canBook: !!agent.can_book,
-    canReschedule: !!agent.can_reschedule,
-    canCancel: !!agent.can_cancel,
-    maxCallMinutes: Number(vs.maxCallDuration ?? 60) || 60,
-    maxSilenceSec: Number(vs.maxSilenceDuration ?? 120) || 120,
+
+    // ── Turn taking ──
+    // vad.*                -> silero.VAD.load(...)
+    // endOfSpeechTimeout   -> EndpointingOptions.min_delay
+    // detectionTimeout     -> EndpointingOptions.max_delay
+    // detectionMode        -> EndpointingOptions.mode (smart=dynamic / fixed)
+    // turnDetectionEnabled -> TurnHandlingOptions.turn_detection (TurnDetector | "vad")
+    vad: {
+      minSpeechDuration: vs.minSpeechDuration,
+      minSilenceDuration: vs.minSilenceDuration,
+      activationThreshold: vs.activationThreshold,
+      prefixPaddingDuration: vs.prefixPaddingDuration,
+    },
+    turnDetection: {
+      enabled: vs.turnDetectionEnabled,
+      mode: vs.detectionMode,
+      timeout: vs.detectionTimeout,
+      endOfSpeechTimeout: vs.endOfSpeechTimeout,
+    },
+    // interruptions -> InterruptionOptions(enabled, mode, min_duration,
+    // min_words, resume_false_interruption). The bare string is still sent under
+    // the original key so an older deployed worker keeps working unchanged; the
+    // current worker prefers interruptionOptions when it is present.
+    interruptions: vs.interruptions?.mode ?? lk.interruptions,
+    interruptionOptions: vs.interruptions,
+
+    // noise.level -> noise_cancellation NC() / BVC() / BVCTelephony()
+    noise: { enabled: vs.noiseReductionEnabled, level: vs.reductionLevel },
+
+    // backgroundAudio -> BackgroundAudioPlayer(ambient_sound=BuiltinAudioClip.*)
+    backgroundAudio: (vs as any).backgroundAudio ?? "none",
+
+    // amd -> livekit.agents.voice.amd.AMD(session, detection_options={timeout})
+    amd: { enabled: vs.amdEnabled, multilingual: vs.multilingualAmd, timeout: vs.amdTimeout },
+
+    // Call lifecycle timers (worker-managed asyncio tasks).
+    limits: {
+      silenceBeforeCheck: vs.silenceBeforeCheck,
+      maxCheckAttempts: vs.maxCheckAttempts,
+      maxSilenceDuration: vs.maxSilenceDuration,
+      maxCallMinutes: vs.maxCallDuration,
+    },
+
+    // Only ENABLED tools are registered with the LLM in the worker.
+    tools,
+    transferNumber: vs.transferNumber,
+    transferMessage: vs.transferMessage,
+
+    // Post-call extraction + privacy.
+    extractionFields: vs.extractionFields ?? [],
+    privacy: { dataStorage: vs.dataStorage },
+
+    // Legacy keys kept so an older deployed worker keeps running unchanged.
+    canBook,
+    canReschedule: !!tools.reschedule_appointment,
+    canCancel: !!tools.cancel_appointment,
+    maxCallMinutes: vs.maxCallDuration,
+    maxSilenceSec: vs.maxSilenceDuration,
+
     toolExecUrl: `${origin}/api/agents/tool-exec`,
     callLogUrl: `${origin}/api/livekit/call-log`,
   };

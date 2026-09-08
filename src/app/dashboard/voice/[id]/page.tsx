@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Phone, MessageSquare, Info, CheckCircle2, Download, User } from "lucide-react";
+import { ArrowLeft, Phone, MessageSquare, Info, CheckCircle2, Download, User, ClipboardList, Gauge } from "lucide-react";
 import { Card } from "@/components/ui";
 import { fetchVoiceCall, fetchCampaigns, type VoiceCallRecord, type CallMessage } from "@/lib/db";
 
@@ -104,6 +104,13 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
 
   const ended = call.status === "ended";
   const outcomeEntries = Object.entries(call.structuredData ?? {});
+  // Post-call extraction (the fields configured on the agent) and the worker's
+  // per-turn latency metrics. Both are absent on calls that predate them, and on
+  // agents whose privacy setting forbids analysis — the cards then stay hidden.
+  const extracted = Object.entries(call.extractedData ?? {}).filter(([k]) => !k.startsWith("_"));
+  const extractionError = typeof call.extractedData?._error === "string" ? call.extractedData._error : "";
+  const turns = call.latencyMetrics?.turns ?? [];
+  const averages = call.latencyMetrics?.averages;
 
   return (
     <div className="space-y-6">
@@ -173,6 +180,82 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
           </Card>
         </div>
       </div>
+
+      {(extracted.length > 0 || extractionError) && (
+        <Card className="p-6">
+          <h2 className="mb-4 flex items-center gap-2 font-semibold text-ink-900">
+            <ClipboardList className="h-4 w-4 text-brand-500" /> Extracted Data
+          </h2>
+          {extractionError ? (
+            <p className="text-sm text-amber-600">Extraction did not complete: {extractionError}</p>
+          ) : (
+            <dl className="grid gap-2 md:grid-cols-2">
+              {extracted.map(([k, v]) => (
+                <div key={k} className="flex items-start justify-between gap-3 rounded-lg bg-ink-50 px-3 py-2 text-sm">
+                  <dt className="text-ink-500">{k}</dt>
+                  <dd className={`text-right font-medium ${v === null ? "text-ink-400" : "text-ink-900"}`}>
+                    {v === null ? "not stated" : typeof v === "object" ? JSON.stringify(v) : String(v)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </Card>
+      )}
+
+      {turns.length > 0 && (
+        <Card className="p-6">
+          <h2 className="mb-1 flex items-center gap-2 font-semibold text-ink-900">
+            <Gauge className="h-4 w-4 text-brand-500" /> Response Latency
+          </h2>
+          <p className="mb-4 text-xs text-ink-400">
+            Measured by LiveKit per turn. End-to-end is what the caller feels: from the moment they stop
+            speaking to the moment the agent&apos;s audio starts.
+          </p>
+          {averages && (
+            <div className="mb-4 grid grid-cols-2 gap-4 rounded-xl bg-ink-50 p-4 md:grid-cols-5">
+              {([
+                ["End of utterance", "eou"],
+                ["Speech to text", "stt"],
+                ["LLM first token", "llm_ttft"],
+                ["Voice first byte", "tts_ttfb"],
+                ["End to end", "e2e"],
+              ] as const).map(([label, key]) => (
+                <div key={key}>
+                  <p className="text-xs text-ink-400">{label}</p>
+                  <p className="mt-0.5 text-sm font-semibold text-ink-900">{(averages[key] ?? 0).toFixed(2)}s</p>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[34rem] text-sm">
+              <thead>
+                <tr className="border-b border-ink-100 text-left text-xs uppercase tracking-wide text-ink-400">
+                  <th className="py-2 pr-3 font-semibold">Turn</th>
+                  <th className="py-2 pr-3 font-semibold">EOU</th>
+                  <th className="py-2 pr-3 font-semibold">STT</th>
+                  <th className="py-2 pr-3 font-semibold">LLM TTFT</th>
+                  <th className="py-2 pr-3 font-semibold">TTS TTFB</th>
+                  <th className="py-2 font-semibold">End to end</th>
+                </tr>
+              </thead>
+              <tbody>
+                {turns.map((t) => (
+                  <tr key={t.turn} className="border-b border-ink-50 last:border-0">
+                    <td className="py-1.5 pr-3 text-ink-500">#{t.turn}</td>
+                    <td className="py-1.5 pr-3 text-ink-800">{t.eou.toFixed(2)}s</td>
+                    <td className="py-1.5 pr-3 text-ink-800">{t.stt.toFixed(2)}s</td>
+                    <td className="py-1.5 pr-3 text-ink-800">{t.llm_ttft.toFixed(2)}s</td>
+                    <td className="py-1.5 pr-3 text-ink-800">{t.tts_ttfb.toFixed(2)}s</td>
+                    <td className="py-1.5 font-semibold text-ink-900">{t.e2e.toFixed(2)}s</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* Call Transcript */}
       <Card className="p-6">

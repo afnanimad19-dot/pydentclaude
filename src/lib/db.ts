@@ -452,7 +452,10 @@ export async function createBooking(input: {
 export interface ExtractionField {
   name: string;
   description: string;
-  type: "string" | "number" | "boolean";
+  // "string" is the legacy value; normalizeVoiceSettings() maps it to "text".
+  type: "text" | "number" | "boolean" | "date" | "datetime" | "enum" | "string";
+  /** Allowed values when type is "enum". */
+  options?: string[];
 }
 
 // Advanced Vapi/Callab-style voice-call tuning. Stored as one JSONB blob on the
@@ -492,6 +495,21 @@ export interface VoiceSettings {
   extractionFields: ExtractionField[];
   // LiveKit engine: STT / LLM / TTS models + voice (see lib/livekit-models.ts).
   livekit?: import("@/lib/livekit-models").LivekitAgentSettings;
+  // Ambient background audio played under the call (LiveKit BackgroundAudioPlayer).
+  backgroundAudio?: string;
+  // Per-tool enable/disable. Missing keys fall back to the agent's legacy
+  // can_book / can_reschedule / can_cancel flags (see lib/agent-config.ts).
+  tools?: Record<string, boolean>;
+  // Barge-in. The mode used to live at livekit.interruptions as a bare string;
+  // normalizeVoiceSettings() reads it from there for agents saved before this.
+  interruptions?: {
+    mode: "adaptive" | "eager" | "off";
+    minDuration: number;               // seconds of speech before the agent stops
+    minWords: number;                  // words before the agent stops (adaptive mode)
+    resumeFalseInterruption: boolean;  // resume the sentence if it was a false alarm
+  };
+  /** Schema version of this config blob. */
+  configVersion?: number;
 }
 
 export function defaultVoiceSettings(): VoiceSettings {
@@ -518,6 +536,9 @@ export function defaultVoiceSettings(): VoiceSettings {
     transferNumber: "",
     transferMessage: "",
     extractionFields: [],
+    backgroundAudio: "none",
+    tools: undefined, // resolved from the agent's capability flags on load
+    configVersion: 1,
   };
 }
 
@@ -2088,6 +2109,14 @@ export interface VoiceCallRecord {
   campaignId: string | null;
   messages: CallMessage[];
   structuredData: Record<string, unknown>;
+  /** Post-Call Data Extraction results, keyed by the agent's field names. */
+  extractedData: Record<string, unknown>;
+  /** Per-turn latency observability written by the LiveKit worker. */
+  latencyMetrics: {
+    turns?: { turn: number; eou: number; stt: number; llm_ttft: number; tts_ttfb: number; e2e: number }[];
+    averages?: Record<string, number>;
+    turn_count?: number;
+  };
   engine: "vapi" | "livekit"; // which voice engine took the call (shown as a tag)
 }
 
@@ -2137,6 +2166,8 @@ function rowToVoiceCall(r: any): VoiceCallRecord {
     campaignId: r.campaign_id ?? null,
     messages: normalizeCallMessages(r.messages),
     structuredData: (r.structured_data && typeof r.structured_data === "object") ? r.structured_data : {},
+    extractedData: (r.extracted_data && typeof r.extracted_data === "object") ? r.extracted_data : {},
+    latencyMetrics: (r.latency_metrics && typeof r.latency_metrics === "object") ? r.latency_metrics : {},
     engine: r.engine === "livekit" || r.structured_data?.engine === "livekit" ? "livekit" : "vapi",
   };
 }
