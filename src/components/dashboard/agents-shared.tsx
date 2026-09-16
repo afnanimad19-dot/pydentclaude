@@ -5,7 +5,9 @@
 // and the Agent Hub (channel defaults + phone lines).
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import {
+  ArrowLeft,
   Bot,
   PhoneCall,
   Plus,
@@ -258,10 +260,9 @@ export function AgentsView({
   subtitle: string;
   defaultKind?: "chat" | "voice";
 }) {
+  const router = useRouter();
   const [agents, setAgents] = useState<AiAgent[]>([]);
   const [source, setSource] = useState<DataSource>("demo");
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editAgent, setEditAgent] = useState<AiAgent | null>(null);
   const [testAgent, setTestAgent] = useState<AiAgent | null>(null);
   const [callAgent, setCallAgent] = useState<AiAgent | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -287,17 +288,6 @@ export function AgentsView({
 
   return (
     <>
-      {(modalOpen || editAgent) && (
-        <AgentModal
-          initial={editAgent}
-          defaultKind={defaultKind}
-          onClose={() => {
-            setModalOpen(false);
-            setEditAgent(null);
-          }}
-          onSaved={refresh}
-        />
-      )}
       {testAgent && <TestChatModal agent={testAgent} onClose={() => setTestAgent(null)} />}
       {callAgent && <TestCallModal agent={callAgent} onClose={() => setCallAgent(null)} />}
 
@@ -326,7 +316,7 @@ export function AgentsView({
               </button>
             )}
             <button
-              onClick={() => setModalOpen(true)}
+              onClick={() => router.push(`/dashboard/agents/new?kind=${defaultKind ?? "chat"}`)}
               className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
             >
               <Plus className="h-4 w-4" /> New agent
@@ -425,7 +415,7 @@ export function AgentsView({
                   </button>
                 )}
                 <button
-                  onClick={() => setEditAgent(a)}
+                  onClick={() => router.push(`/dashboard/agents/edit/${a.id}`)}
                   className="flex items-center justify-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-700 hover:bg-ink-50"
                 >
                   <Pencil className="h-4 w-4" /> Edit
@@ -1029,16 +1019,61 @@ function VoiceAdvancedSettings({
 
 // ------------------------------------------------------ create/edit modal
 
+// The agent editor's outer chrome. As a page (the default routes
+// /dashboard/agents/new and /dashboard/agents/edit/[id]) it renders a normal
+// dashboard page with a back link; asPage={false} keeps the old popup for any
+// embedded use.
+function EditorShell({
+  asPage,
+  onClose,
+  title,
+  subtitle,
+  children,
+}: {
+  asPage: boolean;
+  onClose: () => void;
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}) {
+  if (!asPage) {
+    return (
+      <Modal open onClose={onClose} title={title} subtitle={subtitle} wide>
+        {children}
+      </Modal>
+    );
+  }
+  return (
+    <div className="mx-auto max-w-4xl">
+      <button
+        type="button"
+        onClick={onClose}
+        className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-ink-500 hover:text-ink-800"
+      >
+        <ArrowLeft className="h-4 w-4" /> Back to agents
+      </button>
+      <div className="mb-5">
+        <h1 className="text-2xl font-semibold text-ink-900">{title}</h1>
+        <p className="mt-1 text-sm text-ink-500">{subtitle}</p>
+      </div>
+      <div className="rounded-2xl border border-ink-200 bg-surface p-6">{children}</div>
+    </div>
+  );
+}
+
 export function AgentModal({
   initial,
   defaultKind = "chat",
   onClose,
   onSaved,
+  asPage = false,
 }: {
   initial: AiAgent | null;
   defaultKind?: "chat" | "voice";
   onClose: () => void;
   onSaved: () => void;
+  /** Render as a full dashboard page instead of a popup. */
+  asPage?: boolean;
 }) {
   // Load through normalizeVoiceSettings so an agent saved before these settings
   // existed opens with the documented defaults filled in (and a hand-edited or
@@ -1281,15 +1316,27 @@ export function AgentModal({
 
   return (
     <>
-    <Modal
-      open
+    <EditorShell
+      asPage={asPage}
       onClose={onClose}
       title={initial ? `Edit agent — ${initial.name}` : "New AI agent"}
       subtitle="Its knowledge base is its brain — it answers only from what you give it, and hands off when unsure."
-      wide
     >
       {result?.ok ? (
-        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600">{result.message}</div>
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600">
+          {result.message}
+          {asPage && (
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+              >
+                ← Back to agents
+              </button>
+            </div>
+          )}
+        </div>
       ) : (
         <>
           {result && (
@@ -1753,7 +1800,7 @@ export function AgentModal({
           />
         </>
       )}
-    </Modal>
+    </EditorShell>
     {voiceLibOpen && (
       <VoiceLibrary
         selectedId={form.voiceId}

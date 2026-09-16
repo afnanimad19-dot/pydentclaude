@@ -636,6 +636,20 @@ export async function fetchAgents(): Promise<{ agents: AiAgent[]; source: DataSo
   }
 }
 
+/** One agent by id (workspace-scoped) — used by the Edit Agent page. */
+export async function fetchAgent(id: string): Promise<AiAgent | null> {
+  try {
+    const ws = await getWorkspaceId();
+    const { data, error } = await withTimeout(
+      supabase.from("agents").select("*").eq("workspace_id", ws).eq("id", id).maybeSingle()
+    );
+    if (error || !data) return null;
+    return rowToAgent(data);
+  } catch {
+    return null;
+  }
+}
+
 export async function createAgent(input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string; id?: string }> {
   const row = agentToRow(input);
   let { data, error } = await supabase.from("agents").insert(row).select("id").single();
