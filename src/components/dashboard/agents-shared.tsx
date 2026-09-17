@@ -1879,6 +1879,7 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
         body: JSON.stringify({
           model: agent.model,
           ws: (await getWorkspaceId()) ?? undefined,
+          debug: true, // retrieval metadata comes back and is logged to the console
           agentName: agent.name,
           agentIdentity: agent.agentIdentity,
           instructions: agent.instructions,
@@ -1891,6 +1892,9 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "AI request failed");
+      // Admin-only retrieval visibility (browser console; never shown in chat):
+      // which knowledge sources/chunks were supplied for this answer, with scores.
+      if (data.retrieval) console.log("[kb-retrieval]", data.retrieval);
       setMessages((m) => [...m, { role: "assistant", content: data.reply }]);
       if (cid) { appendTeamChatMessage(cid, "assistant", data.reply); refreshChats(); }
     } catch (e) {

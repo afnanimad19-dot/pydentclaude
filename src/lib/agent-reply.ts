@@ -12,6 +12,7 @@
 
 import { AccessToken } from "livekit-server-sdk";
 import { getLivekitCreds, lkConfigured } from "@/lib/livekit";
+import { retrieveKnowledge, queriesFromMessages, type RetrievalResult } from "@/lib/kb-retrieval";
 
 export interface AgentReplyInput {
   model?: string;
@@ -82,8 +83,11 @@ export function returningGreetingNote(opts: {
   );
 }
 
-function buildSystem(input: AgentReplyInput): string {
+function buildSystem(input: AgentReplyInput, retrieval?: RetrievalResult): string {
   const { agentName = "Assistant", agentIdentity = "", instructions = "", behavior = "", knowledgeBase = "", capabilities = {}, patientContext = "", sessionNote = "" } = input;
+  // Retrieval-first knowledge: the top chunks for THIS question come first and
+  // are guaranteed present even when the full KB exceeds the context budget.
+  const knowledge = retrieval ?? retrieveKnowledge(knowledgeBase, queriesFromMessages(input.messages));
   const abilities = [
     capabilities.canBook && "book new appointments",
     capabilities.canReschedule && "reschedule existing appointments",
@@ -100,11 +104,14 @@ function buildSystem(input: AgentReplyInput): string {
     agentIdentity && `AGENT IDENTITY (who you are, your tone and role):\n${agentIdentity}`,
     instructions && `TASKS (what you do — your goals and the actions to perform):\n${instructions}`,
     behavior && `STYLE GUARDRAILS (how you speak — phrases to use/avoid, conversational flow):\n${behavior}`,
-    // Send the knowledge base to the model. gpt-4o-mini has a 128k context, so a
-    // generous cap (~48k chars ≈ 12k tokens) keeps a clinic's full KB — uploaded
-    // doctor lists, price sheets, service docs — in scope rather than truncated
-    // away (a small doc added after a big website import used to fall past 12k).
-    knowledgeBase && `KNOWLEDGE BASE (answer ONLY from this; it contains the clinic's real facts — doctors, services, prices, hours. Read all of it. If the answer genuinely isn't here, say you'll check with the team):\n${knowledgeBase.slice(0, 48000)}`,
+    // The knowledge section: relevant chunks first (retrieved for the current
+    // question), then as much of the full KB as fits — see lib/kb-retrieval.ts.
+    knowledge.text &&
+      `CLINIC KNOWLEDGE (the ONLY approved source for clinic facts — doctors, services, prices, hours, credentials):\n${knowledge.text}`,
+    knowledge.text &&
+      "GROUNDING — read carefully: answer clinic/doctor questions ONLY from the CLINIC KNOWLEDGE above. " +
+        "If a specific fact — a doctor's nationality, university, degree, qualification, years of experience, a price, or availability — is NOT stated there, say you don't have that detail on hand and offer to check with the team or connect them; NEVER guess it, and never use your general training knowledge for clinic-specific facts. " +
+        "Do not confuse a doctor's languages or place of study with their nationality — nationality is only known if the knowledge states it outright.",
     abilities && `You are allowed to: ${abilities}.`,
     capabilities.canBook
       ? "BOOKING — read carefully: You can ONLY book by calling the book_appointment tool. Saying 'booked' in words does NOT book anything. " +
@@ -269,28 +276,55 @@ export async function resilientChat(
   }
 }
 
-export async function generateAgentReply(input: AgentReplyInput): Promise<{ reply?: string; error?: string; status: number }> {
+/** Metadata about what knowledge was retrieved for a request (debug/logging only). */
+export interface RetrievalMeta {
+  mode: RetrievalResult["mode"];
+  totalKbChars: number;
+  contextChars: number;
+  chunks: RetrievalResult["chunks"];
+}
+
+function runRetrieval(input: AgentReplyInput): RetrievalResult {
+  const r = retrieveKnowledge(input.knowledgeBase ?? "", queriesFromMessages(input.messages));
+  if (r.mode === "retrieved") {
+    // Safe observability: sources + scores only, never knowledge or message content.
+    console.log(
+      `[kb-retrieval] agent=${input.agentName ?? "-"} mode=${r.mode} kb_chars=${r.totalKbChars} context_chars=${r.contextChars} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 5).join(", ") || "none"}`
+    );
+  }
+  return r;
+}
+
+export function retrievalMeta(r: RetrievalResult): RetrievalMeta {
+  return { mode: r.mode, totalKbChars: r.totalKbChars, contextChars: r.contextChars, chunks: r.chunks };
+}
+
+export async function generateAgentReply(
+  input: AgentReplyInput
+): Promise<{ reply?: string; error?: string; status: number; retrieval?: RetrievalMeta }> {
   const model = input.model ?? "openai/gpt-4o-mini";
   const apiKey = process.env.OPENROUTER_API_KEY ?? "";
   // LiveKit Inference authenticates with the LiveKit credentials — the
   // OpenRouter key is only required for OpenRouter-routed models.
   if (!apiKey && !isLivekitModel(model)) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
   const opts = { ws: input.ws, agentName: input.agentName };
+  const retrieval = runRetrieval(input);
   try {
     const data = await resilientChat(apiKey, model, {
-      messages: [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-20)],
+      messages: [{ role: "system", content: buildSystem(input, retrieval) }, ...input.messages.slice(-20)],
     }, opts);
-    return { reply: data.choices?.[0]?.message?.content ?? "", status: 200 };
+    return { reply: data.choices?.[0]?.message?.content ?? "", status: 200, retrieval: retrievalMeta(retrieval) };
   } catch (e) {
-    // Last resort: shrink the knowledge base so the prompt fits the provider's
-    // remaining allowance, and try once more — on the SAME provider.
+    // Last resort: shrink the knowledge section so the prompt fits the
+    // provider's remaining allowance and try once more on the SAME provider —
+    // now keeping the RELEVANT chunks instead of blindly keeping the first 6k.
     try {
-      const slim = { ...input, knowledgeBase: (input.knowledgeBase ?? "").slice(0, 6000) };
-      const slimBody = { messages: [{ role: "system", content: buildSystem(slim) }, ...input.messages.slice(-12)] };
+      const slimR = retrieveKnowledge(input.knowledgeBase ?? "", queriesFromMessages(input.messages), { budget: 6000, relevantBudget: 6000, topK: 4 });
+      const slimBody = { messages: [{ role: "system", content: buildSystem(input, slimR) }, ...input.messages.slice(-12)] };
       const data = isLivekitModel(model)
         ? await callLivekitChat(model, slimBody, input.ws)
         : await callOpenRouter(apiKey, model, slimBody);
-      return { reply: data.choices?.[0]?.message?.content ?? "", status: 200 };
+      return { reply: data.choices?.[0]?.message?.content ?? "", status: 200, retrieval: retrievalMeta(slimR) };
     } catch {
       return { error: e instanceof Error ? e.message : "AI request failed", status: 502 };
     }
@@ -385,20 +419,21 @@ function toolsFor(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?
 export async function generateAgentReplyWithTools(
   input: AgentReplyInput,
   executeTool: (name: string, args: any) => Promise<string>
-): Promise<{ reply?: string; error?: string; status: number }> {
+): Promise<{ reply?: string; error?: string; status: number; retrieval?: RetrievalMeta }> {
   const model = input.model ?? "openai/gpt-4o-mini";
   const apiKey = process.env.OPENROUTER_API_KEY ?? "";
   if (!apiKey && !isLivekitModel(model)) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
   const tools = toolsFor(input.capabilities ?? {});
   if (tools.length === 0) return generateAgentReply(input);
   const opts = { ws: input.ws, agentName: input.agentName };
+  const retrieval = runRetrieval(input);
 
-  const messages: any[] = [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-20)];
+  const messages: any[] = [{ role: "system", content: buildSystem(input, retrieval) }, ...input.messages.slice(-20)];
   try {
     for (let round = 0; round < 4; round++) {
       const data = await resilientChat(apiKey, model, { messages, tools, tool_choice: "auto" }, opts);
       const msg = data.choices?.[0]?.message;
-      if (!msg?.tool_calls?.length) return { reply: msg?.content ?? "", status: 200 };
+      if (!msg?.tool_calls?.length) return { reply: msg?.content ?? "", status: 200, retrieval: retrievalMeta(retrieval) };
       messages.push(msg);
       for (const tc of msg.tool_calls) {
         let result: string;
@@ -411,7 +446,7 @@ export async function generateAgentReplyWithTools(
       }
     }
     const final = await resilientChat(apiKey, model, { messages }, opts);
-    return { reply: final.choices?.[0]?.message?.content ?? "", status: 200 };
+    return { reply: final.choices?.[0]?.message?.content ?? "", status: 200, retrieval: retrievalMeta(retrieval) };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI request failed", status: 502 };
   }

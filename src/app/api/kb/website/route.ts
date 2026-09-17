@@ -60,6 +60,123 @@ function htmlToText(html: string): string {
     .trim();
 }
 
+// ── Bounded same-domain crawl ────────────────────────────────────────────────
+// The old importer stored ONLY the homepage, so facts living on subpages
+// (doctor profiles, treatment pages) were never in the knowledge base at all.
+// This crawl keeps it useful and polite:
+//   * discovery via sitemap.xml when present (WordPress sitemap indexes
+//     included), else same-domain links found on the homepage;
+//   * clinic-relevant pages first (team/doctors, services/treatments, sleep,
+//     about, contact, FAQ, prices), hard cap MAX_PAGES;
+//   * admin/login/feed/media/parameter URLs excluded;
+//   * every page stored under a "--- Website page: <url> ---" marker so a
+//     retrieved fact traces back to its page;
+//   * nav/footer boilerplate that repeats on most pages is stripped once.
+const MAX_PAGES = 30;
+const PAGE_TIMEOUT = 12_000;
+const EXCLUDE = /(wp-admin|wp-login|wp-json|\/login|\/cart|\/checkout|\/feed|\/tag\/|\/category\/|\/author\/|\/search|\/wp-content\/|attachment|sample-page|privacy|terms|\.(jpe?g|png|gif|webp|svg|pdf|css|js|xml|ico|mp4|zip)(\?|$)|[?#])/i;
+
+// What a clinic chatbot actually needs, most valuable first. Doctor/team and
+// service/treatment pages beat blog posts — a slug like
+// "sleep-apnea-and-diabetes" is an article, not the clinic's sleep-apnea page.
+function pageScore(u: URL): number {
+  const segs = u.pathname.toLowerCase().split("/").filter(Boolean);
+  // Segment-anchored, not substring: a blog slug like
+  // "can-a-dentist-diagnose-sleep-apnea" must NOT match the team tier.
+  const hasSeg = (...names: string[]) => segs.some((x) => names.includes(x));
+  if (hasSeg("our-team", "team", "doctors", "doctor", "dentists", "staff") || segs.some((x) => x.startsWith("dr-"))) return 5;
+  if (hasSeg("our-services", "services", "service", "treatments", "treatment", "ortho-center")) return 4;
+  if (hasSeg("about", "about-us", "contact", "contact-us", "location", "locations", "faq", "faqs", "pricing", "prices", "fees", "insurance", "sleep-apnea", "hours", "opening-hours")) return 3;
+  // Root-level long-slug pages are almost always blog posts — last.
+  if (segs.length === 1 && (segs[0].match(/-/g)?.length ?? 0) >= 3) return 0;
+  return 1;
+}
+
+async function fetchText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "PydentBot/1.0 (+knowledge-import)" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(PAGE_TIMEOUT),
+    });
+    return res.ok ? await res.text() : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameSite(url: string, origin: URL): boolean {
+  try {
+    const u = new URL(url, origin);
+    return u.host.replace(/^www\./, "") === origin.host.replace(/^www\./, "");
+  } catch {
+    return false;
+  }
+}
+
+/** Page URLs from sitemap.xml (one level of sitemap-index supported). */
+async function urlsFromSitemap(origin: URL): Promise<string[]> {
+  const xml = await fetchText(new URL("/sitemap.xml", origin).href);
+  if (!xml) return [];
+  const locs = [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1]);
+  if (!locs.length) return [];
+  // Sitemap index → read the child sitemaps. page-sitemap (real site pages)
+  // first; post-sitemap (blog articles) last so pages win the candidate order.
+  if (/<sitemapindex/i.test(xml)) {
+    const rank = (l: string) => (/page/i.test(l) ? 0 : /post/i.test(l) ? 2 : 1);
+    const children = locs.filter((l) => sameSite(l, origin)).sort((a, b) => rank(a) - rank(b)).slice(0, 4);
+    const all: string[] = [];
+    for (const c of children) {
+      const child = await fetchText(c);
+      if (child) all.push(...[...child.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1]));
+    }
+    return all;
+  }
+  return locs;
+}
+
+/** Same-domain <a href> targets found in a page's HTML. */
+function urlsFromLinks(html: string, origin: URL): string[] {
+  return [...html.matchAll(/href=["']([^"'#]+)["']/gi)]
+    .map((m) => { try { return new URL(m[1], origin).href; } catch { return ""; } })
+    .filter(Boolean);
+}
+
+/** Pick the pages worth importing: scored by clinic value, capped, deduped. */
+function selectPages(candidates: string[], origin: URL): string[] {
+  const seen = new Set<string>([origin.href.replace(/\/$/, "")]);
+  const scored: { url: string; score: number; order: number }[] = [];
+  for (const raw of candidates) {
+    if (!sameSite(raw, origin) || EXCLUDE.test(raw)) continue;
+    const norm = raw.replace(/\/$/, "");
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    try {
+      scored.push({ url: raw, score: pageScore(new URL(raw, origin)), order: scored.length });
+    } catch { /* unparsable href */ }
+  }
+  return scored
+    .sort((a, b) => b.score - a.score || a.order - b.order)
+    .slice(0, MAX_PAGES)
+    .map((x) => x.url);
+}
+
+/** Drop nav/footer lines that repeat on most pages (menu spam in every chunk). */
+function stripBoilerplate(pages: { url: string; text: string }[]): { url: string; text: string }[] {
+  if (pages.length < 3) return pages;
+  const lineCount = new Map<string, number>();
+  for (const p of pages) {
+    for (const line of new Set(p.text.split("\n").map((l) => l.trim()).filter((l) => l.length > 2))) {
+      lineCount.set(line, (lineCount.get(line) ?? 0) + 1);
+    }
+  }
+  const threshold = Math.max(3, Math.ceil(pages.length * 0.6));
+  return pages.map((p) => ({
+    url: p.url,
+    text: p.text.split("\n").filter((l) => (lineCount.get(l.trim()) ?? 0) < threshold).join("\n").replace(/\n{3,}/g, "\n\n").trim(),
+  }));
+}
+
 export async function POST(req: NextRequest) {
   const { url, ws } = await req.json().catch(() => ({}));
   if (!url || typeof url !== "string") {
@@ -85,18 +202,32 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const res = await fetch(target, {
-      headers: { "User-Agent": "PydentBot/1.0 (+knowledge-import)" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (res.ok) {
-      const html = await res.text();
-      const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const origin = new URL(target);
+    const homeHtml = await fetchText(target);
+    if (homeHtml) {
+      const titleMatch = homeHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
       const title = titleMatch ? htmlToText(titleMatch[1]).slice(0, 200) : target;
-      const text = htmlToText(html);
-      if (text.length >= 40) {
-        return NextResponse.json({ ok: true, title, text: text.slice(0, 200_000) });
+      const homeText = htmlToText(homeHtml);
+      if (homeText.length >= 40) {
+        // Discover internal pages: sitemap first, homepage links as fallback.
+        let candidates = await urlsFromSitemap(origin);
+        if (!candidates.length) candidates = urlsFromLinks(homeHtml, origin);
+        const pages: { url: string; text: string }[] = [{ url: target, text: homeText }];
+        const picked = selectPages(candidates, origin);
+        for (let i = 0; i < picked.length; i += 6) {
+          const batch = await Promise.all(
+            picked.slice(i, i + 6).map(async (pageUrl) => {
+              const html = await fetchText(pageUrl);
+              return html ? { url: pageUrl, text: htmlToText(html) } : null;
+            })
+          );
+          for (const pg of batch) if (pg && pg.text.length >= 200) pages.push(pg);
+        }
+        const cleaned = stripBoilerplate(pages);
+        // Provenance markers let retrieval report WHICH page a fact came from.
+        let combined = cleaned.map((p) => `--- Website page: ${p.url} ---\n${p.text}`).join("\n\n");
+        combined = combined.slice(0, 200_000);
+        return NextResponse.json({ ok: true, title, text: combined, pages: cleaned.map((p) => p.url) });
       }
     }
     // Thin or blocked page (usually a JavaScript-rendered site) → let the
@@ -104,8 +235,8 @@ export async function POST(req: NextRequest) {
     const rendered = await fetchViaEngine(target, ws ?? null);
     if (rendered) return NextResponse.json({ ok: true, title: target, text: rendered.slice(0, 200_000) });
     return NextResponse.json(
-      { error: res.ok ? "The page had little readable text (it may be JavaScript-rendered, and the marketing engine couldn't read it either)." : `Could not load the page (${res.status}).` },
-      { status: res.ok ? 422 : 502 }
+      { error: homeHtml ? "The page had little readable text (it may be JavaScript-rendered, and the marketing engine couldn't read it either)." : "Could not load the page." },
+      { status: homeHtml ? 422 : 502 }
     );
   } catch (e) {
     // Network failure on the direct fetch — the engine may still reach it.
