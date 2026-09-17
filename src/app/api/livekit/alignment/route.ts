@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { getLivekitCreds, lkConfigured, livekitAgentConfig, listCloudAgents, workerTokenConfigured, requestOrigin } from "@/lib/livekit";
+import { getLivekitCreds, lkConfigured, livekitAgentConfig, listCloudAgents, workerTokenConfigured, requestOrigin, boundLivekitAgent } from "@/lib/livekit";
 import { splitSources } from "@/lib/kb-retrieval";
 import { AGENT_TOOLS } from "@/lib/agent-config";
 
@@ -29,14 +29,31 @@ export async function GET(req: NextRequest) {
   const cfg: any = livekitAgentConfig(agent, ws, requestOrigin(req));
 
   const creds = await getLivekitCreds(ws);
-  let workerDeployed: { agentName: string; status: string } | { error: string } | null = null;
+  // Which LiveKit agent THIS Pydent agent actually dispatches to — the Pydent
+  // worker, or a console/Builder agent it is explicitly bound to. Several
+  // LiveKit agents can be deployed side by side (e.g. a Builder agent serving
+  // production SIP and the Pydent worker serving test calls), so the check is
+  // against the agent's real binding, never an assumption that only the
+  // Pydent worker exists.
+  const binding = boundLivekitAgent(agent, creds);
+  let dispatchTargetDeployed: { agentName: string; status: string } | { error: string } | null = null;
+  let pydentWorkerDeployed: { agentName: string; status: string } | { error: string } | null = null;
   if (lkConfigured(creds)) {
     try {
       const agents = await listCloudAgents(creds);
-      const hit = agents.find((a) => a.agentName === creds.agentName);
-      workerDeployed = hit ? { agentName: hit.agentName, status: hit.status } : { error: `No deployed agent named "${creds.agentName}" on the LiveKit project.` };
+      const find = (name: string) => agents.find((a) => a.agentName === name);
+      const boundHit = find(binding.name);
+      dispatchTargetDeployed = boundHit
+        ? { agentName: boundHit.agentName, status: boundHit.status }
+        : { error: `No deployed agent named "${binding.name}" on the LiveKit project.` };
+      const workerHit = find(creds.agentName);
+      pydentWorkerDeployed = workerHit
+        ? { agentName: workerHit.agentName, status: workerHit.status }
+        : { error: `Pydent worker "${creds.agentName}" is not deployed on the LiveKit project.` };
     } catch (e) {
-      workerDeployed = { error: e instanceof Error ? e.message.slice(0, 160) : "Could not list deployed agents." };
+      const err = { error: e instanceof Error ? e.message.slice(0, 160) : "Could not list deployed agents." };
+      dispatchTargetDeployed = err;
+      pydentWorkerDeployed = err;
     }
   }
 
@@ -52,8 +69,12 @@ export async function GET(req: NextRequest) {
     livekit: {
       configured: lkConfigured(creds),
       credentialSource: creds.source, // "workspace" | "env" | "none"
+      // The LiveKit agent this Pydent agent dispatches to on a test call.
+      // external=true means a console/Builder agent, not the Pydent worker —
+      // the advanced settings/tools/KB below then do NOT apply to its calls.
+      dispatch: { agentName: binding.name, external: binding.external, deployed: dispatchTargetDeployed },
       workerAgentName: creds.agentName,
-      workerDeployed,
+      workerDeployed: pydentWorkerDeployed,
       workerTokenConfigured: await workerTokenConfigured(ws),
     },
     models: { stt: cfg.stt, sttLanguage: cfg.sttLanguage || "auto", llm: cfg.llm, tts: cfg.tts, voice: cfg.voice },
