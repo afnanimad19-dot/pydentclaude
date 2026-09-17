@@ -110,13 +110,33 @@ async def fetch_agent_config(meta: dict[str, Any]) -> dict[str, Any]:
     return data["config"]
 
 
+# Per-call record of tool invocations (name, latency, ok), included in the call
+# log so Call Logs shows what the agent actually did. A ContextVar keeps the
+# list per job — one worker process can serve several calls concurrently, and
+# their tool records must never interleave.
+import contextvars
+
+_tool_calls_var: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
+    "pydent_tool_calls", default=None
+)
+
+
 async def run_tool(agent_id: str, name: str, args: dict[str, Any]) -> str:
+    started = time.monotonic()
+    ok = True
     try:
         data = await pydent_post("/api/agents/tool-exec", {"agentId": agent_id, "name": name, "args": args})
         return str(data.get("result") or data.get("error") or "Tool failed.")
     except Exception as e:  # never crash the call over a tool
+        ok = False
         logger.warning("tool %s failed: %s", name, e)
         return f"Error: {e}"
+    finally:
+        ms = round((time.monotonic() - started) * 1000)
+        calls = _tool_calls_var.get()
+        if calls is not None:
+            calls.append({"name": name, "ms": ms, "ok": ok})
+        logger.info("TOOL_CALL name=%s ok=%s ms=%s", name, ok, ms)
 
 
 # ── Tools (only the ones enabled for this agent are registered) ──────────────
@@ -138,6 +158,24 @@ def build_tools(cfg: dict[str, Any], on_end_call) -> list[Any]:
             return "Call ended."
 
         tools.append(end_call)
+
+    # Always available: per-turn knowledge retrieval. The initial prompt holds at
+    # most ~48k chars of knowledge; this tool searches the WHOLE knowledge base
+    # (documents + crawled website) server-side with the same retrieval code the
+    # chat agents use, so no fact is out of reach and follow-ups can carry the
+    # entity ("where did she study" -> query includes the doctor's name).
+    @function_tool(
+        name="search_knowledge",
+        description=(
+            "Search the clinic's full knowledge base (documents and website) for specific facts you cannot "
+            "see in your prompt: doctor profiles, education, expertise, services, prices, policies. "
+            "Include names and context in the query, e.g. 'Dr. Anmol Batria education university'."
+        ),
+    )
+    async def search_knowledge(query: str, context: str = "") -> str:
+        return await run_tool(agent_id, "search_knowledge", {"query": query, "context": context})
+
+    tools.append(search_knowledge)
 
     if enabled.get("get_available_slots"):
 
@@ -558,6 +596,8 @@ async def entrypoint(ctx: JobContext):
     ctx.log_context_fields = {"room": ctx.room.name, "agent": meta.get("pydentAgentId")}
 
     # Configuration is resolved PER CALL for THIS agent — never cached globally.
+    tool_calls: list[dict[str, Any]] = []
+    _tool_calls_var.set(tool_calls)
     cfg = await fetch_agent_config(meta)
     logger.info(
         "call config: %s | stt=%s llm=%s tts=%s:%s | turn=%s/%s interruptions=%s noise=%s bg=%s",
@@ -664,6 +704,7 @@ async def entrypoint(ctx: JobContext):
                     "endedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "messages": lines,
                     "latencyMetrics": tracker.summary(),
+                    "structuredData": {"toolCalls": list(tool_calls)},
                     "configVersion": cfg.get("configVersion", 1),
                     # Pydent runs the configured extraction when analysis is allowed.
                     "analyze": analyze,
@@ -703,7 +744,10 @@ async def entrypoint(ctx: JobContext):
     # and a machine is detected we hang up rather than talk to voicemail; when
     # disabled nothing runs at all.
     amd_cfg = cfg.get("amd") or {}
-    if amd_cfg.get("enabled"):
+    is_outbound = "_out_" in ctx.room.name
+    if amd_cfg.get("enabled") and not is_outbound:
+        logger.info("AMD enabled but this is an inbound call — not started")
+    if amd_cfg.get("enabled") and is_outbound:
         try:
             from livekit.agents.voice.amd import AMD  # imported lazily
 

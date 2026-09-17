@@ -208,6 +208,12 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string) {
     agent.instructions && `TASKS:\n${agent.instructions}`,
     agent.behavior && `STYLE GUARDRAILS:\n${agent.behavior}`,
     agent.knowledge_base && `KNOWLEDGE BASE (answer ONLY from this — the clinic's real doctors, services, prices, hours):\n${String(agent.knowledge_base).slice(0, 48000)}`,
+    agent.knowledge_base &&
+      "KNOWLEDGE GROUNDING RULES: the knowledge above may be truncated — for ANY specific clinic fact you cannot see in it (a doctor's education, expertise, experience, a service detail, a price), call the search_knowledge tool with a descriptive query (include the doctor's full name for follow-ups like 'where did she study'). " +
+        "If the fact is not in the knowledge or the search result, say you don't have that detail on hand and offer to check with the team — NEVER guess. Never invent a doctor's nationality, university, qualifications, years of experience, prices, insurance coverage or availability; a doctor's languages or place of study are NOT their nationality.",
+    (agent.first_message_mode ?? "assistant_first") !== "user_first"
+      ? "OPENING: your configured opening line is spoken automatically when the call starts — do NOT introduce yourself again or repeat a greeting in your first reply; answer the caller directly."
+      : "OPENING: the caller speaks first — wait for them, then greet briefly once and help.",
     "VOICE OUTPUT RULES: plain spoken sentences only — no markdown, lists, emojis or URLs; one or two short sentences per turn; say numbers, prices, times and emails the way a person would.",
     canBook
       ? "BOOKING: use get_available_slots first and offer real open times. Collect details ONE question at a time (name → email → phone), read back ONE summary, and only after the caller confirms call book_appointment. Never say it's booked unless the tool succeeded."

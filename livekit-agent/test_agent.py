@@ -67,7 +67,10 @@ async def _noop(_reason: str) -> None:
 class ToolGating(unittest.TestCase):
     def test_only_enabled_tools_are_created(self):
         cfg = base_cfg(tools={"end_call": True, "get_available_slots": True, "book_appointment": True, "send_email": True})
-        self.assertEqual(tool_names(A.build_tools(cfg, _noop)), ["book_appointment", "end_call", "get_available_slots", "send_email"])
+        self.assertEqual(
+            tool_names(A.build_tools(cfg, _noop)),
+            ["book_appointment", "end_call", "get_available_slots", "search_knowledge", "send_email"],
+        )
 
     def test_a_disabled_tool_is_absent_from_the_llm_schema(self):
         cfg = base_cfg(tools={"end_call": True, "get_available_slots": True, "book_appointment": False})
@@ -77,6 +80,12 @@ class ToolGating(unittest.TestCase):
 
     def test_end_call_is_always_registered(self):
         self.assertIn("end_call", tool_names(A.build_tools(base_cfg(tools={}), _noop)))
+
+    def test_search_knowledge_is_always_registered(self):
+        # Retrieval is the mechanism that keeps large KBs reachable — it cannot
+        # be switched off, exactly like end_call.
+        for tools in ({}, {"end_call": True}, {"book_appointment": True}):
+            self.assertIn("search_knowledge", tool_names(A.build_tools(base_cfg(tools=tools), _noop)))
 
     def test_transfer_needs_a_number(self):
         no_num = base_cfg(tools={"end_call": True, "transfer_call": True}, transferNumber="")

@@ -1699,6 +1699,7 @@ export function AgentModal({
               </p>
               <p className="mb-2 text-xs text-ink-400">
                 The agent&apos;s brain: hours, pricing, insurance, FAQs, promos. It answers only from these documents. Upload as many as you need.
+                {isLivekitVoice && " On calls, the agent searches these sources live (documents and imported website pages) instead of loading the entire knowledge base into every prompt — every source stays reachable however large the knowledge base grows."}
               </p>
               <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-2.5">
                 <span className="text-xs font-medium text-ink-500">Import from your website:</span>
