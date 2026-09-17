@@ -11,11 +11,11 @@ export default function PrivacyPage() {
     <LegalShell title="Privacy Policy" subtitle={`How ${LEGAL_COMPANY} collects, uses, protects and deletes data — including data accessed through Meta and Google.`}>
       <Section heading="1. Who we are">
         <P>
-          {LEGAL_COMPANY} (&quot;{LEGAL_COMPANY}&quot;, &quot;we&quot;, &quot;us&quot;) provides a workspace for dental
+          {LEGAL_COMPANY}{" "}(&quot;{LEGAL_COMPANY}&quot;, &quot;we&quot;, &quot;us&quot;) provides a workspace for dental
           clinics to manage patient conversations, appointments, marketing and clinic
           operations across voice, WhatsApp, SMS, email and social channels. This policy
           explains what data we handle and why. If you are a patient of a clinic that uses
-          {" "}{LEGAL_COMPANY}, the clinic is the controller of your data and {LEGAL_COMPANY} processes
+          {" "}{LEGAL_COMPANY}, the clinic is the controller of your data and {LEGAL_COMPANY}{" "}processes
           it on the clinic&apos;s behalf.
         </P>
       </Section>
@@ -123,7 +123,7 @@ export default function PrivacyPage() {
 
       <Section heading="9. Children">
         <P>
-          The {LEGAL_COMPANY} workspace is for clinic staff, not for use by children. Patient
+          The {LEGAL_COMPANY}{" "}workspace is for clinic staff, not for use by children. Patient
           records a clinic stores are governed by the clinic&apos;s own consent and local
           healthcare regulations.
         </P>

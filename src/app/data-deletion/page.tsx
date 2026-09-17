@@ -22,7 +22,7 @@ export default function DataDeletionPage() {
           To revoke access and remove the data we hold from a connected account, disconnect it
           in <strong className="text-white">Settings → Integrations</strong>. Disconnecting
           deletes the stored access tokens and linked account identifiers for that integration
-          so we can no longer access it. You can also revoke {LEGAL_COMPANY} from{" "}
+          so we can no longer access it. You can also revoke {LEGAL_COMPANY}{" "}from{" "}
           <a className="text-violet-300 underline hover:text-violet-200" href="https://www.facebook.com/settings?tab=business_tools" target="_blank" rel="noreferrer">Meta&apos;s Business Integrations</a>{" "}
           or{" "}
           <a className="text-violet-300 underline hover:text-violet-200" href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">Google&apos;s account permissions</a>.
