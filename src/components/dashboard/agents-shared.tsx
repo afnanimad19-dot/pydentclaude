@@ -81,6 +81,21 @@ import {
 
 const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4.1-mini"];
 const ANTHROPIC_MODELS = ["anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4", "anthropic/claude-opus-4.1"];
+// Grok served through LiveKit Inference on the clinic's LiveKit Cloud project —
+// billed to LiveKit Cloud, no xAI key involved. The "livekit:" prefix is the
+// routing marker the AI gateway uses; a bare "xai/…" id is never sent to the
+// direct xAI API.
+const LIVEKIT_CHAT_MODELS: { id: string; label: string }[] = [
+  { id: "livekit:xai/grok-4.3", label: "Grok 4.3 via LiveKit" },
+  { id: "livekit:xai/grok-4.5", label: "Grok 4.5 via LiveKit" },
+  { id: "livekit:xai/grok-4.6", label: "Grok 4.6 via LiveKit" },
+  { id: "livekit:xai/grok-4.20-0309-non-reasoning", label: "Grok 4.20 via LiveKit" },
+  { id: "livekit:xai/grok-4.20-0309-reasoning", label: "Grok 4.20 Reasoning via LiveKit" },
+];
+/** Friendly name for a stored chat-model id (LiveKit descriptors get their label). */
+function chatModelLabel(model: string): string {
+  return LIVEKIT_CHAT_MODELS.find((m) => m.id === model)?.label ?? model;
+}
 const VAPI_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1"];
 
 // Which engine the builder/test call uses is decided by the Voice engine card
@@ -341,7 +356,7 @@ export function AgentsView({
                   <div>
                     <p className="font-semibold text-ink-900">{a.name}</p>
                     <p className="text-xs text-ink-400">
-                      {a.kind === "voice" ? `Voice agent · ${a.voice}` : `Chat agent · ${a.model}`} · {a.language}
+                      {a.kind === "voice" ? `Voice agent · ${a.voice}` : `Chat agent · ${chatModelLabel(a.model)}`} · {a.language}
                     </p>
                   </div>
                 </div>
@@ -1417,6 +1432,12 @@ export function AgentModal({
                         <optgroup label="Anthropic">
                           {ANTHROPIC_MODELS.map((m) => <option key={m}>{m}</option>)}
                         </optgroup>
+                        <optgroup label="LiveKit Inference — Grok">
+                          {LIVEKIT_CHAT_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                        </optgroup>
+                        {![...OPENAI_MODELS, ...ANTHROPIC_MODELS, ...LIVEKIT_CHAT_MODELS.map((m) => m.id)].includes(form.model) && (
+                          <option value={form.model}>{chatModelLabel(form.model)}</option>
+                        )}
                       </>
                     ) : (
                       VAPI_MODELS.map((m) => <option key={m} value={`openai/${m}`}>{m}</option>)
@@ -1857,6 +1878,7 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: agent.model,
+          ws: (await getWorkspaceId()) ?? undefined,
           agentName: agent.name,
           agentIdentity: agent.agentIdentity,
           instructions: agent.instructions,

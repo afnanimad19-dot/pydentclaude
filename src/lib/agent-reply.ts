@@ -1,9 +1,23 @@
-// Shared agent-reply generator (OpenRouter). Used by the inbox chat route and the
-// WhatsApp webhook auto-responder. Supports a `book_appointment` tool so the agent
-// can actually create appointments (Calendar + Open Dental) when canBook is on.
+// Shared agent-reply generator — the Pydent AI gateway for chat agents. Used by
+// the inbox chat route and the WhatsApp/SMS webhook auto-responders. Supports a
+// `book_appointment` tool so the agent can actually create appointments
+// (Calendar + Open Dental) when canBook is on.
+//
+// Providers, chosen by the agent's stored model id:
+//   "livekit:<model>"  -> LiveKit Inference (OpenAI-compatible gateway on the
+//                         clinic's LiveKit Cloud project; e.g. livekit:xai/grok-4.3
+//                         runs Grok billed through LiveKit — NO xAI key involved).
+//   anything else      -> OpenRouter (openai/…, anthropic/…), with the legacy
+//                         direct-xAI fallback only on OpenRouter credit errors.
+
+import { AccessToken } from "livekit-server-sdk";
+import { getLivekitCreds, lkConfigured } from "@/lib/livekit";
 
 export interface AgentReplyInput {
   model?: string;
+  /** Workspace id — lets LiveKit Inference use the clinic's own saved LiveKit
+   *  credentials (Settings → LiveKit). Falls back to LIVEKIT_* env vars. */
+  ws?: string;
   agentName?: string;
   agentIdentity?: string;
   instructions?: string;
@@ -126,6 +140,50 @@ async function callOpenRouter(apiKey: string, model: string, body: Record<string
   return res.json();
 }
 
+// ── LiveKit Inference ────────────────────────────────────────────────────────
+// Chat agents store LiveKit models as "livekit:<inference model id>" (e.g.
+// "livekit:xai/grok-4.3") so a Grok id can never be mistaken for the direct
+// xAI API. The gateway is OpenAI-compatible (chat/completions incl. tools);
+// auth is a short-lived LiveKit JWT with an inference grant, signed with the
+// SAME LiveKit Cloud credentials the voice agents already use — usage is
+// billed to LiveKit Cloud and no xAI/OpenRouter key is needed or read.
+export const LIVEKIT_MODEL_PREFIX = "livekit:";
+
+export function isLivekitModel(model?: string): boolean {
+  return (model ?? "").startsWith(LIVEKIT_MODEL_PREFIX);
+}
+
+const LIVEKIT_INFERENCE_URL =
+  (process.env.LIVEKIT_INFERENCE_URL || "https://agent-gateway.livekit.cloud/v1").replace(/\/+$/, "");
+
+async function livekitInferenceToken(ws?: string): Promise<string> {
+  const creds = await getLivekitCreds(ws ?? null);
+  if (!lkConfigured(creds)) {
+    throw new Error(
+      "LiveKit is not connected — save the LiveKit URL + API key/secret in Settings → LiveKit (or set LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET)."
+    );
+  }
+  const at = new AccessToken(creds.apiKey, creds.apiSecret, { identity: "pydent-chat", ttl: 600 });
+  at.addInferenceGrant({ perform: true });
+  return at.toJwt();
+}
+
+async function callLivekitChat(model: string, body: Record<string, unknown>, ws?: string) {
+  const inferenceModel = model.slice(LIVEKIT_MODEL_PREFIX.length);
+  const token = await livekitInferenceToken(ws);
+  const res = await fetch(`${LIVEKIT_INFERENCE_URL}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ max_tokens: 320, ...body, model: inferenceModel }),
+  });
+  if (!res.ok) {
+    // Response bodies never contain our credentials — safe to surface, truncated.
+    const text = (await res.text()).slice(0, 200);
+    throw new Error(`LiveKit Inference (${inferenceModel}) error ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
 // Fallback LLM: xAI's Grok chat API (OpenAI-compatible, function calling
 // included). Uses the same funded X_AI_VOICE_KEY as the voice agents, so when
 // OpenRouter can't run a request — the free tier's "Prompt tokens limit
@@ -157,36 +215,81 @@ async function callXaiChat(body: Record<string, unknown>) {
   throw new Error(`xAI fallback failed (${lastErr})`);
 }
 
-// OpenRouter first (the agent's configured model), Grok as automatic fallback
-// when OpenRouter refuses for credit/size reasons.
-export async function resilientChat(apiKey: string, model: string, body: Record<string, unknown>) {
-  try {
-    return await callOpenRouter(apiKey, model, body);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "";
-    if (/402|credit|tokens limit|Prompt tokens|payment/i.test(msg)) {
-      return await callXaiChat(body);
+// Provider router. LiveKit models go straight to LiveKit Inference — never to
+// OpenRouter or direct xAI, and with NO cross-provider fallback (a patient
+// conversation stays on the provider the clinic configured). OpenRouter models
+// keep the legacy behavior: OpenRouter first, direct xAI only on credit errors —
+// but a double failure now reports BOTH errors instead of hiding the primary
+// one behind "xAI fallback failed".
+export async function resilientChat(
+  apiKey: string,
+  model: string,
+  body: Record<string, unknown>,
+  opts?: { ws?: string; agentName?: string }
+) {
+  const started = Date.now();
+  // Safe observability: provider/model/latency only — never message content or keys.
+  const log = (provider: string, m: string, status: "success" | "error", err?: string) =>
+    console.log(
+      `[ai-gateway] agent=${opts?.agentName ?? "-"} provider=${provider} model=${m} status=${status} latency_ms=${Date.now() - started}${err ? ` error="${err.slice(0, 200)}"` : ""}`
+    );
+
+  if (isLivekitModel(model)) {
+    const m = model.slice(LIVEKIT_MODEL_PREFIX.length);
+    try {
+      const data = await callLivekitChat(model, body, opts?.ws);
+      log("livekit", m, "success");
+      return data;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "LiveKit Inference request failed";
+      log("livekit", m, "error", msg);
+      throw new Error(`Provider LiveKit Inference, model ${m}: ${msg} (no fallback provider was tried)`);
     }
+  }
+
+  try {
+    const data = await callOpenRouter(apiKey, model, body);
+    log("openrouter", model, "success");
+    return data;
+  } catch (e) {
+    const primary = e instanceof Error ? e.message : "OpenRouter request failed";
+    if (/402|credit|tokens limit|Prompt tokens|payment/i.test(primary)) {
+      try {
+        const data = await callXaiChat(body);
+        log("xai-fallback", XAI_CHAT_MODELS[0], "success");
+        return data;
+      } catch (e2) {
+        const secondary = e2 instanceof Error ? e2.message : "xAI request failed";
+        log("xai-fallback", XAI_CHAT_MODELS[0], "error", secondary);
+        throw new Error(`Primary OpenRouter (${model}) failed: ${primary} | Fallback direct xAI also failed: ${secondary}`);
+      }
+    }
+    log("openrouter", model, "error", primary);
     throw e;
   }
 }
 
 export async function generateAgentReply(input: AgentReplyInput): Promise<{ reply?: string; error?: string; status: number }> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
+  const model = input.model ?? "openai/gpt-4o-mini";
+  const apiKey = process.env.OPENROUTER_API_KEY ?? "";
+  // LiveKit Inference authenticates with the LiveKit credentials — the
+  // OpenRouter key is only required for OpenRouter-routed models.
+  if (!apiKey && !isLivekitModel(model)) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
+  const opts = { ws: input.ws, agentName: input.agentName };
   try {
-    const data = await resilientChat(apiKey, input.model ?? "openai/gpt-4o-mini", {
+    const data = await resilientChat(apiKey, model, {
       messages: [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-20)],
-    });
+    }, opts);
     return { reply: data.choices?.[0]?.message?.content ?? "", status: 200 };
   } catch (e) {
-    // Last resort: shrink the knowledge base so the prompt fits whatever
-    // OpenRouter's remaining allowance is, and try once more.
+    // Last resort: shrink the knowledge base so the prompt fits the provider's
+    // remaining allowance, and try once more — on the SAME provider.
     try {
       const slim = { ...input, knowledgeBase: (input.knowledgeBase ?? "").slice(0, 6000) };
-      const data = await callOpenRouter(apiKey, input.model ?? "openai/gpt-4o-mini", {
-        messages: [{ role: "system", content: buildSystem(slim) }, ...input.messages.slice(-12)],
-      });
+      const slimBody = { messages: [{ role: "system", content: buildSystem(slim) }, ...input.messages.slice(-12)] };
+      const data = isLivekitModel(model)
+        ? await callLivekitChat(model, slimBody, input.ws)
+        : await callOpenRouter(apiKey, model, slimBody);
       return { reply: data.choices?.[0]?.message?.content ?? "", status: 200 };
     } catch {
       return { error: e instanceof Error ? e.message : "AI request failed", status: 502 };
@@ -283,16 +386,17 @@ export async function generateAgentReplyWithTools(
   input: AgentReplyInput,
   executeTool: (name: string, args: any) => Promise<string>
 ): Promise<{ reply?: string; error?: string; status: number }> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
   const model = input.model ?? "openai/gpt-4o-mini";
+  const apiKey = process.env.OPENROUTER_API_KEY ?? "";
+  if (!apiKey && !isLivekitModel(model)) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
   const tools = toolsFor(input.capabilities ?? {});
   if (tools.length === 0) return generateAgentReply(input);
+  const opts = { ws: input.ws, agentName: input.agentName };
 
   const messages: any[] = [{ role: "system", content: buildSystem(input) }, ...input.messages.slice(-20)];
   try {
     for (let round = 0; round < 4; round++) {
-      const data = await resilientChat(apiKey, model, { messages, tools, tool_choice: "auto" });
+      const data = await resilientChat(apiKey, model, { messages, tools, tool_choice: "auto" }, opts);
       const msg = data.choices?.[0]?.message;
       if (!msg?.tool_calls?.length) return { reply: msg?.content ?? "", status: 200 };
       messages.push(msg);
@@ -306,7 +410,7 @@ export async function generateAgentReplyWithTools(
         messages.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
     }
-    const final = await resilientChat(apiKey, model, { messages });
+    const final = await resilientChat(apiKey, model, { messages }, opts);
     return { reply: final.choices?.[0]?.message?.content ?? "", status: 200 };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "AI request failed", status: 502 };

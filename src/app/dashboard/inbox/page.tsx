@@ -30,6 +30,7 @@ import {
   type WaMessage,
   type TeamMember,
   type WaTemplate,
+  getWorkspaceId,
 } from "@/lib/db";
 import { conversations, channelMeta, patients as mockPatients, type Channel, type Message, type Patient } from "@/lib/mock-data";
 
@@ -470,6 +471,7 @@ export default function InboxPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: agent.model,
+          ws: (await getWorkspaceId()) ?? undefined,
           agentName: agent.name,
           agentIdentity: agent.agentIdentity,
           instructions: agent.instructions,

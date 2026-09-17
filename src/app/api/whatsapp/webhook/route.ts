@@ -428,6 +428,9 @@ async function storeInbound(
 
   const replyInput = {
     model: agent.model ?? "openai/gpt-4o-mini",
+    // Workspace id lets a "livekit:" model authenticate with this clinic's own
+    // LiveKit credentials (Settings -> LiveKit); env LIVEKIT_* is the fallback.
+    ws: ws ?? undefined,
     agentName: agent.name,
     agentIdentity: agent.agent_identity ?? "",
     instructions: agent.instructions ?? "",
