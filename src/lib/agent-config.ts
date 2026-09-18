@@ -202,6 +202,9 @@ export function normalizeVoiceSettings(
     // Keep livekit.interruptions in step with the structured object so any
     // consumer still reading the legacy key sees the same mode.
     ...(v.livekit ? { livekit: { ...(v.livekit as object), interruptions: iMode } as VoiceSettings["livekit"] } : {}),
+    // Provenance of a LiveKit Builder import — carried through verbatim so a
+    // normalize -> save cycle never drops it.
+    ...(v.builderImport ? { builderImport: v.builderImport as VoiceSettings["builderImport"] } : {}),
     interruptions,
     backgroundAudio: pickEnum(v.backgroundAudio, BACKGROUND_AUDIO.map((b) => b.id) as unknown as readonly string[], "none"),
     tools,

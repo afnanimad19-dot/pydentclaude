@@ -508,6 +508,22 @@ export interface VoiceSettings {
     minWords: number;                  // words before the agent stops (adaptive mode)
     resumeFalseInterruption: boolean;  // resume the sentence if it was a false alarm
   };
+  /** One-time LiveKit Builder import: where these settings came from, when,
+   *  and per-field truth status ("imported" | "unavailable"). Snapshot-only
+   *  fields with no Pydent runtime equivalent (reasoning effort, greeting
+   *  interruptibility, pipeline) are kept here rather than shown as fake
+   *  controls. */
+  builderImport?: {
+    source: "livekit-builder";
+    agentName: string;
+    agentId?: string;
+    agentVersion?: string;
+    importedAt: string;
+    fields: Record<string, "imported" | "unavailable">;
+    reasoningEffort?: string;
+    greetingInterruptible?: boolean;
+    pipeline?: string;
+  };
   /** Schema version of this config blob. */
   configVersion?: number;
 }

@@ -4,7 +4,7 @@
 // modal, in-browser test chat (OpenRouter) and test call (Vapi Web SDK),
 // and the Agent Hub (channel defaults + phone lines).
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -71,6 +71,7 @@ import {
 import { History } from "lucide-react";
 import { LIVEKIT_STT, LIVEKIT_LLM, LIVEKIT_TTS, LIVEKIT_DEFAULTS, livekitVoiceLabel, type LivekitAgentSettings } from "@/lib/livekit-models";
 import { normalizeVoiceSettings, validateVoiceSettings } from "@/lib/agent-config";
+import { parseBuilderExport, mapBuilderModels, callEndingText, BUILDER_FIELDS, type BuilderField } from "@/lib/livekit-builder-import";
 import {
   AgentToolsPanel,
   AgentAdvancedPanel,
@@ -2218,23 +2219,51 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
 }
 
 // ------------------------------------------------- import from LiveKit
-// Brings an agent built in the LiveKit console (Agent Builder) into Pydent as a
-// bound voice agent. LiveKit's API lists deployed agents (name/status) but does
-// NOT return the builder's prompt or models, so the instructions/greeting are
-// entered here once — after that Pydent is the source of truth: it sends them
-// as {{metadata.instructions}} / {{metadata.greeting}} on every call.
+// Brings an agent built in the LiveKit console (Agent Builder) into Pydent.
+// LiveKit's public API (verified against livekit_cloud_agent.proto) returns a
+// Builder agent's IDENTITY only — id, name, version, status — never its
+// instructions, welcome message, models or call-ending settings. So identity
+// imports automatically, and the Builder settings come from a pasted Builder
+// export/snapshot, parsed with per-field truth: the checklist below shows a
+// check ONLY for values actually retrieved; everything else is marked
+// unavailable and never invents or overwrites data. Re-importing an agent that
+// already exists in Pydent updates it in place and never touches its tools,
+// abilities or knowledge base.
+const BUILDER_FIELD_LABELS: Record<BuilderField, string> = {
+  instructions: "Instructions",
+  welcomeMessage: "Welcome message",
+  welcomeEnabled: "Welcome message enabled",
+  greetingInterruptible: "Greeting interruption",
+  endCallEnabled: "End-call tool",
+  endCallConditions: "End-call conditions",
+  endCallFinalResponse: "End-call final response",
+  pipeline: "Pipeline mode",
+  stt: "STT",
+  sttLanguage: "STT language",
+  llm: "LLM",
+  reasoningEffort: "Reasoning effort",
+  tts: "TTS",
+  voice: "Voice",
+  voiceLanguage: "Voice language",
+  noiseCancellation: "Noise cancellation",
+  backgroundAudio: "Background audio",
+};
+
 function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
-  const [deployed, setDeployed] = useState<{ agentName: string; status: string }[]>([]);
+  const [deployed, setDeployed] = useState<{ agentName: string; status: string; agentId?: string; version?: string }[]>([]);
   const [workerName, setWorkerName] = useState("pydent-agent");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [picked, setPicked] = useState("");
   const [name, setName] = useState("");
   const [greeting, setGreeting] = useState("Thank you for calling! How can I help you today?");
-  const [instructions, setInstructions] = useState("You are the clinic's friendly phone receptionist. Answer questions about the clinic, help callers book, reschedule or cancel appointments, and keep replies short and natural.");
+  const [instructions, setInstructions] = useState("");
+  const [builderText, setBuilderText] = useState("");
   const [saving, setSaving] = useState(false);
+  const [existingAgents, setExistingAgents] = useState<AiAgent[]>([]);
 
   useEffect(() => {
+    fetchAgents().then((r) => setExistingAgents(r.agents.filter((a) => a.kind === "voice")));
     getWorkspaceId().then((ws) =>
       fetch(`/api/livekit/agents?ws=${ws ?? ""}`)
         .then((r) => r.json())
@@ -2253,37 +2282,118 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
   const [manual, setManual] = useState("");
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
+  // Parse the pasted Builder export live, so the checklist always tells the
+  // truth about what will actually be imported.
+  const parsed = useMemo(() => parseBuilderExport(builderText), [builderText]);
+  const mapped = useMemo(() => mapBuilderModels(parsed.snapshot), [parsed]);
+  // Auto-fill greeting/instructions from a paste, in the paste handler itself
+  // (not an effect) so the user can still edit the filled values afterwards.
+  function onBuilderPaste(text: string) {
+    setBuilderText(text);
+    const snap = parseBuilderExport(text).snapshot;
+    if (snap.welcomeMessage) setGreeting(snap.welcomeMessage);
+    if (snap.instructions) setInstructions(snap.instructions);
+  }
+
+  const target = (picked || manual).trim();
+  const alreadyImported = existingAgents.find((a) => (a.voiceSettings?.livekit?.agentName ?? "") === target);
+
   async function submit() {
-    const target = (picked || manual).trim();
     if (!target) { setSubmitErr("Pick the LiveKit agent to import — or type its exact agent name from the LiveKit console."); return; }
     setSubmitErr(null);
     setSaving(true);
-    const res = await createAgent({
-      name: name.trim() || target,
-      kind: "voice",
-      role: "Receptionist",
-      status: "Live",
-      model: LIVEKIT_DEFAULTS.llm,
-      voice: `LiveKit console agent · ${target}`,
-      voiceId: null,
-      firstMessage: greeting.trim(),
-      language: "English + Arabic",
-      agentIdentity: "",
-      instructions: instructions.trim(),
-      behavior: "",
-      knowledgeBase: "",
-      canBook: true,
-      canReschedule: true,
-      canCancel: true,
-      channels: ["voice"],
-      purpose: "inbound",
-      firstMessageMode: "assistant_first",
-      kbFiles: [],
-      voiceSettings: { ...defaultVoiceSettings(), livekit: { ...LIVEKIT_DEFAULTS, agentName: target } },
-    });
+
+    const cloud = deployed.find((a) => a.agentName === target);
+    const snap = parsed.snapshot;
+    const endingText = callEndingText(snap);
+    const builderImport = {
+      source: "livekit-builder" as const,
+      agentName: target,
+      ...(cloud?.agentId ? { agentId: cloud.agentId } : {}),
+      ...(cloud?.version ? { agentVersion: cloud.version } : {}),
+      importedAt: new Date().toISOString(),
+      fields: parsed.status as Record<string, "imported" | "unavailable">,
+      ...(snap.reasoningEffort ? { reasoningEffort: snap.reasoningEffort } : {}),
+      ...(snap.greetingInterruptible !== undefined ? { greetingInterruptible: snap.greetingInterruptible } : {}),
+      ...(snap.pipeline ? { pipeline: snap.pipeline } : {}),
+    };
+
+    let res: { ok: boolean; message: string };
+    if (alreadyImported) {
+      // Update in place: only fields the import actually produced are written;
+      // tools/abilities, knowledge base and everything else stay untouched.
+      const vs = normalizeVoiceSettings(alreadyImported.voiceSettings, alreadyImported);
+      const lk = { ...LIVEKIT_DEFAULTS, ...(vs.livekit ?? {}), agentName: target };
+      if (mapped.stt) lk.stt = mapped.stt;
+      if (mapped.sttLanguage) lk.sttLanguage = mapped.sttLanguage;
+      if (mapped.llm) lk.llm = mapped.llm;
+      if (mapped.tts) lk.tts = mapped.tts;
+      if (mapped.voice) lk.voice = mapped.voice;
+      const behavior =
+        endingText && !(alreadyImported.behavior ?? "").includes("CALL ENDING")
+          ? [alreadyImported.behavior, endingText].filter(Boolean).join("\n\n")
+          : alreadyImported.behavior;
+      res = await updateAgent(alreadyImported.id, {
+        ...alreadyImported,
+        ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
+        ...(greeting.trim() ? { firstMessage: greeting.trim() } : {}),
+        ...(snap.welcomeEnabled === false ? { firstMessageMode: "user_first" as const } : {}),
+        behavior,
+        ...(mapped.llm ? { model: mapped.llm } : {}),
+        voiceSettings: {
+          ...vs,
+          livekit: lk,
+          ...(snap.noiseCancellation !== undefined ? { noiseReductionEnabled: snap.noiseCancellation } : {}),
+          ...(snap.backgroundAudio !== undefined ? { backgroundAudio: /off|none|silent/i.test(snap.backgroundAudio) ? "none" : vs.backgroundAudio } : {}),
+          builderImport,
+        },
+      });
+    } else {
+      res = await createAgent({
+        name: name.trim() || target,
+        kind: "voice",
+        role: "Receptionist",
+        status: "Live",
+        model: mapped.llm ?? LIVEKIT_DEFAULTS.llm,
+        voice: `LiveKit console agent · ${target}`,
+        voiceId: null,
+        firstMessage: greeting.trim(),
+        language: "English + Arabic",
+        agentIdentity: "",
+        instructions: instructions.trim(),
+        behavior: endingText,
+        knowledgeBase: "",
+        canBook: true,
+        canReschedule: true,
+        canCancel: true,
+        channels: ["voice"],
+        purpose: "inbound",
+        firstMessageMode: snap.welcomeEnabled === false ? "user_first" : "assistant_first",
+        kbFiles: [],
+        voiceSettings: {
+          ...defaultVoiceSettings(),
+          ...(snap.noiseCancellation !== undefined ? { noiseReductionEnabled: snap.noiseCancellation } : {}),
+          livekit: {
+            ...LIVEKIT_DEFAULTS,
+            agentName: target,
+            ...(mapped.stt ? { stt: mapped.stt } : {}),
+            ...(mapped.sttLanguage ? { sttLanguage: mapped.sttLanguage } : {}),
+            ...(mapped.llm ? { llm: mapped.llm } : {}),
+            ...(mapped.tts ? { tts: mapped.tts } : {}),
+            ...(mapped.voice ? { voice: mapped.voice } : {}),
+          },
+          builderImport,
+        },
+      });
+    }
     setSaving(false);
     if (!res.ok) { setSubmitErr(`Could not save the agent: ${res.message}`); return; }
-    toast(`Imported "${target}" — edit it here; set its LiveKit instructions/greeting to {{metadata.instructions}} / {{metadata.greeting}} once for live updates.`, "success");
+    toast(
+      alreadyImported
+        ? `Updated "${alreadyImported.name}" from the Builder configuration — tools and knowledge base untouched.`
+        : `Imported "${target}" — edit it here; set its LiveKit instructions/greeting to {{metadata.instructions}} / {{metadata.greeting}} once for live updates.`,
+      "success"
+    );
     onImported();
   }
 
@@ -2306,13 +2416,55 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
                 <input className={inputCls} placeholder="my-clinic-agent" value={manual} onChange={(e) => { setManual(e.target.value); if (!name.trim()) setName(e.target.value); }} />
               </Field>
             )}
+            {alreadyImported && (
+              <p className="rounded-xl border border-sky-200 bg-sky-50/60 px-3 py-2 text-xs text-ink-700">
+                <strong className="font-semibold">&quot;{alreadyImported.name}&quot;</strong> is already bound to this LiveKit agent — importing will <strong className="font-semibold">update it in place</strong>. Its tools, abilities and knowledge base are not touched.
+              </p>
+            )}
             {submitErr && <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">{submitErr}</p>}
+
+            <Field label="Builder configuration (optional) — paste the agent's exported JSON from the LiveKit Builder, or just its Instructions text">
+              <textarea
+                className={`${inputCls} min-h-28 font-mono text-xs`}
+                placeholder={'{ "instructions": "...", "welcome_message": "...", "stt": {"provider": "...", "model": "..."}, ... }  — or plain instructions text'}
+                value={builderText}
+                onChange={(e) => onBuilderPaste(e.target.value)}
+              />
+              <p className="mt-1 text-[11px] text-ink-400">
+                LiveKit&apos;s API only shares a Builder agent&apos;s identity (name, id, version) — not its instructions, models or call-ending settings. Paste them here to migrate them; the checklist shows exactly what was detected.
+              </p>
+            </Field>
+
+            {builderText.trim() && (
+              <div className="rounded-xl border border-ink-100 bg-ink-50/50 p-3">
+                <p className="mb-2 text-xs font-semibold text-ink-700">Configuration detected</p>
+                <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                  <p className="text-xs text-emerald-600">✓ Agent identity (from the LiveKit API)</p>
+                  {BUILDER_FIELDS.map((f) => (
+                    <p key={f} className={`text-xs ${parsed.status[f] === "imported" ? "text-emerald-600" : "text-ink-400"}`}>
+                      {parsed.status[f] === "imported" ? "✓" : "—"} {BUILDER_FIELD_LABELS[f]}
+                      {parsed.status[f] !== "imported" && " (not found in the paste)"}
+                    </p>
+                  ))}
+                </div>
+                {[...parsed.warnings, ...mapped.warnings].length > 0 && (
+                  <ul className="mt-2 space-y-0.5 border-t border-ink-100 pt-2">
+                    {[...parsed.warnings, ...mapped.warnings].map((w, i) => (
+                      <li key={i} className="text-[11px] text-amber-600">{w}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
             <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Name in Pydent"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} /></Field>
+              <Field label="Name in Pydent">
+                <input className={inputCls} value={alreadyImported ? alreadyImported.name : name} disabled={!!alreadyImported} onChange={(e) => setName(e.target.value)} />
+              </Field>
               <Field label="Greeting (first message)"><input className={inputCls} value={greeting} onChange={(e) => setGreeting(e.target.value)} /></Field>
             </div>
-            <Field label="Instructions (paste what the agent has in LiveKit — LiveKit can't send it to us)">
-              <textarea className={`${inputCls} min-h-28`} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
+            <Field label="Instructions">
+              <textarea className={`${inputCls} min-h-28`} value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Filled automatically from the Builder paste above — or write them here." />
             </Field>
             <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-3 text-[11px] text-ink-600">
               <p className="font-semibold text-ink-800">To make Pydent edits apply in real time to this LiveKit agent:</p>
