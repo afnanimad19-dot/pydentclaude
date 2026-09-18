@@ -6,22 +6,30 @@
 import { getValidGoogleToken, getConnectionApiKey } from "@/lib/google-api";
 import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
 
+// Structured send outcome: `sent` comes from the actual delivery attempt, so
+// callers that need machine-readable success (the Builder HTTP tool adapter)
+// never have to infer it from the human-readable message.
+export interface EmailSendResult {
+  sent: boolean;
+  message: string;
+}
+
 // Send through the engine's Gmail toolkit (connected on Hyperfx). Returns null
 // when the engine has no Gmail (so callers fall through to other paths).
-async function sendViaEngineGmail(ws: string, input: { to: string; subject: string; html: string }): Promise<string | null> {
+async function sendViaEngineGmail(ws: string, input: { to: string; subject: string; html: string }): Promise<EmailSendResult | null> {
   const creds = await getHfxCreds(ws);
   if (!hfxConfigured(creds)) return null;
   const subject = input.subject.replace(/[\r\n]+/g, " ").slice(0, 250);
   const r = await hfxCall("gmail_send_email", { to: input.to, subject, body: input.html, html: input.html, is_html: true, body_type: "html" }, creds);
-  if (r.ok) return `Email sent to ${input.to} (via Gmail).`;
+  if (r.ok) return { sent: true, message: `Email sent to ${input.to} (via Gmail).` };
   // Not connected / tool unavailable → let another path try.
   if (/unknown tool|not (connected|found|available|enabled)|auth|permission|no gmail/i.test(r.error ?? "")) return null;
-  return `Gmail (engine) send failed: ${String(r.error ?? "").slice(0, 200)}`;
+  return { sent: false, message: `Gmail (engine) send failed: ${String(r.error ?? "").slice(0, 200)}` };
 }
 
-async function sendViaBrevo(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string }, key: string): Promise<string> {
+async function sendViaBrevo(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string }, key: string): Promise<EmailSendResult> {
   const fromEmail = input.fromEmail || process.env.BREVO_FROM_EMAIL;
-  if (!fromEmail) return "No sender email configured. Set BREVO_FROM_EMAIL to a verified sender in Brevo.";
+  if (!fromEmail) return { sent: false, message: "No sender email configured. Set BREVO_FROM_EMAIL to a verified sender in Brevo." };
   const res = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
     headers: { "api-key": key, "Content-Type": "application/json", Accept: "application/json" },
@@ -32,12 +40,12 @@ async function sendViaBrevo(input: { to: string; subject: string; html: string; 
       htmlContent: input.html,
     }),
   });
-  if (res.status === 201 || res.ok) return `Email sent to ${input.to}.`;
-  return `Email failed (${res.status}): ${(await res.text()).slice(0, 200)}`;
+  if (res.status === 201 || res.ok) return { sent: true, message: `Email sent to ${input.to}.` };
+  return { sent: false, message: `Email failed (${res.status}): ${(await res.text()).slice(0, 200)}` };
 }
 
 // Returns null when Gmail OAuth isn't connected, so callers fall through.
-async function sendViaGmail(ws: string, input: { to: string; subject: string; html: string }): Promise<string | null> {
+async function sendViaGmail(ws: string, input: { to: string; subject: string; html: string }): Promise<EmailSendResult | null> {
   const token = await getValidGoogleToken(ws, "google_gmail");
   if (!token) return null;
   // Build a minimal MIME message and base64url-encode it for the Gmail API.
@@ -53,8 +61,8 @@ async function sendViaGmail(ws: string, input: { to: string; subject: string; ht
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ raw }),
   });
-  if (res.ok) return `Email sent to ${input.to} (via Gmail).`;
-  return `Gmail send failed (${res.status}): ${(await res.text()).slice(0, 200)}`;
+  if (res.ok) return { sent: true, message: `Email sent to ${input.to} (via Gmail).` };
+  return { sent: false, message: `Gmail send failed (${res.status}): ${(await res.text()).slice(0, 200)}` };
 }
 
 function escapeHtml(s: string): string {
@@ -65,15 +73,19 @@ function escapeHtml(s: string): string {
 // or the details they discussed. Takes a plain-text body from the model and
 // wraps it in a simple, safe HTML shell, then routes through the same Gmail/Brevo
 // chain as everything else. Returns a short human-readable result string.
-export async function sendAgentEmail(input: { to: string; subject: string; body: string; ws?: string; fromName?: string }): Promise<string> {
+export async function sendAgentEmailDetailed(input: { to: string; subject: string; body: string; ws?: string; fromName?: string }): Promise<EmailSendResult> {
   const to = (input.to || "").trim();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return "That doesn't look like a valid email address, so I didn't send it.";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return { sent: false, message: "That doesn't look like a valid email address, so I didn't send it." };
   const bodyHtml = escapeHtml(input.body || "").replace(/\n/g, "<br>");
   const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#111;line-height:1.6">${bodyHtml}</div>`;
-  return sendEmail({ to, subject: (input.subject || "Message from your dental clinic").slice(0, 200), html, ws: input.ws, fromName: input.fromName });
+  return sendEmailDetailed({ to, subject: (input.subject || "Message from your dental clinic").slice(0, 200), html, ws: input.ws, fromName: input.fromName });
 }
 
-export async function sendEmail(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string; ws?: string }): Promise<string> {
+export async function sendAgentEmail(input: { to: string; subject: string; body: string; ws?: string; fromName?: string }): Promise<string> {
+  return (await sendAgentEmailDetailed(input)).message;
+}
+
+export async function sendEmailDetailed(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string; ws?: string }): Promise<EmailSendResult> {
   try {
     // 1) PRIMARY: the clinic's Gmail connected on the marketing engine (Hyperfx)
     if (input.ws) {
@@ -92,8 +104,12 @@ export async function sendEmail(input: { to: string; subject: string; html: stri
     }
     // 4) a global Brevo key (Netlify), if the SaaS provides one
     if (process.env.BREVO_API_KEY) return await sendViaBrevo(input, process.env.BREVO_API_KEY);
-    return "Email isn't connected. Connect Gmail on the marketing engine (Hyperfx) — or in Settings → Connections — to send.";
+    return { sent: false, message: "Email isn't connected. Connect Gmail on the marketing engine (Hyperfx) — or in Settings → Connections — to send." };
   } catch (e) {
-    return `Email send failed: ${e instanceof Error ? e.message : "error"}`;
+    return { sent: false, message: `Email send failed: ${e instanceof Error ? e.message : "error"}` };
   }
+}
+
+export async function sendEmail(input: { to: string; subject: string; html: string; fromName?: string; fromEmail?: string; ws?: string }): Promise<string> {
+  return (await sendEmailDetailed(input)).message;
 }

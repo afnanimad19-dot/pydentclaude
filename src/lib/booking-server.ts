@@ -332,6 +332,26 @@ function toFee(v: number | string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Lookup-only patient match by phone (last-9-digit match), then email. Never
+// creates a record — the Builder HTTP adapter uses this to identify the caller
+// before touching an appointment, where silently creating a patient would be
+// wrong. resolvePatient() below layers the create-if-missing behaviour on top.
+export async function findExistingPatientId(ws: string | null, phoneRaw?: string | null, emailRaw?: string | null): Promise<string | null> {
+  const phone = String(phoneRaw ?? "").trim();
+  const email = String(emailRaw ?? "").trim();
+  if (phone) {
+    const digits = phone.replace(/\D/g, "");
+    const { data: pts } = await supabase.from("patients").select("id, phone").eq("workspace_id", ws);
+    const match = (pts ?? []).find((p: any) => String(p.phone ?? "").replace(/\D/g, "").endsWith(digits.slice(-9)) && digits.length >= 7);
+    if (match) return match.id;
+  }
+  if (email) {
+    const { data } = await supabase.from("patients").select("id").eq("workspace_id", ws).eq("email", email).maybeSingle();
+    if (data?.id) return data.id;
+  }
+  return null;
+}
+
 // Find an existing lead/patient by phone, then email; otherwise create one.
 async function resolvePatient(ctx: BookingCtx, args: BookingArgs): Promise<string | null> {
   if (ctx.patientId) return ctx.patientId;
@@ -339,16 +359,8 @@ async function resolvePatient(ctx: BookingCtx, args: BookingArgs): Promise<strin
   const email = (args.email || "").trim();
   const fullName = [args.firstName, args.lastName].filter(Boolean).join(" ").trim() || args.name || ctx.name || "";
 
-  if (phone) {
-    const digits = phone.replace(/\D/g, "");
-    const { data: pts } = await supabase.from("patients").select("id, phone").eq("workspace_id", ctx.ws);
-    const match = (pts ?? []).find((p: any) => String(p.phone ?? "").replace(/\D/g, "").endsWith(digits.slice(-9)) && digits.length >= 7);
-    if (match) return match.id;
-  }
-  if (email) {
-    const { data } = await supabase.from("patients").select("id").eq("workspace_id", ctx.ws).eq("email", email).maybeSingle();
-    if (data?.id) return data.id;
-  }
+  const existing = await findExistingPatientId(ctx.ws, phone, email);
+  if (existing) return existing;
   const { data: created } = await supabase
     .from("patients")
     .insert({
@@ -375,12 +387,62 @@ function sameProvider(a?: string | null, b?: string | null): boolean {
   return x === y || x.includes(y) || y.includes(x);
 }
 
+// ── Structured results ──────────────────────────────────────────────────────
+// The Builder HTTP tool adapter (src/lib/builder-tools.ts) needs machine-
+// readable outcomes: success comes from what actually happened, never from
+// parsing the spoken sentence. Each structured function carries the exact
+// prose the voice worker / chat webhooks already receive in `spoken`, and the
+// legacy string-returning exports below simply return that field — so every
+// existing caller keeps byte-identical behaviour.
+export interface SlotsResult {
+  success: boolean;
+  spoken: string;
+  error?: string;                    // machine code, e.g. "missing_date"
+  date?: string;
+  slots?: string[];                  // ALL open times (spoken offers at most 6)
+  source?: "opendental" | "local";
+}
+
+export interface BookingResult {
+  success: boolean;
+  spoken: string;
+  error?: string;                    // "invalid_datetime" | "slot_taken" | "db_error"
+  appointmentId?: string;            // Pydent appointment UUID (NOT the Open Dental AptNum)
+  patientId?: string | null;
+  date?: string;
+  time?: string;
+  treatment?: string;
+  provider?: string;
+  fee?: number | null;
+}
+
+export interface UpcomingAppointment {
+  id: string;                        // Pydent appointment UUID
+  external_id: string | null;        // Open Dental AptNum when synced, else null
+  google_calendar_event_id: string | null;
+  patient_id: string | null;
+  date: string;
+  time: string;
+  procedure: string | null;
+  provider: string | null;
+}
+
+export interface ApptActionResult {
+  success: boolean;
+  spoken: string;
+  error?: string;
+  appointmentId?: string;            // Pydent UUID acted on
+  externalId?: string | null;        // Open Dental AptNum of that appointment
+  date?: string;
+  time?: string;
+}
+
 // Real open slots: Open Dental when it actually ANSWERS, otherwise the local
 // calendar (clinic hours 09:00–17:00 minus times already booked FOR THAT
 // DOCTOR — two patients at the same time with different doctors is normal).
-export async function getSlots(ws: string | null, args: any): Promise<string> {
+export async function getSlotsStructured(ws: string | null, args: any): Promise<SlotsResult> {
   const date = String(args?.date || "").slice(0, 10);
-  if (!date) return "Ask the patient which date they'd like first.";
+  if (!date) return { success: false, error: "missing_date", spoken: "Ask the patient which date they'd like first." };
   try {
     const od = await getOdConfig(ws);
     if (od?.enabled) {
@@ -390,8 +452,8 @@ export async function getSlots(ws: string | null, args: any): Promise<string> {
       // erroring Open Dental (firewall, tunnel down) must NOT read as "fully
       // booked forever" — fall through to the clinic calendar instead.
       if (r.status === 200 && Array.isArray(slots)) {
-        if (slots.length) return `Open slots on ${date}: ${slots.join(", ")}.`;
-        return `Open Dental shows no open slots on ${date} — offer the patient a different day.`;
+        if (slots.length) return { success: true, date, slots: slots.map(String), source: "opendental", spoken: `Open slots on ${date}: ${slots.join(", ")}.` };
+        return { success: true, date, slots: [], source: "opendental", spoken: `Open Dental shows no open slots on ${date} — offer the patient a different day.` };
       }
     }
   } catch {
@@ -411,18 +473,23 @@ export async function getSlots(ws: string | null, args: any): Promise<string> {
     if (!taken.has(t)) open.push(t);
   }
   const offer = open.slice(0, 6);
-  return offer.length ? `Open slots on ${date}: ${offer.join(", ")}.` : `Fully booked on ${date}${args.doctor ? ` for ${args.doctor}` : ""} — suggest another day.`;
+  const spoken = offer.length ? `Open slots on ${date}: ${offer.join(", ")}.` : `Fully booked on ${date}${args.doctor ? ` for ${args.doctor}` : ""} — suggest another day.`;
+  return { success: true, date, slots: open, source: "local", spoken };
+}
+
+export async function getSlots(ws: string | null, args: any): Promise<string> {
+  return (await getSlotsStructured(ws, args)).spoken;
 }
 
 // Book an appointment onto the Calendar (always) + Open Dental (if connected),
 // recording the fee, the channel/source, and which agent booked it. Stores the
 // Open Dental appointment id so reschedule/cancel can target it later.
-export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promise<string> {
+export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingArgs): Promise<BookingResult> {
   const ws = ctx.ws;
   const dt = String(args.datetime || "");
   const date = dt.slice(0, 10);
   const time = dt.slice(11, 16) || "09:00";
-  if (!date) return "Could not book — no valid date/time was provided.";
+  if (!date) return { success: false, error: "invalid_datetime", spoken: "Could not book — no valid date/time was provided." };
 
   const treatment = (args.treatment || args.service || "Consultation").trim();
   const fee = toFee(args.fee);
@@ -432,7 +499,7 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
   // two unassigned bookings colliding) blocks the slot.
   const { data: atTime } = await supabase.from("appointments").select("id, provider").eq("workspace_id", ws).eq("date", date).eq("time", time).neq("status", "Broken");
   const clash = (atTime ?? []).find((a: any) => sameProvider(a.provider, args.doctor));
-  if (clash) return `That slot (${date} ${time}) is already taken${args.doctor ? ` for ${args.doctor}` : ""} — offer the patient a different open time.`;
+  if (clash) return { success: false, error: "slot_taken", date, time, spoken: `That slot (${date} ${time}) is already taken${args.doctor ? ` for ${args.doctor}` : ""} — offer the patient a different open time.` };
 
   const patientId = await resolvePatient(ctx, args);
 
@@ -471,7 +538,7 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
   }
   if (apptErr || !appt) {
     await ctx.log?.(`⚠️ Booking NOT saved to calendar: ${apptErr?.message ?? "insert failed"}.`);
-    return `Could not save the appointment (${apptErr?.message ?? "database error"}). Tell the patient you'll confirm shortly — do not say it is booked.`;
+    return { success: false, error: "db_error", spoken: `Could not save the appointment (${apptErr?.message ?? "database error"}). Tell the patient you'll confirm shortly — do not say it is booked.` };
   }
 
   // The appointment is on OUR calendar now — that's the source of truth the agent
@@ -540,21 +607,83 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
 
   const feeNote = fee != null ? ` · fee ${fee}` : "";
   await ctx.log?.(`📅 Booked ${treatment} on ${date} ${time} for ${fullName || ctx.name}${feeNote} via ${ctx.source}.`);
-  return `Appointment booked: ${treatment}${args.doctor ? ` with ${args.doctor}` : ""} on ${date} at ${time}${feeNote}.`;
+  return {
+    success: true,
+    appointmentId: apptId,
+    patientId,
+    date,
+    time,
+    treatment,
+    provider: args.doctor || "",
+    fee,
+    spoken: `Appointment booked: ${treatment}${args.doctor ? ` with ${args.doctor}` : ""} on ${date} at ${time}${feeNote}.`,
+  };
 }
 
-// Reschedule the patient's next appointment.
-export async function rescheduleAppt(ctx: BookingCtx, args: any): Promise<string> {
+export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promise<string> {
+  return (await bookAppointmentStructured(ctx, args)).spoken;
+}
+
+// All of a patient's upcoming (non-Broken) appointments, soonest first. The
+// Builder adapter uses this to act only when the target is unambiguous — with
+// two or more upcoming appointments it returns the choices instead of guessing.
+export async function listUpcomingAppointments(ws: string | null, patientId: string): Promise<UpcomingAppointment[]> {
+  const { data } = await supabase
+    .from("appointments")
+    .select("id, external_id, google_calendar_event_id, patient_id, date, time, procedure, provider")
+    .eq("workspace_id", ws)
+    .eq("patient_id", patientId)
+    .gte("date", new Date().toISOString().slice(0, 10))
+    .neq("status", "Broken")
+    .order("date")
+    .order("time");
+  return (data ?? []) as UpcomingAppointment[];
+}
+
+// Fetch ONE appointment by an explicit reference, always scoped to the
+// workspace. `id` is the Pydent appointment UUID; `externalId` is the Open
+// Dental AptNum stored in appointments.external_id — the two are distinct and
+// never interchangeable. Ownership (patient) is checked by the caller.
+export async function findAppointmentRef(
+  ws: string | null,
+  ref: { id?: string; externalId?: string }
+): Promise<{ ok: true; appt: UpcomingAppointment } | { ok: false; error: string }> {
+  const cols = "id, external_id, google_calendar_event_id, patient_id, date, time, procedure, provider, status";
+  try {
+    if (ref.id) {
+      const { data } = await supabase.from("appointments").select(cols).eq("workspace_id", ws).eq("id", ref.id).maybeSingle();
+      if (!data) return { ok: false, error: "appointment_not_found" };
+      if ((data as any).status === "Broken") return { ok: false, error: "appointment_cancelled" };
+      return { ok: true, appt: data as UpcomingAppointment };
+    }
+    if (ref.externalId) {
+      const { data } = await supabase.from("appointments").select(cols).eq("workspace_id", ws).eq("external_id", ref.externalId).neq("status", "Broken").limit(2);
+      if (!data?.length) return { ok: false, error: "appointment_not_found" };
+      if (data.length > 1) return { ok: false, error: "ambiguous_reference" };
+      return { ok: true, appt: data[0] as UpcomingAppointment };
+    }
+  } catch {
+    // A malformed UUID makes Postgres reject the query — same outcome as no match.
+    return { ok: false, error: "appointment_not_found" };
+  }
+  return { ok: false, error: "appointment_not_found" };
+}
+
+// Reschedule EXACTLY the given appointment row (already validated by the
+// caller: workspace-scoped fetch + patient ownership). Shared by the legacy
+// next-appointment path below and the Builder adapter's exact-id path.
+export async function rescheduleApptRow(
+  ctx: BookingCtx,
+  ap: { id: string; external_id: string | null; google_calendar_event_id?: string | null },
+  datetime: string
+): Promise<ApptActionResult> {
   const ws = ctx.ws;
-  const patientId = ctx.patientId ?? (await resolvePatient(ctx, args));
-  if (!patientId) return "No patient on file to reschedule.";
-  const dt = String(args?.datetime || "");
+  const dt = String(datetime || "");
   const date = dt.slice(0, 10);
   const time = dt.slice(11, 16) || "09:00";
-  if (!date) return "Need a valid new date and time.";
-  const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
-  if (!ap) return "No upcoming appointment found to reschedule.";
-  await supabase.from("appointments").update({ date, time }).eq("id", ap.id);
+  if (!date) return { success: false, error: "invalid_datetime", spoken: "Need a valid new date and time." };
+  const { error } = await supabase.from("appointments").update({ date, time }).eq("id", ap.id);
+  if (error) return { success: false, error: "db_error", appointmentId: ap.id, spoken: `Could not reschedule (${error.message}). Tell the patient you'll confirm shortly — do not say it is moved.` };
   void syncCalendarEvent(ws, ap.google_calendar_event_id, { kind: "move", date, time });
   try {
     const od = await getOdConfig(ws);
@@ -563,7 +692,39 @@ export async function rescheduleAppt(ctx: BookingCtx, args: any): Promise<string
     /* keep the Calendar change */
   }
   await ctx.log?.(`🔁 Rescheduled appointment to ${date} ${time} for ${ctx.name} via ${ctx.source}.`);
-  return `Rescheduled to ${date} at ${time}.`;
+  return { success: true, appointmentId: ap.id, externalId: ap.external_id ?? null, date, time, spoken: `Rescheduled to ${date} at ${time}.` };
+}
+
+// Cancel EXACTLY the given appointment row (validation is the caller's job,
+// as above).
+export async function cancelApptRow(
+  ctx: BookingCtx,
+  ap: { id: string; external_id: string | null; google_calendar_event_id?: string | null }
+): Promise<ApptActionResult> {
+  const ws = ctx.ws;
+  const { error } = await supabase.from("appointments").update({ status: "Broken" }).eq("id", ap.id);
+  if (error) return { success: false, error: "db_error", appointmentId: ap.id, spoken: `Could not cancel (${error.message}). Tell the patient you'll confirm shortly — do not say it is cancelled.` };
+  void syncCalendarEvent(ws, ap.google_calendar_event_id, { kind: "delete" });
+  try {
+    const od = await getOdConfig(ws);
+    if (od?.enabled && ap.external_id) await odForward(ws, "/cancel-appointment", { method: "POST", body: { appointmentId: ap.external_id } });
+  } catch {
+    /* keep the Calendar change */
+  }
+  await ctx.log?.(`❌ Cancelled appointment for ${ctx.name} via ${ctx.source}.`);
+  return { success: true, appointmentId: ap.id, externalId: ap.external_id ?? null, spoken: "Your appointment has been cancelled." };
+}
+
+// Reschedule the patient's next appointment.
+export async function rescheduleAppt(ctx: BookingCtx, args: any): Promise<string> {
+  const ws = ctx.ws;
+  const patientId = ctx.patientId ?? (await resolvePatient(ctx, args));
+  if (!patientId) return "No patient on file to reschedule.";
+  const dt = String(args?.datetime || "");
+  if (!dt.slice(0, 10)) return "Need a valid new date and time.";
+  const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
+  if (!ap) return "No upcoming appointment found to reschedule.";
+  return (await rescheduleApptRow(ctx, ap, dt)).spoken;
 }
 
 // Cancel the patient's next appointment.
@@ -573,15 +734,6 @@ export async function cancelAppt(ctx: BookingCtx, args?: any): Promise<string> {
   if (!patientId) return "No patient on file.";
   const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
   if (!ap) return "No upcoming appointment found to cancel.";
-  await supabase.from("appointments").update({ status: "Broken" }).eq("id", ap.id);
-  void syncCalendarEvent(ws, ap.google_calendar_event_id, { kind: "delete" });
-  try {
-    const od = await getOdConfig(ws);
-    if (od?.enabled && ap.external_id) await odForward(ws, "/cancel-appointment", { method: "POST", body: { appointmentId: ap.external_id } });
-  } catch {
-    /* keep the Calendar change */
-  }
-  await ctx.log?.(`❌ Cancelled appointment for ${ctx.name} via ${ctx.source}.`);
-  return "Your appointment has been cancelled.";
+  return (await cancelApptRow(ctx, ap)).spoken;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
