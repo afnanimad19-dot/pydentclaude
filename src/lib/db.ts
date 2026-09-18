@@ -514,7 +514,7 @@ export interface VoiceSettings {
    *  interruptibility, pipeline) are kept here rather than shown as fake
    *  controls. */
   builderImport?: {
-    source: "livekit-builder";
+    source: "livekit-builder" | "livekit-builder-zip";
     agentName: string;
     agentId?: string;
     agentVersion?: string;
@@ -523,6 +523,13 @@ export interface VoiceSettings {
     reasoningEffort?: string;
     greetingInterruptible?: boolean;
     pipeline?: string;
+    /** ZIP imports: the uploaded filename and the entry the config came from. */
+    filename?: string;
+    sourceFile?: string;
+    /** SHA-256 of the agent.py text — identifies repeat imports of the same code. */
+    sourceFingerprint?: string;
+    /** Exact Builder model strings, kept even when unmapped in Pydent. */
+    rawModels?: { stt?: string; llm?: string; tts?: string; voice?: string };
   };
   /** Tools imported from a LiveKit Builder export — a sanitized representation
    *  (native mappings are executable through existing capabilities; HTTP tools

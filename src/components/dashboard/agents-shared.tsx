@@ -72,6 +72,7 @@ import { History } from "lucide-react";
 import { LIVEKIT_STT, LIVEKIT_LLM, LIVEKIT_TTS, LIVEKIT_DEFAULTS, livekitVoiceLabel, type LivekitAgentSettings } from "@/lib/livekit-models";
 import { normalizeVoiceSettings, validateVoiceSettings } from "@/lib/agent-config";
 import { parseBuilderExport, mapBuilderModels, callEndingText, BUILDER_FIELDS, parseBuilderTools, mergeImportedTools, type BuilderField } from "@/lib/livekit-builder-import";
+import { parseBuilderZip, type ZipParseResult } from "@/lib/livekit-zip-import";
 import {
   AgentToolsPanel,
   AgentAdvancedPanel,
@@ -2252,7 +2253,10 @@ const BUILDER_FIELD_LABELS: Record<BuilderField, string> = {
   voice: "Voice",
   voiceLanguage: "Voice language",
   noiseCancellation: "Noise cancellation",
+  noiseCancellationModel: "Noise-cancellation model",
   backgroundAudio: "Background audio",
+  turnDetector: "Turn detector",
+  preemptiveGeneration: "Preemptive generation",
 };
 
 function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
@@ -2290,9 +2294,39 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
 
   // Parse the pasted Builder export live, so the checklist always tells the
   // truth about what will actually be imported.
-  const parsed = useMemo(() => parseBuilderExport(builderText), [builderText]);
+  // Two sources feed the SAME normalized representation: the paste box, and a
+  // LiveKit Builder "Download code" ZIP parsed entirely in the browser. A
+  // successfully parsed ZIP takes precedence for the preview and the import.
+  const [zip, setZip] = useState<{ filename: string; result: ZipParseResult } | null>(null);
+  const [zipErr, setZipErr] = useState<string | null>(null);
+  const [zipBusy, setZipBusy] = useState(false);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+
+  const pasteParsed = useMemo(() => parseBuilderExport(builderText), [builderText]);
+  const pasteTools = useMemo(() => parseBuilderTools(builderText), [builderText]);
+  const parsed = zip ? zip.result.parsed : pasteParsed;
+  const parsedTools = zip ? zip.result.tools : pasteTools;
   const mapped = useMemo(() => mapBuilderModels(parsed.snapshot), [parsed]);
-  const parsedTools = useMemo(() => parseBuilderTools(builderText), [builderText]);
+
+  async function onZipFile(file: File | null) {
+    setZipErr(null);
+    if (!file) { setZip(null); return; }
+    setZipBusy(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const result = await parseBuilderZip(bytes);
+      setZip({ filename: file.name, result });
+      // Auto-fill the editable fields, same as the paste path.
+      if (result.parsed.snapshot.welcomeMessage) setGreeting(result.parsed.snapshot.welcomeMessage);
+      if (result.parsed.snapshot.instructions) setInstructions(result.parsed.snapshot.instructions);
+    } catch (e) {
+      setZip(null);
+      setZipErr(e instanceof Error ? e.message : "Could not read the ZIP.");
+    } finally {
+      setZipBusy(false);
+      if (zipInputRef.current) zipInputRef.current.value = "";
+    }
+  }
   // Auto-fill greeting/instructions from a paste, in the paste handler itself
   // (not an effect) so the user can still edit the filled values afterwards.
   function onBuilderPaste(text: string) {
@@ -2318,8 +2352,13 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
     const endCallStruct = parsedTools.endCall;
     const endingText = endCallStruct ? "" : callEndingText(snap);
     const builderImport = {
-      source: "livekit-builder" as const,
+      source: (zip ? "livekit-builder-zip" : "livekit-builder") as "livekit-builder" | "livekit-builder-zip",
       agentName: target,
+      ...(zip ? { filename: zip.filename, sourceFile: zip.result.sourceFile, sourceFingerprint: zip.result.fingerprint } : {}),
+      // Raw Builder model strings, kept even when unmapped so nothing is lost.
+      ...(parsed.snapshot.stt || parsed.snapshot.llm || parsed.snapshot.tts || parsed.snapshot.voice
+        ? { rawModels: { stt: parsed.snapshot.stt, llm: parsed.snapshot.llm, tts: parsed.snapshot.tts, voice: parsed.snapshot.voice } }
+        : {}),
       ...(cloud?.agentId ? { agentId: cloud.agentId } : {}),
       ...(cloud?.version ? { agentVersion: cloud.version } : {}),
       importedAt: new Date().toISOString(),
@@ -2439,7 +2478,35 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
             )}
             {submitErr && <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">{submitErr}</p>}
 
-            <Field label="Builder configuration (optional) — paste the agent's exported JSON from the LiveKit Builder, or just its Instructions text">
+            <Field label="LiveKit Builder download (recommended)">
+              <input ref={zipInputRef} type="file" accept=".zip" className="hidden" onChange={(e) => onZipFile(e.target.files?.[0] ?? null)} />
+              {zip ? (
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5">
+                  <span className="min-w-0 truncate text-sm text-ink-800">
+                    <FileText className="mr-1.5 inline h-4 w-4 text-emerald-600" />
+                    {zip.filename} <span className="text-xs text-ink-500">· parsed {zip.result.sourceFile}</span>
+                  </span>
+                  <button type="button" onClick={() => { setZip(null); setZipErr(null); }} className="shrink-0 rounded-lg border border-ink-200 px-2.5 py-1 text-xs font-semibold text-ink-600 hover:bg-ink-50">
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => zipInputRef.current?.click()}
+                  disabled={zipBusy}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-ink-300 py-3.5 text-sm font-medium text-ink-500 hover:border-brand-400 hover:text-brand-600 disabled:opacity-50"
+                >
+                  <Upload className="h-4 w-4" /> {zipBusy ? "Parsing…" : "Upload the ZIP from LiveKit Builder → ⋮ → Download code"}
+                </button>
+              )}
+              {zipErr && <p className="mt-1 text-[11px] text-rose-600">{zipErr}</p>}
+              <p className="mt-1 text-[11px] text-ink-400">
+                The ZIP is read entirely in your browser and never uploaded — Pydent parses the generated <code className="rounded bg-ink-100 px-1">src/agent.py</code> as text (nothing is executed) and any .env/secret files are ignored outright.
+              </p>
+            </Field>
+
+            <Field label="Or paste the Builder configuration — exported JSON, or just the Instructions text">
               <textarea
                 className={`${inputCls} min-h-28 font-mono text-xs`}
                 placeholder={'{ "instructions": "...", "welcome_message": "...", "stt": {"provider": "...", "model": "..."}, ... }  — or plain instructions text'}
@@ -2451,17 +2518,32 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
               </p>
             </Field>
 
-            {builderText.trim() && (
+            {(builderText.trim() || zip) && (
               <div className="rounded-xl border border-ink-100 bg-ink-50/50 p-3">
-                <p className="mb-2 text-xs font-semibold text-ink-700">Configuration detected</p>
+                <p className="mb-2 text-xs font-semibold text-ink-700">Configuration detected{zip ? ` — from ${zip.result.sourceFile}` : ""}</p>
                 <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
                   <p className="text-xs text-emerald-600">✓ Agent identity (from the LiveKit API)</p>
-                  {BUILDER_FIELDS.map((f) => (
-                    <p key={f} className={`text-xs ${parsed.status[f] === "imported" ? "text-emerald-600" : "text-ink-400"}`}>
-                      {parsed.status[f] === "imported" ? "✓" : "—"} {BUILDER_FIELD_LABELS[f]}
-                      {parsed.status[f] !== "imported" && " (not found in the paste)"}
-                    </p>
-                  ))}
+                  {BUILDER_FIELDS.map((f) => {
+                    const imported = parsed.status[f] === "imported";
+                    // A detected model that has no Pydent runtime mapping is
+                    // shown as a snapshot (◆), never as a successful mapping.
+                    const unmapped =
+                      imported &&
+                      ((f === "stt" && parsed.snapshot.stt && !mapped.stt) ||
+                        (f === "llm" && parsed.snapshot.llm && !mapped.llm) ||
+                        (f === "tts" && parsed.snapshot.tts && !mapped.tts));
+                    const valueNote =
+                      f === "stt" ? parsed.snapshot.stt : f === "llm" ? parsed.snapshot.llm : f === "tts" ? parsed.snapshot.tts :
+                      f === "voice" ? parsed.snapshot.voice : f === "noiseCancellationModel" ? parsed.snapshot.noiseCancellationModel : undefined;
+                    return (
+                      <p key={f} className={`text-xs ${!imported ? "text-ink-400" : unmapped ? "text-sky-600" : "text-emerald-600"}`}>
+                        {!imported ? "—" : unmapped ? "◆" : "✓"} {BUILDER_FIELD_LABELS[f]}
+                        {imported && valueNote ? `: ${String(valueNote).slice(0, 40)}` : ""}
+                        {!imported && " (not found)"}
+                        {unmapped && " — detected in LiveKit, not currently mapped to a Pydent runtime option"}
+                      </p>
+                    );
+                  })}
                 </div>
                 {(parsedTools.tools.length > 0 || parsedTools.referencedOnly.length > 0) && (
                   <div className="mt-2 border-t border-ink-100 pt-2">

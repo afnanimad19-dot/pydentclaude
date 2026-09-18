@@ -34,7 +34,10 @@ export const BUILDER_FIELDS = [
   "voice",
   "voiceLanguage",
   "noiseCancellation",
+  "noiseCancellationModel",
   "backgroundAudio",
+  "turnDetector",
+  "preemptiveGeneration",
 ] as const;
 export type BuilderField = (typeof BUILDER_FIELDS)[number];
 export type FieldStatus = "imported" | "unavailable";
@@ -56,7 +59,13 @@ export interface BuilderSnapshot {
   voice?: string;
   voiceLanguage?: string;
   noiseCancellation?: boolean;
+  /** The exact LiveKit noise-cancellation model name (e.g. from a code export). */
+  noiseCancellationModel?: string;
   backgroundAudio?: string;
+  /** Turn detector kind detected in a code export (snapshot only). */
+  turnDetector?: string;
+  /** Preemptive generation flag from a code export (snapshot only). */
+  preemptiveGeneration?: boolean;
 }
 
 export interface ParsedBuilderExport {
