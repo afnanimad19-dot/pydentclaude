@@ -205,6 +205,11 @@ export function normalizeVoiceSettings(
     // Provenance of a LiveKit Builder import — carried through verbatim so a
     // normalize -> save cycle never drops it.
     ...(v.builderImport ? { builderImport: v.builderImport as VoiceSettings["builderImport"] } : {}),
+    // Imported Builder tools + structured end-call config: carried through
+    // (bounded) so save cycles never drop them. Secret scrubbing happened at
+    // parse time; these are display/merge structures, not runtime tool state.
+    ...(Array.isArray(v.importedTools) ? { importedTools: (v.importedTools as VoiceSettings["importedTools"])!.slice(0, 40) } : {}),
+    ...(v.endCall && typeof v.endCall === "object" ? { endCall: v.endCall as VoiceSettings["endCall"] } : {}),
     interruptions,
     backgroundAudio: pickEnum(v.backgroundAudio, BACKGROUND_AUDIO.map((b) => b.id) as unknown as readonly string[], "none"),
     tools,

@@ -621,3 +621,162 @@ export function BackgroundAudioField({ value, onChange }: { value: VoiceSettings
     </Field>
   );
 }
+
+// ── Imported LiveKit Builder tools + End Call configuration ─────────────────
+// These render the sanitized tool representation imported from a LiveKit
+// Builder export. Honesty rules: a tool is labeled "Runs in Pydent" ONLY when
+// it maps to an existing executable capability (native worker tools, knowledge
+// base, end call). HTTP/webhook tools are labeled configuration-only — the
+// Pydent runtime has no generic HTTP tool executor, and we do not pretend it
+// does. Secrets never round-trip: auth header values were stripped at parse
+// time and this UI only ever shows header names.
+import type { ImportedTool, EndCallConfig } from "@/lib/livekit-builder-import";
+
+const TOOL_TYPE_BADGE: Record<string, { label: string; cls: string }> = {
+  end_call: { label: "End Call", cls: "bg-brand-500/15 text-brand-600" },
+  knowledge_base: { label: "Knowledge Base", cls: "bg-emerald-500/15 text-emerald-600" },
+  pydent_native: { label: "Pydent Native", cls: "bg-emerald-500/15 text-emerald-600" },
+  http: { label: "HTTP/Webhook", cls: "bg-sky-500/15 text-sky-600" },
+  imported: { label: "Imported snapshot", cls: "bg-ink-100 text-ink-500" },
+};
+
+export function ImportedToolsPanel({ value, onChange }: { value: VoiceSettings; onChange: (v: VoiceSettings) => void }) {
+  const tools = value.importedTools ?? [];
+  const [editing, setEditing] = useState<number | null>(null);
+  const setTools = (t: ImportedTool[]) => onChange({ ...value, importedTools: t });
+  const update = (i: number, patch: Partial<ImportedTool>) => setTools(tools.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
+
+  const addHttpTool = () =>
+    setTools([
+      ...tools,
+      { name: `http_tool_${tools.length + 1}`, displayName: "New HTTP tool", type: "http", description: "", enabled: false, source: "manual", executable: false, method: "POST", url: "" },
+    ]);
+
+  if (!tools.length) return null;
+
+  return (
+    <Section
+      title="Imported LiveKit Builder tools"
+      subtitle="What the Builder agent's tools look like in Pydent. Native mappings run through Pydent's own tools; HTTP tools are stored configuration — Pydent does not execute them yet."
+      right={
+        <button type="button" onClick={addHttpTool} className="flex items-center gap-1.5 rounded-lg border border-ink-200 px-2.5 py-1.5 text-xs font-semibold text-ink-600 hover:bg-ink-50">
+          <Plus className="h-3.5 w-3.5" /> Add tool
+        </button>
+      }
+    >
+      <div className="space-y-2">
+        {tools.map((t, i) => {
+          const badge = TOOL_TYPE_BADGE[t.type] ?? TOOL_TYPE_BADGE.imported;
+          return (
+            <div key={`${t.name}-${i}`} className="rounded-xl border border-ink-100 px-3 py-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-ink-800">
+                    {t.displayName}
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${badge.cls}`}>{badge.label}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${t.executable ? "bg-emerald-500/15 text-emerald-600" : "bg-amber-500/15 text-amber-600"}`}>
+                      {t.executable ? "Runs in Pydent" : "Configuration only"}
+                    </span>
+                  </p>
+                  {t.description && <p className="text-xs text-ink-500">{t.description}</p>}
+                  {t.type === "http" && (
+                    <p className="font-mono text-[11px] text-ink-400">{t.method ?? "?"} {t.url || "(no endpoint)"}{t.authRequired ? " · auth required (secret removed at import)" : ""}</p>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {(t.type === "http" || t.type === "imported") && (
+                    <button type="button" onClick={() => setEditing(editing === i ? null : i)} className="rounded-lg border border-ink-200 px-2 py-1 text-[11px] font-semibold text-ink-600 hover:bg-ink-50">
+                      {editing === i ? "Close" : "Configure"}
+                    </button>
+                  )}
+                  <Toggle checked={t.enabled} onChange={(v) => update(i, { enabled: v })} label={t.displayName} />
+                </div>
+              </div>
+              {editing === i && (
+                <div className="mt-3 grid gap-3 border-t border-ink-100 pt-3 md:grid-cols-2">
+                  <Field label="Name"><input className={inputCls} value={t.displayName} onChange={(e) => update(i, { displayName: e.target.value })} /></Field>
+                  <Field label="HTTP method">
+                    <select className={inputCls} value={t.method ?? "POST"} onChange={(e) => update(i, { method: e.target.value })}>
+                      {["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => <option key={m}>{m}</option>)}
+                    </select>
+                  </Field>
+                  <div className="md:col-span-2">
+                    <Field label="Endpoint URL"><input className={inputCls} placeholder="https://…" value={t.url ?? ""} onChange={(e) => update(i, { url: e.target.value })} /></Field>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Field label="Description / when the agent should use it">
+                      <input className={inputCls} value={t.description ?? ""} onChange={(e) => update(i, { description: e.target.value })} />
+                    </Field>
+                  </div>
+                  {t.headers && Object.keys(t.headers).length > 0 && (
+                    <p className="text-[11px] text-ink-500 md:col-span-2">
+                      Headers (names only — secret values are never stored): <span className="font-mono">{Object.keys(t.headers).join(", ")}</span>
+                    </p>
+                  )}
+                  <p className="text-[11px] text-amber-600 md:col-span-2">
+                    Stored as imported configuration. Pydent&apos;s runtime does not execute custom HTTP tools yet — this definition is preserved for the Builder agent and for a future executor.
+                  </p>
+                  <div className="md:col-span-2">
+                    <button
+                      type="button"
+                      onClick={() => { setEditing(null); setTools(tools.filter((_, idx) => idx !== i)); }}
+                      className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-semibold text-rose-500 hover:bg-rose-500/10"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> Remove this tool
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+const END_CALL_DEFAULT: EndCallConfig = { enabled: true, conditions: "", finalResponse: "", deleteRoom: false, summaryUrl: "", summaryHeaders: {} };
+
+export function EndCallPanel({ value, onChange }: { value: VoiceSettings; onChange: (v: VoiceSettings) => void }) {
+  const ec = value.endCall ?? END_CALL_DEFAULT;
+  const set = (patch: Partial<EndCallConfig>) => onChange({ ...value, endCall: { ...ec, ...patch } });
+  // Render only when an end-call config exists (imported or being edited) —
+  // the plain always-on end_call tool needs no extra card.
+  if (!value.endCall) return null;
+
+  return (
+    <Section
+      title="End Call configuration"
+      subtitle="Conditions and the final response are applied to the live prompt. The room/summary options are preserved imported configuration."
+      right={<Toggle checked={ec.enabled} onChange={(v) => set({ enabled: v })} label="End call tool" />}
+    >
+      {!ec.enabled && (
+        <p className="text-[11px] text-amber-600">
+          Note: Pydent&apos;s own worker always keeps a basic end_call available so calls can end politely; this switch reflects the imported Builder setting.
+        </p>
+      )}
+      <Field label="Conditions — when may the agent end the call?">
+        <textarea rows={2} className={inputCls} placeholder="(empty — no extra conditions)" value={ec.conditions} onChange={(e) => set({ conditions: e.target.value })} />
+      </Field>
+      <Field label="Final response — what to do just before ending">
+        <textarea rows={2} className={inputCls} value={ec.finalResponse} onChange={(e) => set({ finalResponse: e.target.value })} />
+      </Field>
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-ink-100 px-3 py-2.5">
+        <span>
+          <span className="text-sm font-medium text-ink-800">Delete room for all participants</span>
+          <span className="block text-xs text-ink-500">Imported Builder setting — preserved, not executed by Pydent.</span>
+        </span>
+        <Toggle checked={ec.deleteRoom} onChange={(v) => set({ deleteRoom: v })} label="Delete room" />
+      </div>
+      <Field label="Summary endpoint URL (imported configuration — Pydent does not call it)">
+        <input className={inputCls} placeholder="https://…" value={ec.summaryUrl} onChange={(e) => set({ summaryUrl: e.target.value })} />
+      </Field>
+      {Object.keys(ec.summaryHeaders ?? {}).length > 0 && (
+        <p className="text-[11px] text-ink-500">
+          Summary headers (names only — secret values are never stored): <span className="font-mono">{Object.keys(ec.summaryHeaders).join(", ")}</span>
+        </p>
+      )}
+      {ec.authRequired && <p className="text-[11px] text-amber-600">An authentication header was removed at import — re-enter credentials wherever this endpoint is actually configured.</p>}
+    </Section>
+  );
+}

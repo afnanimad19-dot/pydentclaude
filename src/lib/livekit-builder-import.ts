@@ -65,7 +65,7 @@ export interface ParsedBuilderExport {
   warnings: string[];
 }
 
-const SECRET_KEY = /secret|token|api[-_]?key|authorization|password|bearer|credential/i;
+const SECRET_KEY = /secret|token|api[-_]?key|authorization|password|bearer|credential|cookie|private[-_]?key/i;
 
 function norm(key: string): string {
   return key.toLowerCase().replace(/[\s_-]+/g, "");
@@ -268,4 +268,304 @@ export function mergeImportedAgent<T extends Record<string, unknown>>(existing: 
     out[k] = v;
   }
   return out as T;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Agent tools import
+//
+// A Builder export may carry a tools/actions list. Pydent's OWN executable
+// tools are the AGENT_TOOLS catalog run by the Pydent worker (booking, patient
+// lookup, email, transfer, search_knowledge) plus the always-on end_call —
+// those stay authoritative and are NEVER modified by an import. What is
+// imported here is a faithful, sanitized REPRESENTATION of the Builder's
+// tools:
+//   * a tool matching a Pydent capability is marked pydent_native (executable
+//     through the existing capability — nothing new is registered);
+//   * an HTTP/webhook tool is stored as configuration ONLY — the current
+//     Pydent runtime does not execute arbitrary HTTP tools, and the UI says so
+//     instead of pretending;
+//   * anything else is kept as an inert imported snapshot.
+// A tool name appearing in the Instructions text is NEVER enough to create a
+// tool — only entries in an actual tools/actions array are parsed.
+// ════════════════════════════════════════════════════════════════════════════
+
+export type ImportedToolType = "end_call" | "http" | "knowledge_base" | "pydent_native" | "imported";
+
+export interface ImportedTool {
+  name: string;         // normalized snake_case identity (merge key)
+  displayName: string;
+  type: ImportedToolType;
+  description?: string;
+  enabled: boolean;
+  source: "livekit-builder" | "manual";
+  /** true only when Pydent's existing runtime actually executes this behavior. */
+  executable: boolean;
+  /** AGENT_TOOLS id when this maps to an existing Pydent capability. */
+  mappedTo?: string;
+  // http tools only — never guessed; absent when the export didn't state them.
+  method?: string;
+  url?: string;
+  headers?: Record<string, string>; // secret values stripped, names kept
+  inputSchema?: unknown;            // recursively sanitized
+  timeoutMs?: number;
+  /** true when an auth-looking header/value was removed — the tool needs its
+   *  credentials re-entered wherever it is actually executed. */
+  authRequired?: boolean;
+}
+
+export interface EndCallConfig {
+  enabled: boolean;
+  conditions: string;
+  finalResponse: string;
+  deleteRoom: boolean;
+  summaryUrl: string;
+  /** Secret values stripped; names kept so the shape is visible. */
+  summaryHeaders: Record<string, string>;
+  authRequired?: boolean;
+}
+
+// Names of Pydent's native worker tools an import can map onto (aliases incl.).
+const NATIVE_TOOL_ALIASES: Record<string, string> = {
+  get_available_slots: "get_available_slots",
+  check_availability: "get_available_slots",
+  availability: "get_available_slots",
+  book_appointment: "book_appointment",
+  book: "book_appointment",
+  manage_appointment: "reschedule_appointment",
+  reschedule_appointment: "reschedule_appointment",
+  cancel_appointment: "cancel_appointment",
+  lookup_patient: "lookup_patient",
+  find_patient: "lookup_patient",
+  create_patient: "create_patient",
+  send_email: "send_email",
+  transfer_call: "transfer_call",
+  transfer: "transfer_call",
+  search_knowledge: "search_knowledge",
+};
+
+const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+const SECRET_VALUE = /^(bearer|basic|token)\s+\S+|^[A-Za-z0-9+/_=-]{24,}$/i;
+
+export function normalizeToolName(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z0-9_]/g, "").slice(0, 64);
+}
+
+/** Deep-clone with every secret-looking KEY removed, at any depth. */
+export function scrubSecrets(value: unknown, depth = 0): unknown {
+  if (depth > 8 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => scrubSecrets(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (SECRET_KEY.test(k)) continue;
+    out[k] = scrubSecrets(v, depth + 1);
+  }
+  return out;
+}
+
+/** Headers: drop secret-named keys; keep auth-shaped header NAMES with the
+ *  value blanked, and report that authentication needs reconfiguring. */
+function sanitizeHeaders(raw: unknown): { headers: Record<string, string>; authRequired: boolean } {
+  const headers: Record<string, string> = {};
+  let authRequired = false;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const value = String(v ?? "");
+      // Authorization-style headers: the NAME is kept (so the shape stays
+      // visible) but the secret value is blanked, never persisted.
+      if (/^authorization$/i.test(k) || SECRET_VALUE.test(value)) {
+        headers[k.slice(0, 80)] = "";
+        authRequired = true;
+        continue;
+      }
+      // Any other secret-named header is dropped entirely.
+      if (SECRET_KEY.test(k)) { authRequired = true; continue; }
+      headers[k.slice(0, 80)] = value.slice(0, 300);
+    }
+  }
+  return { headers, authRequired };
+}
+
+function toolEntryToImported(entry: unknown): ImportedTool | null {
+  if (!entry || typeof entry !== "object") return null;
+  const m = new Map<string, unknown>();
+  collect(entry, m);
+  const rawName = firstString(m, "name", "id", "tool_name", "function", "function_name", "title");
+  if (!rawName) return null;
+  const name = normalizeToolName(rawName);
+  if (!name) return null;
+
+  const displayName = firstString(m, "display_name", "label", "title") ?? rawName;
+  const description = firstString(m, "description", "summary");
+  const explicitType = (firstString(m, "type", "kind", "category") ?? "").toLowerCase();
+  const url = firstString(m, "url", "endpoint", "uri", "webhook_url", "server_url");
+  const enabled = firstBool(m, "enabled", "active") ?? true;
+
+  const base = { name, displayName, description, enabled, source: "livekit-builder" as const };
+
+  // End call: folds into the structured end-call config as well.
+  if (name === "end_call" || name === "endcall" || /end.?call/.test(explicitType)) {
+    return { ...base, name: "end_call", type: "end_call", executable: true, mappedTo: "end_call" };
+  }
+  // Knowledge base: maps to Pydent's existing KB capability — no new documents.
+  if (/knowledge/.test(name) || /knowledge/.test(explicitType)) {
+    return { ...base, type: "knowledge_base", executable: true, mappedTo: "search_knowledge" };
+  }
+  // Native Pydent capability by (alias) name.
+  const mapped = NATIVE_TOOL_ALIASES[name];
+  if (mapped && !url) {
+    return { ...base, type: "pydent_native", executable: true, mappedTo: mapped };
+  }
+  // HTTP/webhook tool: needs a real URL — never guessed. Stored as
+  // configuration only; the current runtime does not execute it.
+  const looksHttp = /http|webhook|api|request/.test(explicitType) || !!url;
+  if (looksHttp) {
+    if (!url || !/^https?:\/\//i.test(url)) {
+      // A "http" tool without a stated endpoint has no executable definition.
+      return { ...base, type: "imported", executable: false };
+    }
+    const methodRaw = (firstString(m, "method", "http_method", "verb") ?? "").toUpperCase();
+    const { headers, authRequired } = sanitizeHeaders(m.get("headers"));
+    const schemaRaw = m.get(norm("input_schema")) ?? m.get(norm("parameters")) ?? m.get(norm("schema"));
+    const timeoutS = m.get(norm("timeout"));
+    const timeoutMsRaw = m.get(norm("timeout_ms"));
+    const timeoutMs =
+      typeof timeoutMsRaw === "number" ? timeoutMsRaw : typeof timeoutS === "number" ? timeoutS * 1000 : undefined;
+    return {
+      ...base,
+      type: "http",
+      executable: false, // honest: Pydent's runtime has no generic HTTP tool executor
+      url,
+      ...(HTTP_METHODS.includes(methodRaw) ? { method: methodRaw } : {}),
+      ...(Object.keys(headers).length ? { headers } : {}),
+      ...(schemaRaw !== undefined ? { inputSchema: scrubSecrets(schemaRaw) } : {}),
+      ...(timeoutMs && Number.isFinite(timeoutMs) ? { timeoutMs: Math.min(120000, Math.max(1000, timeoutMs)) } : {}),
+      ...(authRequired ? { authRequired: true } : {}),
+    };
+  }
+  // Unknown: keep as an inert snapshot.
+  return { ...base, type: "imported", executable: false };
+}
+
+/** Find the tools array wherever it lives: tools / actions / functions, at the
+ *  top level or nested (e.g. { agent: { tools: [...] } }). */
+function findToolsArray(parsed: unknown, depth = 0): unknown[] | null {
+  if (depth > 5 || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  for (const key of ["tools", "actions", "functions"]) {
+    const v = (parsed as Record<string, unknown>)[key] ?? (parsed as Record<string, unknown>)[key.toUpperCase()];
+    if (Array.isArray(v)) return v;
+  }
+  for (const v of Object.values(parsed as Record<string, unknown>)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const hit = findToolsArray(v, depth + 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+export interface ParsedBuilderTools {
+  tools: ImportedTool[];
+  endCall?: EndCallConfig;
+  /** Native tool names mentioned ONLY in the instructions text — reported for
+   *  the preview, never turned into tools. */
+  referencedOnly: string[];
+  warnings: string[];
+}
+
+export function parseBuilderTools(text: string): ParsedBuilderTools {
+  const out: ParsedBuilderTools = { tools: [], referencedOnly: [], warnings: [] };
+  const raw = (text ?? "").trim();
+  if (!raw) return out;
+  const unfenced = raw.replace(/^```[a-z]*\s*/i, "").replace(/\s*```$/, "");
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(unfenced);
+  } catch {
+    // Not JSON: instructions text alone NEVER creates tools — only report refs.
+    out.referencedOnly = referencedToolNames(raw, []);
+    return out;
+  }
+
+  const arr = findToolsArray(parsed);
+  const seen = new Set<string>();
+  for (const entry of arr ?? []) {
+    const tool = toolEntryToImported(entry);
+    if (!tool) continue;
+    if (seen.has(tool.name)) {
+      out.warnings.push(`Duplicate tool "${tool.name}" in the export — first definition kept.`);
+      continue;
+    }
+    seen.add(tool.name);
+    out.tools.push(tool);
+  }
+
+  // Structured end-call block (top level or nested under end_call / call_ending).
+  const m = new Map<string, unknown>();
+  collect(parsed, m);
+  const ecEnabled = firstBool(m, "end_call_enabled", "end_call", "endcall");
+  const conditions = firstString(m, "end_call_conditions", "conditions") ?? "";
+  const finalResponse = firstString(m, "final_response", "final_response_instructions", "closing") ?? "";
+  const deleteRoom = firstBool(m, "delete_room", "delete_room_for_all_participants", "deleteroomforallparticipants") ?? false;
+  const summaryUrl = firstString(m, "summary_endpoint", "summary_endpoint_url", "summary_url") ?? "";
+  const sum = sanitizeHeaders(m.get(norm("summary_headers")) ?? m.get(norm("headers")));
+  const hasEndCallTool = out.tools.some((t) => t.type === "end_call");
+  if (ecEnabled !== undefined || conditions || finalResponse || summaryUrl || hasEndCallTool) {
+    out.endCall = {
+      enabled: ecEnabled ?? hasEndCallTool,
+      conditions,
+      finalResponse,
+      deleteRoom,
+      summaryUrl: /^https?:\/\//i.test(summaryUrl) ? summaryUrl : "",
+      summaryHeaders: sum.headers,
+      ...(sum.authRequired ? { authRequired: true } : {}),
+    };
+  }
+
+  // Instruction-referenced names (report only) — never sources of tools.
+  const instructions = firstString(m, "instructions", "prompt", "system_prompt") ?? "";
+  out.referencedOnly = referencedToolNames(instructions, out.tools.map((t) => t.name));
+  return out;
+}
+
+/** Known tool names mentioned in free text but not backed by a definition. */
+export function referencedToolNames(text: string, importedNames: string[]): string[] {
+  const found = new Set<string>();
+  for (const alias of Object.keys(NATIVE_TOOL_ALIASES)) {
+    if (new RegExp(`\\b${alias}\\b`, "i").test(text) && !importedNames.includes(normalizeToolName(alias))) {
+      found.add(alias);
+    }
+  }
+  return [...found];
+}
+
+/**
+ * Non-destructive merge of imported tools into an agent's existing list.
+ *  - matched by normalized name;
+ *  - existing entries are never deleted because they're absent from an import;
+ *  - populated fields are never overwritten by empty/undefined imported values;
+ *  - a name-only import (no executable config) never downgrades an existing
+ *    configured tool.
+ */
+export function mergeImportedTools(existing: ImportedTool[] | undefined, incoming: ImportedTool[]): ImportedTool[] {
+  const out: ImportedTool[] = [...(existing ?? [])];
+  for (const inc of incoming) {
+    const i = out.findIndex((t) => t.name === inc.name);
+    if (i === -1) {
+      out.push(inc);
+      continue;
+    }
+    const cur = out[i];
+    const merged: ImportedTool = { ...cur };
+    for (const [k, v] of Object.entries(inc)) {
+      if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) continue;
+      if (k === "headers" && typeof v === "object" && Object.keys(v as object).length === 0) continue;
+      (merged as unknown as Record<string, unknown>)[k] = v;
+    }
+    // A config-less import must not strip an existing executable definition.
+    if (cur.url && !inc.url) merged.url = cur.url;
+    if (cur.method && !inc.method) merged.method = cur.method;
+    if (cur.inputSchema !== undefined && inc.inputSchema === undefined) merged.inputSchema = cur.inputSchema;
+    out[i] = merged;
+  }
+  return out.slice(0, 40);
 }

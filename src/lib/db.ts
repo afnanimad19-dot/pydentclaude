@@ -524,6 +524,15 @@ export interface VoiceSettings {
     greetingInterruptible?: boolean;
     pipeline?: string;
   };
+  /** Tools imported from a LiveKit Builder export — a sanitized representation
+   *  (native mappings are executable through existing capabilities; HTTP tools
+   *  are configuration-only until a runtime executor exists). Never affects
+   *  the native tool toggles above. */
+  importedTools?: import("@/lib/livekit-builder-import").ImportedTool[];
+  /** Structured end-call configuration (imported or edited). conditions and
+   *  finalResponse reach the runtime prompt; deleteRoom/summaryUrl are
+   *  preserved as configuration for the Builder agent. */
+  endCall?: import("@/lib/livekit-builder-import").EndCallConfig;
   /** Schema version of this config blob. */
   configVersion?: number;
 }

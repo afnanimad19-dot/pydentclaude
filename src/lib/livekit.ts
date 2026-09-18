@@ -224,6 +224,11 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string) {
     tools.transfer_call && vs.transferNumber
       ? `TRANSFER: if the caller needs a human, say "${vs.transferMessage || "Let me put you through to the team."}" and then call transfer_call.`
       : "",
+    // Structured end-call configuration (imported from LiveKit Builder or
+    // edited in the End Call panel) — the conditions/final-response reach the
+    // runtime as prompt rules; deleteRoom/summary endpoint stay configuration.
+    (vs as any).endCall?.conditions ? `CALL ENDING — end the call only when: ${(vs as any).endCall.conditions}` : "",
+    (vs as any).endCall?.finalResponse ? `CALL ENDING — before ending: ${(vs as any).endCall.finalResponse}` : "",
   ].filter(Boolean).join("\n\n");
 
   return {

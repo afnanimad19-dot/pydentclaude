@@ -71,13 +71,15 @@ import {
 import { History } from "lucide-react";
 import { LIVEKIT_STT, LIVEKIT_LLM, LIVEKIT_TTS, LIVEKIT_DEFAULTS, livekitVoiceLabel, type LivekitAgentSettings } from "@/lib/livekit-models";
 import { normalizeVoiceSettings, validateVoiceSettings } from "@/lib/agent-config";
-import { parseBuilderExport, mapBuilderModels, callEndingText, BUILDER_FIELDS, type BuilderField } from "@/lib/livekit-builder-import";
+import { parseBuilderExport, mapBuilderModels, callEndingText, BUILDER_FIELDS, parseBuilderTools, mergeImportedTools, type BuilderField } from "@/lib/livekit-builder-import";
 import {
   AgentToolsPanel,
   AgentAdvancedPanel,
   PostCallPanel,
   PrivacyPanel,
   BackgroundAudioField,
+  ImportedToolsPanel,
+  EndCallPanel,
 } from "@/components/dashboard/agent-advanced";
 
 const OPENAI_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-4.1", "openai/gpt-4.1-mini"];
@@ -1652,7 +1654,11 @@ export function AgentModal({
           )}
 
           {activeTab === "tools" && (
-            <AgentToolsPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+            <div className="space-y-4">
+              <AgentToolsPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+              <EndCallPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+              <ImportedToolsPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+            </div>
           )}
 
           {activeTab === "advanced" && (
@@ -2286,6 +2292,7 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
   // truth about what will actually be imported.
   const parsed = useMemo(() => parseBuilderExport(builderText), [builderText]);
   const mapped = useMemo(() => mapBuilderModels(parsed.snapshot), [parsed]);
+  const parsedTools = useMemo(() => parseBuilderTools(builderText), [builderText]);
   // Auto-fill greeting/instructions from a paste, in the paste handler itself
   // (not an effect) so the user can still edit the filled values afterwards.
   function onBuilderPaste(text: string) {
@@ -2305,7 +2312,11 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
 
     const cloud = deployed.find((a) => a.agentName === target);
     const snap = parsed.snapshot;
-    const endingText = callEndingText(snap);
+    // The structured end-call config supersedes the older behavior-text block;
+    // the text path remains only for pastes with legacy call-ending fields and
+    // no structured block.
+    const endCallStruct = parsedTools.endCall;
+    const endingText = endCallStruct ? "" : callEndingText(snap);
     const builderImport = {
       source: "livekit-builder" as const,
       agentName: target,
@@ -2345,6 +2356,9 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
           livekit: lk,
           ...(snap.noiseCancellation !== undefined ? { noiseReductionEnabled: snap.noiseCancellation } : {}),
           ...(snap.backgroundAudio !== undefined ? { backgroundAudio: /off|none|silent/i.test(snap.backgroundAudio) ? "none" : vs.backgroundAudio } : {}),
+          // Non-destructive: existing tools survive imports that omit them.
+          ...(parsedTools.tools.length ? { importedTools: mergeImportedTools(vs.importedTools, parsedTools.tools) } : {}),
+          ...(endCallStruct ? { endCall: endCallStruct } : {}),
           builderImport,
         },
       });
@@ -2373,6 +2387,8 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
         voiceSettings: {
           ...defaultVoiceSettings(),
           ...(snap.noiseCancellation !== undefined ? { noiseReductionEnabled: snap.noiseCancellation } : {}),
+          ...(parsedTools.tools.length ? { importedTools: parsedTools.tools } : {}),
+          ...(endCallStruct ? { endCall: endCallStruct } : {}),
           livekit: {
             ...LIVEKIT_DEFAULTS,
             agentName: target,
@@ -2447,9 +2463,29 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
                     </p>
                   ))}
                 </div>
-                {[...parsed.warnings, ...mapped.warnings].length > 0 && (
+                {(parsedTools.tools.length > 0 || parsedTools.referencedOnly.length > 0) && (
+                  <div className="mt-2 border-t border-ink-100 pt-2">
+                    <p className="mb-1 text-xs font-semibold text-ink-700">Tools</p>
+                    <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      {parsedTools.tools.map((t) => (
+                        <p key={t.name} className={`text-xs ${t.executable ? "text-emerald-600" : "text-sky-600"}`}>
+                          {t.executable ? "✓" : "◆"} {t.displayName}
+                          {t.type === "pydent_native" && " (maps to Pydent tool)"}
+                          {t.type === "knowledge_base" && " (maps to Pydent knowledge base)"}
+                          {t.type === "http" && " (HTTP — imported as configuration, not executed by Pydent)"}
+                          {t.type === "imported" && " (no executable definition — kept as snapshot)"}
+                          {t.authRequired && " — auth header removed, needs reconfiguring"}
+                        </p>
+                      ))}
+                      {parsedTools.referencedOnly.map((n) => (
+                        <p key={n} className="text-xs text-ink-400">— {n}: referenced in instructions, no executable definition imported</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {[...parsed.warnings, ...mapped.warnings, ...parsedTools.warnings].length > 0 && (
                   <ul className="mt-2 space-y-0.5 border-t border-ink-100 pt-2">
-                    {[...parsed.warnings, ...mapped.warnings].map((w, i) => (
+                    {[...parsed.warnings, ...mapped.warnings, ...parsedTools.warnings].map((w, i) => (
                       <li key={i} className="text-[11px] text-amber-600">{w}</li>
                     ))}
                   </ul>
