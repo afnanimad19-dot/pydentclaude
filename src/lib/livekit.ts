@@ -227,8 +227,15 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string) {
     // Structured end-call configuration (imported from LiveKit Builder or
     // edited in the End Call panel) — the conditions/final-response reach the
     // runtime as prompt rules; deleteRoom/summary endpoint stay configuration.
-    (vs as any).endCall?.conditions ? `CALL ENDING — end the call only when: ${(vs as any).endCall.conditions}` : "",
-    (vs as any).endCall?.finalResponse ? `CALL ENDING — before ending: ${(vs as any).endCall.finalResponse}` : "",
+    // Skipped when the behavior text already carries a CALL ENDING block (an
+    // agent imported before the structured config existed) so the rules are
+    // never duplicated in the compiled prompt.
+    ...(String(agent.behavior ?? "").includes("CALL ENDING")
+      ? []
+      : [
+          (vs as any).endCall?.conditions ? `CALL ENDING — end the call only when: ${(vs as any).endCall.conditions}` : "",
+          (vs as any).endCall?.finalResponse ? `CALL ENDING — before ending: ${(vs as any).endCall.finalResponse}` : "",
+        ]),
   ].filter(Boolean).join("\n\n");
 
   return {

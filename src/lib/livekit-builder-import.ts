@@ -147,7 +147,14 @@ export function parseBuilderExport(text: string): ParsedBuilderExport {
   try {
     parsed = JSON.parse(unfenced);
   } catch {
-    // Not JSON — the only thing we can honestly take is the instructions text.
+    // Text that LOOKS like an attempted JSON export but fails to parse is
+    // rejected outright — silently turning broken JSON into the Instructions
+    // prompt could overwrite a real prompt with garbage on a re-import.
+    if (/^[[{]/.test(unfenced)) {
+      warnings.push("The pasted text looks like JSON but could not be parsed — nothing was imported. Fix the export and paste again.");
+      return { snapshot, status, warnings };
+    }
+    // Plain prose: the only thing we can honestly take is the instructions text.
     snapshot.instructions = raw;
     status.instructions = "imported";
     warnings.push("The pasted text is not a JSON export — it was imported as the Instructions prompt only.");
