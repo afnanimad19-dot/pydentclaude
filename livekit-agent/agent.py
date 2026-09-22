@@ -44,6 +44,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -139,16 +140,50 @@ async def run_tool(agent_id: str, name: str, args: dict[str, Any]) -> str:
         logger.info("TOOL_CALL name=%s ok=%s ms=%s", name, ok, ms)
 
 
+# ── Caller identity ──────────────────────────────────────────────────────────
+# The caller's number arrives as the SIP participant attribute
+# "sip.phoneNumber". It is normalized here and kept in a PRIVATE per-call
+# holder (call_state) that only the tool layer reads — it is never written
+# into the spoken instructions, so the agent cannot leak raw SIP attributes
+# verbally, and it is only ever logged masked (last 3 digits).
+def normalize_phone(raw: Any) -> str:
+    """A safe phone string: '+' plus 7–15 digits (or bare digits). '' if invalid."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    plus = s.lstrip().startswith("+")
+    digits = re.sub(r"\D", "", s)
+    if not (7 <= len(digits) <= 15):
+        return ""
+    return ("+" + digits) if plus else digits
+
+
+ASK_FOR_NUMBER = (
+    "No caller number was captured on this call — ask the caller for their complete "
+    "phone number (with country code), then call this tool again with it. Do not guess a number."
+)
+
+
 # ── Tools (only the ones enabled for this agent are registered) ──────────────
-def build_tools(cfg: dict[str, Any], on_end_call) -> list[Any]:
+def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | None = None) -> list[Any]:
     """Return the LiveKit tool list for this agent.
 
     A tool that is switched off in Pydent is never created, so it is not in the
     LLM's tool schema at all — it cannot be invoked, not merely hidden.
+
+    call_state carries per-call runtime facts (currently the normalized caller
+    phone); when a tool is invoked without a phone argument the caller's own
+    number is substituted, so lookups Just Work without the agent reading
+    numbers aloud — and a lookup with NO identifiers at all never reaches the
+    server.
     """
     enabled: dict[str, bool] = cfg.get("tools") or {}
     agent_id: str = cfg["agentId"]
     tools: list[Any] = []
+    state: dict[str, Any] = call_state if call_state is not None else {}
+
+    def caller_number() -> str:
+        return str(state.get("caller_phone") or "")
 
     if enabled.get("end_call", True):
 
@@ -203,6 +238,7 @@ def build_tools(cfg: dict[str, Any], on_end_call) -> list[Any]:
             doctor: str = "",
             fee: str = "",
         ) -> str:
+            phone = phone.strip() or caller_number()
             return await run_tool(
                 agent_id,
                 "book_appointment",
@@ -213,27 +249,67 @@ def build_tools(cfg: dict[str, Any], on_end_call) -> list[Any]:
 
     if enabled.get("reschedule_appointment"):
 
-        @function_tool(name="reschedule_appointment", description="Move the caller's upcoming appointment to a new ISO datetime after they confirm.")
-        async def reschedule_appointment(datetime: str, name: str = "", phone: str = "") -> str:
-            return await run_tool(agent_id, "reschedule_appointment", {"datetime": datetime, "name": name, "phone": phone})
+        @function_tool(
+            name="reschedule_appointment",
+            description=(
+                "Move an upcoming appointment to a new ISO datetime after the caller confirms. "
+                "If the tool lists several upcoming appointments, ask the caller which one and call again "
+                "with that exact appointment_id — never pick one yourself."
+            ),
+        )
+        async def reschedule_appointment(datetime: str, name: str = "", phone: str = "", appointment_id: str = "") -> str:
+            phone = phone.strip() or caller_number()
+            return await run_tool(agent_id, "reschedule_appointment", {"datetime": datetime, "name": name, "phone": phone, "appointment_id": appointment_id})
 
         tools.append(reschedule_appointment)
 
     if enabled.get("cancel_appointment"):
 
-        @function_tool(name="cancel_appointment", description="Cancel the caller's upcoming appointment after they confirm.")
-        async def cancel_appointment(name: str = "", phone: str = "") -> str:
-            return await run_tool(agent_id, "cancel_appointment", {"name": name, "phone": phone})
+        @function_tool(
+            name="cancel_appointment",
+            description=(
+                "Cancel an upcoming appointment after the caller confirms. If the tool lists several upcoming "
+                "appointments, ask the caller which one and call again with that exact appointment_id — never pick one yourself."
+            ),
+        )
+        async def cancel_appointment(name: str = "", phone: str = "", appointment_id: str = "") -> str:
+            phone = phone.strip() or caller_number()
+            return await run_tool(agent_id, "cancel_appointment", {"name": name, "phone": phone, "appointment_id": appointment_id})
 
         tools.append(cancel_appointment)
 
     if enabled.get("lookup_patient"):
 
-        @function_tool(name="lookup_patient", description="Find an existing patient record by phone number or full name.")
-        async def lookup_patient(phone: str = "", name: str = "") -> str:
-            return await run_tool(agent_id, "lookup_patient", {"phone": phone, "name": name})
+        @function_tool(
+            name="lookup_patient",
+            description=(
+                "Find an existing patient record. The caller's own number (when captured from telephony) is used "
+                "automatically — you may call this with no arguments at the start of the call. Otherwise pass a phone "
+                "number, full name, or email."
+            ),
+        )
+        async def lookup_patient(phone: str = "", name: str = "", email: str = "") -> str:
+            phone = phone.strip() or caller_number()
+            if not phone and not name.strip() and not email.strip():
+                return ASK_FOR_NUMBER
+            return await run_tool(agent_id, "lookup_patient", {"phone": phone, "name": name, "email": email})
 
         tools.append(lookup_patient)
+
+        @function_tool(
+            name="list_upcoming_appointments",
+            description=(
+                "List ALL of the caller's upcoming appointments (date, time, doctor, service and appointment_id). "
+                "Use it before rescheduling or cancelling when the caller may have more than one."
+            ),
+        )
+        async def list_upcoming_appointments(phone: str = "", email: str = "", patient_id: str = "") -> str:
+            phone = phone.strip() or caller_number()
+            if not phone and not email.strip() and not patient_id.strip():
+                return ASK_FOR_NUMBER
+            return await run_tool(agent_id, "list_upcoming_appointments", {"phone": phone, "email": email, "patient_id": patient_id})
+
+        tools.append(list_upcoming_appointments)
 
     if enabled.get("create_patient"):
 
@@ -251,7 +327,12 @@ def build_tools(cfg: dict[str, Any], on_end_call) -> list[Any]:
 
         tools.append(send_email)
 
-    transfer_number = str(cfg.get("transferNumber") or "")
+    # Transfer is only offered with a VALID configured destination (E.164-style:
+    # optional '+', 7–15 digits). An invalid value never becomes a tool — the
+    # agent cannot invent or mangle a transfer destination.
+    transfer_number = normalize_phone(cfg.get("transferNumber"))
+    if str(cfg.get("transferNumber") or "").strip() and not transfer_number:
+        logger.warning("transfer number configured but not a valid phone — transfer_call NOT registered")
     if enabled.get("transfer_call") and transfer_number:
 
         @function_tool(name="transfer_call", description="Transfer the caller to a human at the clinic when they ask for a person or you cannot help.")
@@ -658,7 +739,9 @@ async def entrypoint(ctx: JobContext):
         tracker.on_metrics(ev.metrics)
 
     lines: list[dict[str, Any]] = []
-    caller_phone = ""
+    # Per-call private runtime state shared with the tool layer (never spoken,
+    # never logged in full). The SIP caller number lands here once known.
+    call_state: dict[str, Any] = {"caller_phone": ""}
 
     async def post_call_log() -> None:
         """Send the call to Pydent. Privacy setting decides what is included."""
@@ -697,7 +780,7 @@ async def entrypoint(ctx: JobContext):
                     "room": ctx.room.name,
                     "agentName": cfg["agentName"],
                     "agentId": cfg["agentId"],
-                    "callerPhone": caller_phone,
+                    "callerPhone": str(call_state.get("caller_phone") or ""),
                     "direction": "outbound" if "_out_" in ctx.room.name else "inbound",
                     "source": meta.get("source", ""),
                     "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
@@ -718,7 +801,7 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(post_call_log)
 
-    tools = build_tools(cfg, end_call)
+    tools = build_tools(cfg, end_call, call_state)
 
     room_options = None
     nc = build_noise_cancellation(cfg)
@@ -764,10 +847,22 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.warning("AMD unavailable: %s", e)
 
+    # Capture the caller's number from the SIP participant attribute —
+    # normalized, held privately in call_state for the tools and the call log,
+    # and logged only masked. Also watch for a participant that connects after
+    # us (rare for inbound SIP, but free to handle).
+    def _capture_caller(p: Any) -> None:
+        phone = normalize_phone((p.attributes or {}).get("sip.phoneNumber"))
+        if phone and not call_state.get("caller_phone"):
+            call_state["caller_phone"] = phone
+            logger.info("caller number captured (ends …%s)", phone[-3:])
+
     for p in ctx.room.remote_participants.values():
-        phone = (p.attributes or {}).get("sip.phoneNumber")
-        if phone:
-            caller_phone = phone
+        _capture_caller(p)
+
+    @ctx.room.on("participant_connected")
+    def _on_participant(p: Any) -> None:
+        _capture_caller(p)
 
     lifecycle.start()
 

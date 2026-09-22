@@ -224,7 +224,7 @@ function dateRange(start: string, end: string): string[] {
 // modified: the choices (if any) are returned so the agent can ask the
 // caller which one. The next appointment is NEVER auto-selected when several
 // exist.
-async function manageAppointment(
+export async function manageAppointmentFlow(
   deps: BuilderToolDeps,
   agent: BuilderAgentRow,
   canonical: "reschedule_appointment" | "cancel_appointment",
@@ -310,6 +310,45 @@ async function manageAppointment(
     status: 200,
     body: { success: r.success, ...(r.error ? { reason: r.error } : {}), appointment_id: target.id, spoken: r.spoken },
   };
+}
+
+// All of the resolved patient's upcoming appointments, in the Pydent shape.
+// Shared by the Builder HTTP adapter and the worker's tool-exec endpoint.
+export async function listUpcomingFlow(
+  deps: BuilderToolDeps,
+  agent: BuilderAgentRow,
+  args: Record<string, unknown>
+): Promise<BuilderHttpResult> {
+  const ws = agent.workspace_id ?? null;
+  const resolved = await resolvePatientRef(deps, ws, args);
+  if (!resolved.ok) return resolved.res;
+  const appointments = (await deps.listUpcoming(ws, resolved.patientId)).map(appointmentShape);
+  return {
+    status: 200,
+    body: {
+      success: true,
+      found: appointments.length > 0,
+      patient_id: resolved.patientId,
+      appointments,
+      spoken: appointments.length
+        ? `This patient has ${appointments.length} upcoming appointment${appointments.length === 1 ? "" : "s"}.`
+        : "This patient has no upcoming appointments.",
+    },
+  };
+}
+
+// Voice-friendly prose for a flow result: the spoken sentence, plus an
+// enumerated choice list whenever appointments were returned, so the LLM can
+// read real options to the caller and then act on an exact appointment_id —
+// never invented, never auto-selected.
+export function voiceSpoken(body: Record<string, unknown>): string {
+  const spoken = String(body.spoken ?? "");
+  const appts = Array.isArray(body.appointments) ? (body.appointments as Record<string, unknown>[]) : [];
+  if (!appts.length) return spoken;
+  const lines = appts.map(
+    (a, i) => `${i + 1}. ${a.date} at ${a.time}${a.doctor ? ` with ${a.doctor}` : ""}${a.service ? ` for ${a.service}` : ""} — appointment_id ${a.appointment_id}`
+  );
+  return `${spoken}\n${lines.join("\n")}`;
 }
 
 // The full request pipeline: authenticate → resolve agent → workspace match →
@@ -527,26 +566,11 @@ export async function handleBuilderToolRequest(
           },
         };
       }
-      case "list_upcoming_appointments": {
-        const resolved = await resolvePatientRef(deps, ws, args);
-        if (!resolved.ok) return resolved.res;
-        const appointments = (await deps.listUpcoming(ws, resolved.patientId)).map(appointmentShape);
-        return {
-          status: 200,
-          body: {
-            success: true,
-            found: appointments.length > 0,
-            patient_id: resolved.patientId,
-            appointments,
-            spoken: appointments.length
-              ? `This patient has ${appointments.length} upcoming appointment${appointments.length === 1 ? "" : "s"}.`
-              : "This patient has no upcoming appointments.",
-          },
-        };
-      }
+      case "list_upcoming_appointments":
+        return listUpcomingFlow(deps, agent, args);
       case "reschedule_appointment":
       case "cancel_appointment":
-        return manageAppointment(deps, agent, canonical, args);
+        return manageAppointmentFlow(deps, agent, canonical, args);
       case "send_email": {
         const to = str(args.to);
         if (!to) return fail(400, "invalid_arguments", 'send_email needs "to" (the recipient address).');

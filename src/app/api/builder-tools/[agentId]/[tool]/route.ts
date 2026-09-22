@@ -12,37 +12,12 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { resolveWorkerToken } from "@/lib/livekit";
-import {
-  getSlotsStructured,
-  bookAppointmentStructured,
-  findExistingPatientId,
-  listUpcomingAppointments,
-  findAppointmentRef,
-  rescheduleApptRow,
-  cancelApptRow,
-} from "@/lib/booking-server";
-import { lookupPatientCore, createPatientCore, searchKnowledgeCore, getPatientById } from "@/lib/agent-tools-core";
-import { sendAgentEmailDetailed } from "@/lib/email-send";
-import { handleBuilderToolRequest, type BuilderToolDeps, type BuilderAgentRow } from "@/lib/builder-tools";
+import { handleBuilderToolRequest, type BuilderAgentRow } from "@/lib/builder-tools";
+import { realBuilderToolDeps } from "@/lib/builder-tools-deps";
 
 export const runtime = "nodejs";
 
-const deps: BuilderToolDeps = {
-  resolveToken: resolveWorkerToken,
-  getSlots: getSlotsStructured,
-  book: bookAppointmentStructured,
-  findPatientId: findExistingPatientId,
-  getPatient: getPatientById,
-  listUpcoming: listUpcomingAppointments,
-  findAppointment: findAppointmentRef,
-  rescheduleRow: rescheduleApptRow,
-  cancelRow: cancelApptRow,
-  lookupPatient: lookupPatientCore,
-  createPatient: createPatientCore,
-  searchKnowledge: (agent, a) => searchKnowledgeCore(agent, a, "builder-http"),
-  sendEmail: sendAgentEmailDetailed,
-};
+const deps = realBuilderToolDeps("builder-http");
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ agentId: string; tool: string }> }) {
   const started = Date.now();

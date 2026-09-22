@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { livekitAgentConfig, resolveWorkerToken, requestOrigin } from "@/lib/livekit";
+import { clinicTimezone } from "@/lib/booking-server";
 
 // Called by the deployed LiveKit worker at the start of every call: given the
 // dispatch metadata { pydentAgentId, ws } it returns the agent's LIVE config
@@ -27,5 +28,8 @@ export async function POST(req: NextRequest) {
   if (ws && agent.workspace_id && String(agent.workspace_id) !== ws) {
     return NextResponse.json({ error: "Agent does not belong to this workspace." }, { status: 403 });
   }
-  return NextResponse.json({ ok: true, config: livekitAgentConfig(agent, String(agent.workspace_id ?? ws ?? ""), requestOrigin(req)) });
+  // Compile the prompt against the CLINIC's timezone, not the server's UTC.
+  const agentWs = String(agent.workspace_id ?? ws ?? "");
+  const tz = await clinicTimezone(agentWs || null);
+  return NextResponse.json({ ok: true, config: livekitAgentConfig(agent, agentWs, requestOrigin(req), tz) });
 }

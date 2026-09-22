@@ -322,5 +322,115 @@ class Lifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lc._tasks, [])
 
 
+class CallerIdentityTests(unittest.TestCase):
+    """Caller-number normalization and the private call_state plumbing.
+
+    All numbers here are FICTIONAL test values."""
+
+    def test_normalize_phone_accepts_e164_and_bare_digits(self):
+        self.assertEqual(A.normalize_phone("+15550001111"), "+15550001111")
+        self.assertEqual(A.normalize_phone("+1 (555) 000-1111"), "+15550001111")
+        self.assertEqual(A.normalize_phone("055 800 0000"), "0558000000")
+
+    def test_normalize_phone_rejects_garbage_short_and_long(self):
+        self.assertEqual(A.normalize_phone(""), "")
+        self.assertEqual(A.normalize_phone(None), "")
+        self.assertEqual(A.normalize_phone("front desk"), "")
+        self.assertEqual(A.normalize_phone("+123"), "")                    # too short
+        self.assertEqual(A.normalize_phone("+12345678901234567890"), "")  # too long
+        self.assertEqual(A.normalize_phone("sip:evil@host"), "")
+
+    def _tool(self, tools, name):
+        return next(t for t in tools if t.info.name == name)
+
+    def test_lookup_with_no_identifiers_and_no_caller_number_never_hits_the_server(self):
+        recorded = []
+
+        async def fake_run_tool(agent_id, name, args):
+            recorded.append((name, args))
+            return "server reply"
+
+        orig = A.run_tool
+        A.run_tool = fake_run_tool
+        try:
+            tools = A.build_tools(base_cfg(tools={"end_call": True, "lookup_patient": True}), _noop, {"caller_phone": ""})
+            out = asyncio.run(self._tool(tools, "lookup_patient")())
+        finally:
+            A.run_tool = orig
+        self.assertEqual(recorded, [])                       # no HTTP call at all
+        self.assertIn("ask the caller", out.lower())         # instructs the agent to collect the number
+
+    def test_lookup_uses_the_captured_caller_number_automatically(self):
+        recorded = []
+
+        async def fake_run_tool(agent_id, name, args):
+            recorded.append((name, dict(args)))
+            return "ok"
+
+        orig = A.run_tool
+        A.run_tool = fake_run_tool
+        try:
+            state = {"caller_phone": "+15550001111"}
+            tools = A.build_tools(base_cfg(tools={"end_call": True, "lookup_patient": True}), _noop, state)
+            asyncio.run(self._tool(tools, "lookup_patient")())
+        finally:
+            A.run_tool = orig
+        self.assertEqual(recorded[0][0], "lookup_patient")
+        self.assertEqual(recorded[0][1]["phone"], "+15550001111")
+
+    def test_explicit_phone_argument_wins_over_the_caller_number(self):
+        recorded = []
+
+        async def fake_run_tool(agent_id, name, args):
+            recorded.append(dict(args))
+            return "ok"
+
+        orig = A.run_tool
+        A.run_tool = fake_run_tool
+        try:
+            tools = A.build_tools(base_cfg(tools={"end_call": True, "lookup_patient": True}), _noop, {"caller_phone": "+15550001111"})
+            asyncio.run(self._tool(tools, "lookup_patient")(phone="+15550002222"))
+        finally:
+            A.run_tool = orig
+        self.assertEqual(recorded[0]["phone"], "+15550002222")
+
+    def test_list_upcoming_appointments_registers_with_lookup_and_guards_empty(self):
+        tools = A.build_tools(base_cfg(tools={"end_call": True, "lookup_patient": True}), _noop, {"caller_phone": ""})
+        names = tool_names(tools)
+        self.assertIn("list_upcoming_appointments", names)
+        out = asyncio.run(self._tool(tools, "list_upcoming_appointments")())
+        self.assertIn("ask the caller", out.lower())
+
+    def test_reschedule_and_cancel_expose_appointment_id(self):
+        recorded = []
+
+        async def fake_run_tool(agent_id, name, args):
+            recorded.append((name, dict(args)))
+            return "ok"
+
+        orig = A.run_tool
+        A.run_tool = fake_run_tool
+        try:
+            cfg = base_cfg(tools={"end_call": True, "reschedule_appointment": True, "cancel_appointment": True})
+            tools = A.build_tools(cfg, _noop, {"caller_phone": "+15550001111"})
+            asyncio.run(self._tool(tools, "cancel_appointment")(appointment_id="appt-fict-1"))
+            asyncio.run(self._tool(tools, "reschedule_appointment")(datetime="2099-01-02T10:00", appointment_id="appt-fict-2"))
+        finally:
+            A.run_tool = orig
+        self.assertEqual(recorded[0][1]["appointment_id"], "appt-fict-1")
+        self.assertEqual(recorded[0][1]["phone"], "+15550001111")  # caller number substituted
+        self.assertEqual(recorded[1][1]["appointment_id"], "appt-fict-2")
+
+
+class TransferValidationTests(unittest.TestCase):
+    def test_invalid_transfer_number_never_becomes_a_tool(self):
+        cfg = base_cfg(tools={"end_call": True, "transfer_call": True}, transferNumber="front desk")
+        self.assertNotIn("transfer_call", tool_names(A.build_tools(cfg, _noop)))
+
+    def test_valid_transfer_number_registers_the_tool(self):
+        cfg = base_cfg(tools={"end_call": True, "transfer_call": True}, transferNumber="+15550003333")
+        self.assertIn("transfer_call", tool_names(A.build_tools(cfg, _noop)))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

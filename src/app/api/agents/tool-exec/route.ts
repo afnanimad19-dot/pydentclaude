@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
+import { getSlots, bookAppointment, type BookingCtx } from "@/lib/booking-server";
 import { sendAgentEmail } from "@/lib/email-send";
 import {
   lookupPatientCore, lookupPatientSpoken,
   createPatientCore, createPatientSpoken,
   searchKnowledgeCore, searchKnowledgeSpoken,
 } from "@/lib/agent-tools-core";
+import { manageAppointmentFlow, listUpcomingFlow, voiceSpoken, type BuilderAgentRow } from "@/lib/builder-tools";
+import { realBuilderToolDeps } from "@/lib/builder-tools-deps";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // search_knowledge / lookup_patient / create_patient — real backends for the
@@ -32,6 +34,10 @@ async function createPatient(agent: any, a: any): Promise<string> {
 // the actual booking/email runs server-side with the same code path as every
 // other channel (Calendar + Open Dental + workflows).
 export const runtime = "nodejs";
+
+// Real service wiring for the shared appointment flows (same logic the
+// Builder HTTP adapter runs; this endpoint renders the results as prose).
+const workerDeps = realBuilderToolDeps("voice");
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export async function POST(req: NextRequest) {
@@ -60,12 +66,21 @@ export async function POST(req: NextRequest) {
       case "book_appointment":
         result = await bookAppointment(ctx, a);
         break;
+      // Reschedule / cancel / list run the SAME Pydent-only flows as the
+      // Builder HTTP adapter (exact appointment_id validated against the
+      // patient and workspace; several upcoming appointments come back as
+      // choices and nothing is auto-selected), rendered as voice prose.
       case "reschedule_appointment":
-        result = await rescheduleAppt(ctx, a);
+      case "cancel_appointment": {
+        const out = await manageAppointmentFlow(workerDeps, agent as BuilderAgentRow, name, a);
+        result = voiceSpoken(out.body);
         break;
-      case "cancel_appointment":
-        result = await cancelAppt(ctx, a);
+      }
+      case "list_upcoming_appointments": {
+        const out = await listUpcomingFlow(workerDeps, agent as BuilderAgentRow, a);
+        result = voiceSpoken(out.body);
         break;
+      }
       case "send_email":
         result = await sendAgentEmail({ to: String(a.to ?? ""), subject: String(a.subject ?? ""), body: String(a.body ?? ""), ws: agent.workspace_id ?? undefined, fromName: agent.name });
         break;

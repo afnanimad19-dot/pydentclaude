@@ -9,6 +9,11 @@ import { getOdConfig, odForward } from "@/lib/opendental-gateway";
 import { triggerWorkflows } from "@/lib/workflow-runner";
 import { pushToGoogleCalendar, updateGoogleCalendarEvent, deleteGoogleCalendarEvent } from "@/lib/google-api";
 import { getHfxCreds, hfxCall, hfxConfigured, hfxListTools, type HfxCreds } from "@/lib/hyperfx";
+import {
+  todayInTz, DEFAULT_CLINIC_TZ, clampDuration,
+  normalizeSchedulingSettings, DEFAULT_SCHEDULING, openSlotsForDay, conflictsWithBooked, weekdayInTz,
+  type SchedulingSettings, type BookedSlot,
+} from "@/lib/scheduling";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -36,14 +41,40 @@ export interface BookingArgs {
 }
 
 // The clinic's timezone for calendar events (defaults to Dubai).
-async function clinicTimezone(ws: string | null): Promise<string> {
+export async function clinicTimezone(ws: string | null): Promise<string> {
   try {
     if (ws) {
       const { data } = await supabase.from("clinic_settings").select("timezone").eq("workspace_id", ws).maybeSingle();
       if (data?.timezone) return data.timezone;
     }
   } catch { /* default below */ }
-  return process.env.CLINIC_TIMEZONE ?? "Asia/Dubai";
+  return DEFAULT_CLINIC_TZ;
+}
+
+// "Today" as the CLINIC sees it (its own wall-clock date), used everywhere an
+// upcoming-appointment cutoff is computed — the server's UTC date is up to
+// 4 hours behind a Dubai clinic and misclassifies today's appointments.
+export async function clinicToday(ws: string | null): Promise<string> {
+  return todayInTz(await clinicTimezone(ws));
+}
+
+// Per-workspace scheduling settings (clinic hours, slot grid, default
+// duration, closed days). The columns arrive with migration 0061; every
+// deployment without them — and every workspace that never configured them —
+// gets the historical defaults, so behaviour only changes when a clinic
+// explicitly opts in.
+async function clinicScheduling(ws: string | null): Promise<SchedulingSettings> {
+  try {
+    if (ws) {
+      const { data, error } = await supabase
+        .from("clinic_settings")
+        .select("open_time, close_time, slot_minutes, default_duration_min, closed_days")
+        .eq("workspace_id", ws)
+        .maybeSingle();
+      if (!error && data) return normalizeSchedulingSettings(data);
+    }
+  } catch { /* defaults below */ }
+  return DEFAULT_SCHEDULING;
 }
 
 
@@ -377,15 +408,8 @@ async function resolvePatient(ctx: BookingCtx, args: BookingArgs): Promise<strin
   return created?.id ?? null;
 }
 
-// Loose provider match, so "Dr. Anmol", "Anmol Batria" and "Dr. Anmol Batria"
-// count as the same doctor when checking clashes.
-function sameProvider(a?: string | null, b?: string | null): boolean {
-  const x = String(a ?? "").toLowerCase().replace(/^dr\.?\s*/, "").trim();
-  const y = String(b ?? "").toLowerCase().replace(/^dr\.?\s*/, "").trim();
-  if (!x && !y) return true; // both unassigned → same "slot owner"
-  if (!x || !y) return false;
-  return x === y || x.includes(y) || y.includes(x);
-}
+// sameProvider (loose doctor-name matching) now lives in lib/scheduling.ts,
+// shared with the duration-aware overlap helpers and their tests.
 
 // ── Structured results ──────────────────────────────────────────────────────
 // The Builder HTTP tool adapter (src/lib/builder-tools.ts) needs machine-
@@ -460,22 +484,32 @@ export async function getSlotsStructured(ws: string | null, args: any): Promise<
   } catch {
     /* fall through to local availability */
   }
-  const { data: booked } = await supabase.from("appointments").select("time, provider").eq("workspace_id", ws).eq("date", date).neq("status", "Broken");
-  // A time is only unavailable for THIS doctor (or for the unassigned default
-  // when no doctor was named) — other doctors' bookings don't block it.
-  const taken = new Set(
-    (booked ?? [])
-      .filter((b: any) => sameProvider(b.provider, args.doctor))
-      .map((b: any) => String(b.time || "").slice(0, 5))
-  );
-  const open: string[] = [];
-  for (let h = 9; h < 17; h++) for (const m of ["00", "30"]) {
-    const t = `${String(h).padStart(2, "0")}:${m}`;
-    if (!taken.has(t)) open.push(t);
+  // Duration-aware local availability: a time is unavailable for THIS doctor
+  // when it would OVERLAP one of their booked appointments (respecting each
+  // row's duration_min) — other doctors' bookings don't block it. Clinic
+  // hours / slot grid / closed days come from clinic_settings when configured
+  // (migration 0061), else the historical 09:00–17:00 / 30-minute defaults.
+  const settings = await clinicScheduling(ws);
+  const tz = await clinicTimezone(ws);
+  if (settings.closedDays.includes(weekdayInTz(date, tz))) {
+    return { success: true, date, slots: [], source: "local", spoken: `The clinic is closed on ${date} — offer the patient a different day.` };
   }
+  const booked = await bookedSlotsForDay(ws, date);
+  const durationMin = clampDuration(args.duration ?? args.duration_min, settings.defaultDurationMin);
+  const open = openSlotsForDay(booked, settings, { doctor: args.doctor, durationMin });
   const offer = open.slice(0, 6);
   const spoken = offer.length ? `Open slots on ${date}: ${offer.join(", ")}.` : `Fully booked on ${date}${args.doctor ? ` for ${args.doctor}` : ""} — suggest another day.`;
   return { success: true, date, slots: open, source: "local", spoken };
+}
+
+// All booked (non-Broken) appointments for a day, with durations. Older
+// deployments may lack the duration_min column — retry without it and let
+// apptDuration() fall back.
+async function bookedSlotsForDay(ws: string | null, date: string): Promise<BookedSlot[]> {
+  const { data, error } = await supabase.from("appointments").select("time, provider, duration_min").eq("workspace_id", ws).eq("date", date).neq("status", "Broken");
+  if (!error) return (data ?? []) as BookedSlot[];
+  const { data: slim } = await supabase.from("appointments").select("time, provider").eq("workspace_id", ws).eq("date", date).neq("status", "Broken");
+  return (slim ?? []) as BookedSlot[];
 }
 
 export async function getSlots(ws: string | null, args: any): Promise<string> {
@@ -494,15 +528,28 @@ export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingAr
 
   const treatment = (args.treatment || args.service || "Consultation").trim();
   const fee = toFee(args.fee);
+  const settings = await clinicScheduling(ws);
+  const durationMin = clampDuration((args as any).duration ?? (args as any).duration_min, settings.defaultDurationMin);
 
   // Don't double-book THE SAME DOCTOR: two patients at the same time with
-  // different doctors is perfectly normal, so only a same-provider clash (or
-  // two unassigned bookings colliding) blocks the slot.
-  const { data: atTime } = await supabase.from("appointments").select("id, provider").eq("workspace_id", ws).eq("date", date).eq("time", time).neq("status", "Broken");
-  const clash = (atTime ?? []).find((a: any) => sameProvider(a.provider, args.doctor));
-  if (clash) return { success: false, error: "slot_taken", date, time, spoken: `That slot (${date} ${time}) is already taken${args.doctor ? ` for ${args.doctor}` : ""} — offer the patient a different open time.` };
+  // different doctors is perfectly normal, so only a same-provider OVERLAP
+  // (or two unassigned bookings colliding) blocks the slot — duration-aware,
+  // so a 60-minute appointment at 10:00 also blocks 10:30.
+  const booked = await bookedSlotsForDay(ws, date);
+  if (conflictsWithBooked(booked, time, durationMin, args.doctor)) {
+    return { success: false, error: "slot_taken", date, time, spoken: `That slot (${date} ${time}) is already taken${args.doctor ? ` for ${args.doctor}` : ""} — offer the patient a different open time.` };
+  }
 
   const patientId = await resolvePatient(ctx, args);
+
+  // Exact-duplicate guard: the SAME patient already holds an appointment at
+  // this exact date and time (any doctor) — never book it twice.
+  if (patientId) {
+    const { data: dup } = await supabase.from("appointments").select("id").eq("workspace_id", ws).eq("patient_id", patientId).eq("date", date).eq("time", time).neq("status", "Broken").limit(1);
+    if (dup?.length) {
+      return { success: false, error: "duplicate_booking", date, time, spoken: "This patient already has an appointment at that exact time — no duplicate was booked." };
+    }
+  }
 
   // Fill in the lead's name/email/phone if the agent collected them, so the
   // calendar card and contact record are complete.
@@ -522,6 +569,7 @@ export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingAr
     procedure: treatment,
     date,
     time,
+    duration_min: durationMin,
     status: "Scheduled",
     confirmed_via: ctx.source,
     fee,
@@ -530,11 +578,12 @@ export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingAr
   };
 
   let { data: appt, error: apptErr } = await supabase.from("appointments").insert(baseRow).select("id").single();
-  // Newer columns (fee/source/booked_by) may not be migrated yet — retry without them.
-  if (apptErr && /fee|source|booked_by/.test(apptErr.message)) {
+  // Newer columns (fee/source/booked_by/duration_min) may not be migrated yet — retry without them.
+  if (apptErr && /fee|source|booked_by|duration_min/.test(apptErr.message)) {
     delete baseRow.fee;
     delete baseRow.source;
     delete baseRow.booked_by;
+    delete baseRow.duration_min;
     ({ data: appt, error: apptErr } = await supabase.from("appointments").insert(baseRow).select("id").single());
   }
   if (apptErr || !appt) {
@@ -634,7 +683,7 @@ export async function listUpcomingAppointments(ws: string | null, patientId: str
     .select("id, external_id, google_calendar_event_id, patient_id, date, time, procedure, provider, status")
     .eq("workspace_id", ws)
     .eq("patient_id", patientId)
-    .gte("date", new Date().toISOString().slice(0, 10))
+    .gte("date", await clinicToday(ws))
     .neq("status", "Broken")
     .order("date")
     .order("time");
@@ -723,7 +772,7 @@ export async function rescheduleAppt(ctx: BookingCtx, args: any): Promise<string
   if (!patientId) return "No patient on file to reschedule.";
   const dt = String(args?.datetime || "");
   if (!dt.slice(0, 10)) return "Need a valid new date and time.";
-  const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
+  const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", await clinicToday(ws)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
   if (!ap) return "No upcoming appointment found to reschedule.";
   return (await rescheduleApptRow(ctx, ap, dt)).spoken;
 }
@@ -733,7 +782,7 @@ export async function cancelAppt(ctx: BookingCtx, args?: any): Promise<string> {
   const ws = ctx.ws;
   const patientId = ctx.patientId ?? (await resolvePatient(ctx, args ?? {}));
   if (!patientId) return "No patient on file.";
-  const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", new Date().toISOString().slice(0, 10)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
+  const { data: ap } = await supabase.from("appointments").select("id, external_id, google_calendar_event_id").eq("workspace_id", ws).eq("patient_id", patientId).gte("date", await clinicToday(ws)).neq("status", "Broken").order("date").order("time").limit(1).maybeSingle();
   if (!ap) return "No upcoming appointment found to cancel.";
   return (await cancelApptRow(ctx, ap)).spoken;
 }

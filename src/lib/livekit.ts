@@ -4,6 +4,7 @@ import { languageRule } from "@/lib/agent-reply";
 import { LIVEKIT_DEFAULTS, livekitSttLanguage, type LivekitAgentSettings } from "@/lib/livekit-models";
 import { normalizeVoiceSettings, AGENT_CONFIG_VERSION } from "@/lib/agent-config";
 import { resolveWorkerTokenOrdered } from "@/lib/worker-token";
+import { todayInTz, DEFAULT_CLINIC_TZ } from "@/lib/scheduling";
 
 // LiveKit voice engine — server helpers. Credentials are per workspace
 // (livekit_config, migration 0059) with env fallback, so one Pydent install can
@@ -187,7 +188,7 @@ export async function listCloudAgents(c: LivekitCreds): Promise<CloudAgentInfo[]
 // (never cached globally) from the agent row, normalized + clamped server-side
 // so a corrupt config can't reach the worker, and containing only safe values —
 // no provider keys, no Supabase keys, no LiveKit secret.
-export function livekitAgentConfig(agent: any, ws: string, origin: string) {
+export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: string) {
   const vs = normalizeVoiceSettings(agent.voice_settings, {
     canBook: !!agent.can_book,
     canReschedule: !!agent.can_reschedule,
@@ -199,10 +200,13 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string) {
   // The three prompt sections stay separate in the database (agent_identity /
   // instructions / behavior columns). They are compiled into the final system
   // prompt HERE, at call time, so editing any one of them changes the next call.
+  // "Today" is the CLINIC's wall-clock date (workspace timezone when the
+  // caller passes it, Asia/Dubai-family default otherwise) — never bare UTC.
+  const clinicTz = tz || DEFAULT_CLINIC_TZ;
   const canBook = !!tools.book_appointment;
   const instructions = [
     `You are ${agent.name}, an AI voice agent for a dental clinic, on a live phone call.`,
-    `Today is ${new Date().toISOString().slice(0, 10)}.`,
+    `Today is ${todayInTz(clinicTz)} (clinic timezone ${clinicTz}).`,
     languageRule(agent.language),
     "MULTILINGUAL: if the caller speaks another language (Arabic, Hindi, Urdu, Russian, French ...), switch and continue the whole call in it; translate knowledge-base facts naturally.",
     agent.agent_identity && `AGENT IDENTITY:\n${agent.agent_identity}`,
@@ -216,11 +220,17 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string) {
       ? "OPENING: your configured opening line is spoken automatically when the call starts — do NOT introduce yourself again or repeat a greeting in your first reply; answer the caller directly."
       : "OPENING: the caller speaks first — wait for them, then greet briefly once and help.",
     "VOICE OUTPUT RULES: plain spoken sentences only — no markdown, lists, emojis or URLs; one or two short sentences per turn; say numbers, prices, times and emails the way a person would.",
+    tools.lookup_patient
+      ? "CALLER ID: when the caller's phone number was captured from telephony it is available to your tools automatically — call lookup_patient right away without asking for the number, and never read the number aloud except to confirm digits with the caller. If the tool says no number was captured, ask for their complete phone number first. Never call lookup_patient with empty values and never invent a number."
+      : "",
     canBook
-      ? "BOOKING: use get_available_slots first and offer real open times. Collect details ONE question at a time (name → email → phone), read back ONE summary, and only after the caller confirms call book_appointment. Never say it's booked unless the tool succeeded."
+      ? "BOOKING: use get_available_slots first and offer ONLY the real open times it returned. Collect details ONE question at a time (name → email → phone), then read back ONE summary — doctor, service, date and time — and only after the caller explicitly confirms call book_appointment. Announce success only when the tool succeeded; if it reports the slot is taken or a duplicate, apologize and offer the other open times the tools returned. Never invent an appointment id, doctor, service or time."
       : "You cannot book yourself — take their preferred time and say the team will confirm.",
     tools.reschedule_appointment ? "RESCHEDULE: confirm the new time, then call reschedule_appointment." : "",
     tools.cancel_appointment ? "CANCEL: confirm with the caller, then call cancel_appointment." : "",
+    tools.reschedule_appointment || tools.cancel_appointment
+      ? "APPOINTMENT SELECTION: when a tool lists several upcoming appointments, read the choices to the caller and call the tool again with the exact appointment_id they picked — never choose one yourself and never invent an appointment_id. Only say an appointment was moved or cancelled after the tool succeeded."
+      : "",
     tools.send_email ? "EMAIL: when the caller asks for something by email, call send_email with the address they gave you." : "",
     tools.transfer_call && vs.transferNumber
       ? `TRANSFER: if the caller needs a human, say "${vs.transferMessage || "Let me put you through to the team."}" and then call transfer_call.`
