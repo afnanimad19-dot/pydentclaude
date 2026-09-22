@@ -3,6 +3,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { languageRule } from "@/lib/agent-reply";
 import { LIVEKIT_DEFAULTS, livekitSttLanguage, type LivekitAgentSettings } from "@/lib/livekit-models";
 import { normalizeVoiceSettings, AGENT_CONFIG_VERSION } from "@/lib/agent-config";
+import { resolveWorkerTokenOrdered } from "@/lib/worker-token";
 
 // LiveKit voice engine — server helpers. Credentials are per workspace
 // (livekit_config, migration 0059) with env fallback, so one Pydent install can
@@ -328,16 +329,18 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string) {
 // Generated per workspace in Settings → LiveKit (livekit_config.worker_token);
 // a global LIVEKIT_WORKER_TOKEN env var also works. Resolves the workspace the
 // token belongs to, so the worker can never read another clinic's agents.
+// Ordering (see lib/worker-token.ts): the WORKSPACE binding is checked first,
+// so a token that is both stored for a workspace and set as the global env
+// var still resolves to its workspace — the env match is only a fallback for
+// a value no workspace owns.
 export async function resolveWorkerToken(token: unknown): Promise<{ ok: boolean; ws?: string; error?: string }> {
-  const t = String(token ?? "").trim();
-  if (!t) return { ok: false, error: "Missing worker token." };
-  const envTok = (process.env.LIVEKIT_WORKER_TOKEN || "").trim();
-  if (envTok && t === envTok) return { ok: true };
-  try {
-    const { data } = await supabase.from("livekit_config").select("workspace_id").eq("worker_token", t).limit(1).maybeSingle();
-    if (data?.workspace_id) return { ok: true, ws: String(data.workspace_id) };
-  } catch { /* column may not be migrated yet */ }
-  return { ok: false, error: "Unauthorized worker — generate the worker token in Pydent → Settings → LiveKit and put it in the worker's LIVEKIT_WORKER_TOKEN." };
+  return resolveWorkerTokenOrdered(token, {
+    envToken: process.env.LIVEKIT_WORKER_TOKEN || "",
+    lookupWorkspace: async (t) => {
+      const { data } = await supabase.from("livekit_config").select("workspace_id").eq("worker_token", t).limit(1).maybeSingle();
+      return data?.workspace_id ? String(data.workspace_id) : null;
+    },
+  });
 }
 
 export async function workerTokenConfigured(ws: string | null | undefined): Promise<boolean> {
