@@ -22,7 +22,7 @@ import {
   rescheduleApptRow,
   cancelApptRow,
 } from "@/lib/booking-server";
-import { lookupPatientCore, createPatientCore, searchKnowledgeCore } from "@/lib/agent-tools-core";
+import { lookupPatientCore, createPatientCore, searchKnowledgeCore, getPatientById } from "@/lib/agent-tools-core";
 import { sendAgentEmailDetailed } from "@/lib/email-send";
 import { handleBuilderToolRequest, type BuilderToolDeps, type BuilderAgentRow } from "@/lib/builder-tools";
 
@@ -33,6 +33,7 @@ const deps: BuilderToolDeps = {
   getSlots: getSlotsStructured,
   book: bookAppointmentStructured,
   findPatientId: findExistingPatientId,
+  getPatient: getPatientById,
   listUpcoming: listUpcomingAppointments,
   findAppointment: findAppointmentRef,
   rescheduleRow: rescheduleApptRow,

@@ -27,17 +27,40 @@ export interface LookupPatientResult {
   patients: PatientHit[];
 }
 
-// Lookup prefers phone (digits-only, last-9 match); falls back to name.
-export async function lookupPatientCore(ws: string | null, q: { phone?: unknown; name?: unknown }): Promise<LookupPatientResult> {
+// Lookup prefers phone (digits-only, last-9 match); falls back to email, then
+// name. The voice worker only ever passes phone/name, so its behaviour is
+// unchanged; the Builder adapter also accepts email.
+export async function lookupPatientCore(ws: string | null, q: { phone?: unknown; name?: unknown; email?: unknown }): Promise<LookupPatientResult> {
   const phone = String(q.phone ?? "").replace(/[^0-9+]/g, "");
   const name = String(q.name ?? "").trim();
-  if (!phone && !name) return { success: false, error: "missing_query", found: false, patients: [] };
+  const email = String(q.email ?? "").trim();
+  if (!phone && !name && !email) return { success: false, error: "missing_query", found: false, patients: [] };
   const sel = supabase.from("patients").select("id, name, phone, email, next_appointment, insurance").eq("workspace_id", ws);
   const { data } = phone
     ? await sel.ilike("phone", `%${phone.replace(/^\+/, "").slice(-9)}%`).limit(3)
-    : await sel.ilike("name", `%${name}%`).limit(3);
+    : email
+      ? await sel.ilike("email", email).limit(3)
+      : await sel.ilike("name", `%${name}%`).limit(3);
   const patients = (data ?? []) as PatientHit[];
   return { success: true, found: patients.length > 0, patients };
+}
+
+// One patient by its Pydent UUID, workspace-scoped. Used by the Builder
+// adapter to validate a caller-supplied patient_id before acting on it.
+export async function getPatientById(ws: string | null, id: string): Promise<PatientHit | null> {
+  if (!id) return null;
+  try {
+    const { data } = await supabase
+      .from("patients")
+      .select("id, name, phone, email, next_appointment, insurance")
+      .eq("workspace_id", ws)
+      .eq("id", id)
+      .maybeSingle();
+    return (data as PatientHit | null) ?? null;
+  } catch {
+    // A malformed UUID makes Postgres reject the query — same as no match.
+    return null;
+  }
 }
 
 export function lookupPatientSpoken(r: LookupPatientResult): string {

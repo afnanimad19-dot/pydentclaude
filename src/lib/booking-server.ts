@@ -418,13 +418,14 @@ export interface BookingResult {
 
 export interface UpcomingAppointment {
   id: string;                        // Pydent appointment UUID
-  external_id: string | null;        // Open Dental AptNum when synced, else null
+  external_id: string | null;        // internal mirror id (background sync); never part of the Builder contract
   google_calendar_event_id: string | null;
   patient_id: string | null;
   date: string;
   time: string;
   procedure: string | null;
   provider: string | null;
+  status?: string | null;
 }
 
 export interface ApptActionResult {
@@ -630,7 +631,7 @@ export async function bookAppointment(ctx: BookingCtx, args: BookingArgs): Promi
 export async function listUpcomingAppointments(ws: string | null, patientId: string): Promise<UpcomingAppointment[]> {
   const { data } = await supabase
     .from("appointments")
-    .select("id, external_id, google_calendar_event_id, patient_id, date, time, procedure, provider")
+    .select("id, external_id, google_calendar_event_id, patient_id, date, time, procedure, provider, status")
     .eq("workspace_id", ws)
     .eq("patient_id", patientId)
     .gte("date", new Date().toISOString().slice(0, 10))
