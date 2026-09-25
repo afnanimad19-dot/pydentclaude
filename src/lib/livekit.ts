@@ -5,6 +5,7 @@ import { LIVEKIT_DEFAULTS, livekitSttLanguage, type LivekitAgentSettings } from 
 import { normalizeVoiceSettings, AGENT_CONFIG_VERSION } from "@/lib/agent-config";
 import { resolveWorkerTokenOrdered } from "@/lib/worker-token";
 import { todayInTz, DEFAULT_CLINIC_TZ } from "@/lib/scheduling";
+import { cloudAgentsHost, parseListAgents } from "@/lib/cloud-agents";
 
 // LiveKit voice engine — server helpers. Credentials are per workspace
 // (livekit_config, migration 0059) with env fallback, so one Pydent install can
@@ -134,13 +135,10 @@ export async function mintRoomToken(c: LivekitCreds, room: string, identity: str
 // Same Twirp API the `lk agent list` CLI uses; it authenticates with a project
 // token carrying the agent admin grant. Returns names + deployment status —
 // LiveKit does NOT expose a console-built agent's instructions/models here.
-export interface CloudAgentInfo {
-  agentId: string;
-  agentName: string;
-  version: string;
-  status: string;
-  deployedAt: string | null;
-}
+// The service lives on the GLOBAL agents host (agents.livekit.cloud), not the
+// project host — host derivation + strict response parsing are in
+// lib/cloud-agents.ts (verified against the official Go SDK).
+export type { CloudAgentInfo } from "@/lib/cloud-agents";
 
 async function agentAdminJwt(c: LivekitCreds): Promise<string> {
   const { SignJWT } = await import("jose");
@@ -154,33 +152,18 @@ async function agentAdminJwt(c: LivekitCreds): Promise<string> {
     .sign(new TextEncoder().encode(c.apiSecret));
 }
 
-export async function listCloudAgents(c: LivekitCreds): Promise<CloudAgentInfo[]> {
+export async function listCloudAgents(c: LivekitCreds): Promise<import("@/lib/cloud-agents").CloudAgentInfo[]> {
   const token = await agentAdminJwt(c);
-  const res = await fetch(`${lkHttpUrl(c.url)}/twirp/livekit.CloudAgent/ListAgents`, {
+  const res = await fetch(`${cloudAgentsHost(c.url)}/twirp/livekit.CloudAgent/ListAgents`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: "{}",
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`ListAgents ${res.status}: ${text.slice(0, 200)}`);
-  }
-  /* eslint-disable @typescript-eslint/no-explicit-any */
-  const data: any = await res.json().catch(() => ({}));
-  const agents: any[] = data.agents ?? data.Agents ?? [];
-  return agents.map((a) => {
-    const deps: any[] = a.agentDeployments ?? a.agent_deployments ?? [];
-    const status = deps.map((d) => d.status ?? "").filter(Boolean).join(", ");
-    const dep = a.deployedAt ?? a.deployed_at;
-    return {
-      agentId: String(a.agentId ?? a.agent_id ?? ""),
-      agentName: String(a.agentName ?? a.agent_name ?? ""),
-      version: String(a.version ?? ""),
-      status: status || "unknown",
-      deployedAt: dep ? (typeof dep === "string" ? dep : new Date(Number(dep.seconds ?? 0) * 1000).toISOString()) : null,
-    };
-  });
-  /* eslint-enable @typescript-eslint/no-explicit-any */
+  const text = await res.text().catch(() => "");
+  // Strict: HTTP errors, non-JSON bodies (the project host's "OK" catch-all)
+  // and malformed shapes all THROW — only a genuine agents list (possibly
+  // empty) comes back as data. The caller surfaces the error as agentsError.
+  return parseListAgents(res.status, text);
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
