@@ -10,7 +10,7 @@ const { cloudAgentsHost, parseListAgents } = await import("@/lib/cloud-agents");
 
 // ── Host derivation ──────────────────────────────────────────────────────────
 test("project URL is rewritten to the global agents host", () => {
-  assert.equal(cloudAgentsHost("wss://pydent-lhdm-n1lg7x9v.livekit.cloud"), "https://agents.livekit.cloud");
+  assert.equal(cloudAgentsHost("wss://fictional-project.livekit.cloud"), "https://agents.livekit.cloud");
   assert.equal(cloudAgentsHost("https://someproj.livekit.cloud/"), "https://agents.livekit.cloud");
   assert.equal(cloudAgentsHost("ws://someproj.livekit.cloud"), "https://agents.livekit.cloud");
 });
