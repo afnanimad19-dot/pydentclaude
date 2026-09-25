@@ -152,11 +152,17 @@ async function agentAdminJwt(c: LivekitCreds): Promise<string> {
     .sign(new TextEncoder().encode(c.apiSecret));
 }
 
+// The CloudAgent service requires a client-version header (it answers 400
+// "livekit-cli version header is required" without one). The official Go SDK
+// sends X-LIVEKIT-CLI-VERSION = lksdk.Version (pkg/cloudagents/auth.go);
+// 2.18.2 is the SDK's current release at the time of writing.
+const LIVEKIT_CLI_VERSION = "2.18.2";
+
 export async function listCloudAgents(c: LivekitCreds): Promise<import("@/lib/cloud-agents").CloudAgentInfo[]> {
   const token = await agentAdminJwt(c);
   const res = await fetch(`${cloudAgentsHost(c.url)}/twirp/livekit.CloudAgent/ListAgents`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "X-LIVEKIT-CLI-VERSION": LIVEKIT_CLI_VERSION },
     body: "{}",
   });
   const text = await res.text().catch(() => "");

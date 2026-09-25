@@ -63,3 +63,32 @@ test("malformed JSON shapes throw", () => {
   assert.throws(() => parseListAgents(200, '"just a string"'), /not an object/);
   assert.throws(() => parseListAgents(200, '{"agents": "nope"}'), /not an array/);
 });
+
+// ── Request shape (host, auth, required version header) ─────────────────────
+test("listCloudAgents sends the agents-host URL, a Bearer JWT and X-LIVEKIT-CLI-VERSION", async () => {
+  const { listCloudAgents } = await import("@/lib/livekit");
+  const seen = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen.url = String(url);
+    seen.headers = init?.headers ?? {};
+    seen.body = init?.body;
+    return new Response('{"agents":[]}', { status: 200 });
+  };
+  try {
+    const agents = await listCloudAgents({
+      url: "wss://fictional-project.livekit.cloud",
+      apiKey: "APIfictional",
+      apiSecret: "fictional-secret-fictional-secret-fictional",
+      agentName: "pydent-agent",
+      source: "env",
+    });
+    assert.deepEqual(agents, []);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(seen.url, "https://agents.livekit.cloud/twirp/livekit.CloudAgent/ListAgents");
+  assert.match(String(seen.headers["Authorization"]), /^Bearer eyJ/); // a JWT, never the raw secret
+  assert.match(String(seen.headers["X-LIVEKIT-CLI-VERSION"]), /^\d+\.\d+\.\d+$/);
+  assert.equal(seen.body, "{}");
+});
