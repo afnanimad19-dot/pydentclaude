@@ -75,7 +75,11 @@ jobs:
         env:
           # The action reads SECRET_LIST from the environment (not as an input);
           # these become the worker container's secrets.
-          SECRET_LIST: "PYDENT_BASE=${{ env.PYDENT_BASE }},LIVEKIT_WORKER_TOKEN=${{ env.LIVEKIT_WORKER_TOKEN }},AGENT_NAME=pydent-agent"
+          # The worker token is provisioned as PYDENT_WORKER_TOKEN (sourced from
+          # the existing LIVEKIT_WORKER_TOKEN repository secret): LiveKit Cloud
+          # silently drops custom agent secrets in the LIVEKIT_ namespace —
+          # deploys report success but the secret never persists or lists.
+          SECRET_LIST: "PYDENT_BASE=${{ env.PYDENT_BASE }},PYDENT_WORKER_TOKEN=${{ env.LIVEKIT_WORKER_TOKEN }},AGENT_NAME=pydent-agent"
 
       - name: Commit livekit.toml after a first-time create
         if: steps.op.outputs.operation == 'create'

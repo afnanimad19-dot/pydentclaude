@@ -72,7 +72,24 @@ load_dotenv(".env")
 logger = logging.getLogger("pydent-agent")
 
 PYDENT_BASE = os.environ.get("PYDENT_BASE", "https://pydent.ai").rstrip("/")
-WORKER_TOKEN = os.environ.get("LIVEKIT_WORKER_TOKEN", "")
+
+
+def resolve_worker_token(env: dict[str, str] | None = None) -> str:
+    """The Pydent worker token from the environment.
+
+    Reads PYDENT_WORKER_TOKEN first. The old name (LIVEKIT_WORKER_TOKEN) is
+    kept as a fallback for local development, but is NOT reliable on LiveKit
+    Cloud: custom agent secrets in the LIVEKIT_ namespace are silently
+    dropped server-side (submitted successfully, never persisted, never
+    listed) — verified against deployments #7–#9 and a manual console add.
+    """
+    e = os.environ if env is None else env
+    return e.get("PYDENT_WORKER_TOKEN") or e.get("LIVEKIT_WORKER_TOKEN", "")
+
+
+WORKER_TOKEN = resolve_worker_token()
+if not WORKER_TOKEN:
+    logger.warning("no worker token configured (set the PYDENT_WORKER_TOKEN secret) — Pydent API calls will be rejected")
 AGENT_NAME = os.environ.get("AGENT_NAME", "pydent-agent")
 
 # Optional plugins. The worker still runs (with LiveKit's built-in defaults) if

@@ -432,5 +432,28 @@ class TransferValidationTests(unittest.TestCase):
         self.assertIn("transfer_call", tool_names(A.build_tools(cfg, _noop)))
 
 
+class WorkerTokenTests(unittest.TestCase):
+    """PYDENT_WORKER_TOKEN resolution (LiveKit Cloud silently drops custom
+    secrets named LIVEKIT_*, so the worker reads the new name first). All
+    values here are fictional."""
+
+    def test_new_name_is_read(self):
+        self.assertEqual(A.resolve_worker_token({"PYDENT_WORKER_TOKEN": "pyw_fict_new"}), "pyw_fict_new")
+
+    def test_old_name_still_works_as_fallback(self):
+        self.assertEqual(A.resolve_worker_token({"LIVEKIT_WORKER_TOKEN": "pyw_fict_old"}), "pyw_fict_old")
+
+    def test_new_name_wins_when_both_are_set(self):
+        env = {"PYDENT_WORKER_TOKEN": "pyw_fict_new", "LIVEKIT_WORKER_TOKEN": "pyw_fict_old"}
+        self.assertEqual(A.resolve_worker_token(env), "pyw_fict_new")
+
+    def test_empty_new_name_falls_back_to_old(self):
+        env = {"PYDENT_WORKER_TOKEN": "", "LIVEKIT_WORKER_TOKEN": "pyw_fict_old"}
+        self.assertEqual(A.resolve_worker_token(env), "pyw_fict_old")
+
+    def test_missing_both_resolves_to_empty_string(self):
+        self.assertEqual(A.resolve_worker_token({}), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
