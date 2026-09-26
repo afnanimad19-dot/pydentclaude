@@ -1,11 +1,12 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Phone, MessageSquare, Info, CheckCircle2, Download, User, ClipboardList, Gauge, RefreshCw, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui";
-import { fetchVoiceCall, fetchCampaigns, retryCallSummary, type VoiceCallRecord, type CallMessage } from "@/lib/db";
+import { fetchVoiceCall, fetchCampaigns, retryCallSummary, saveStaffOutcome, type VoiceCallRecord, type CallMessage } from "@/lib/db";
 import { deriveSummaryView } from "@/lib/call-summary";
+import { STAFF_OUTCOMES, STAFF_OUTCOME_LABELS } from "@/lib/staff-outcome";
 
 function fmtDur(s: number) {
   const m = Math.floor(s / 60);
@@ -89,10 +90,24 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
   const [loading, setLoading] = useState(true);
   const [sumBusy, setSumBusy] = useState(false);
   const [sumError, setSumError] = useState("");
+  const [selOutcome, setSelOutcome] = useState("");
+  const [selNote, setSelNote] = useState("");
+  const [outBusy, setOutBusy] = useState(false);
+  const [outError, setOutError] = useState("");
+
+  // Which call id the staff-outcome edit state was initialized for: the
+  // summary-polling reload must never wipe an unsaved selection mid-edit.
+  const outcomeInitFor = useRef("");
 
   const reload = useCallback(() => {
     return fetchVoiceCall(id).then((c) => {
       setCall(c);
+      if (c && outcomeInitFor.current !== c.id) {
+        outcomeInitFor.current = c.id;
+        setSelOutcome(c.staffOutcome);
+        setSelNote(c.staffOutcomeNote);
+        setOutError("");
+      }
       if (c?.campaignId) fetchCampaigns().then((cs) => setCampaignName(cs.find((x) => x.id === c.campaignId)?.name ?? ""));
     });
   }, [id]);
@@ -113,6 +128,20 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
     const t = setInterval(() => { void reload(); }, 5000);
     return () => clearInterval(t);
   }, [polling, reload]);
+
+  async function onSaveOutcome() {
+    if (!call || outBusy || !selOutcome) return;
+    setOutBusy(true);
+    setOutError("");
+    const res = await saveStaffOutcome(call.id, selOutcome, selNote.trim());
+    if (res.ok) {
+      setCall({ ...call, staffOutcome: selOutcome, staffOutcomeNote: selNote.trim(), staffOutcomeBy: res.by ?? call.staffOutcomeBy, staffOutcomeAt: res.at ?? call.staffOutcomeAt });
+      setSelNote(selNote.trim());
+    } else {
+      setOutError(res.error ?? "Could not save the outcome.");
+    }
+    setOutBusy(false);
+  }
 
   async function onRetrySummary() {
     if (!call || sumBusy) return;
@@ -232,11 +261,56 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
         </Card>
 
         <div className="space-y-6">
-          {/* Call Outcome */}
+          {/* Call Outcome — staff classification (saved via the authenticated
+              outcome route) above the AI/engine data, which stays read-only. */}
           <Card className="p-6">
             <h2 className="mb-4 flex items-center gap-2 font-semibold text-ink-900"><CheckCircle2 className="h-4 w-4 text-brand-500" /> Call Outcome</h2>
+
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">Staff classification</p>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {STAFF_OUTCOMES.map((o) => (
+                <button
+                  key={o}
+                  onClick={() => setSelOutcome(o)}
+                  disabled={outBusy}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    selOutcome === o
+                      ? "border-brand-600 bg-brand-600 text-white"
+                      : "border-ink-200 bg-surface text-ink-600 hover:bg-ink-50"
+                  }`}
+                >
+                  {STAFF_OUTCOME_LABELS[o]}
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={selNote}
+              onChange={(e) => setSelNote(e.target.value)}
+              placeholder="Optional note (why this classification, next step…)"
+              rows={2}
+              maxLength={2000}
+              className="mb-3 w-full rounded-lg border border-ink-200 bg-surface px-3 py-2 text-sm text-ink-800 placeholder:text-ink-300"
+            />
+            {outError && <p className="mb-2 text-sm text-rose-600">{outError}</p>}
+            <div className="mb-1 flex items-center gap-3">
+              <button
+                onClick={onSaveOutcome}
+                disabled={outBusy || !selOutcome || (selOutcome === call.staffOutcome && selNote.trim() === call.staffOutcomeNote)}
+                className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {outBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                {outBusy ? "Saving…" : "Save classification"}
+              </button>
+              {call.staffOutcomeBy && call.staffOutcome && (
+                <span className="text-xs text-ink-400">
+                  Saved by {call.staffOutcomeBy}{call.staffOutcomeAt ? ` · ${fmtDateTime(call.staffOutcomeAt)}` : ""}
+                </span>
+              )}
+            </div>
+
+            <p className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-ink-400">AI &amp; engine data</p>
             {outcomeEntries.length === 0 ? (
-              <p className="py-6 text-center text-sm text-ink-400">No outcomes recorded for this call</p>
+              <p className="py-4 text-center text-sm text-ink-400">No outcomes recorded for this call</p>
             ) : (
               <dl className="grid gap-2">
                 {outcomeEntries.map(([k, v]) => (

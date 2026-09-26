@@ -2164,6 +2164,11 @@ export interface VoiceCallRecord {
     turn_count?: number;
   };
   engine: "vapi" | "livekit"; // which voice engine took the call (shown as a tag)
+  /** Staff-confirmed classification (0062) — separate from the engine `outcome`. */
+  staffOutcome: string;
+  staffOutcomeNote: string;
+  staffOutcomeBy: string;
+  staffOutcomeAt: string | null;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -2215,6 +2220,10 @@ function rowToVoiceCall(r: any): VoiceCallRecord {
     extractedData: (r.extracted_data && typeof r.extracted_data === "object") ? r.extracted_data : {},
     latencyMetrics: (r.latency_metrics && typeof r.latency_metrics === "object") ? r.latency_metrics : {},
     engine: r.engine === "livekit" || r.structured_data?.engine === "livekit" ? "livekit" : "vapi",
+    staffOutcome: r.staff_outcome ?? "",
+    staffOutcomeNote: r.staff_outcome_note ?? "",
+    staffOutcomeBy: r.staff_outcome_by ?? "",
+    staffOutcomeAt: r.staff_outcome_at ?? null,
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -2258,6 +2267,30 @@ export async function retryCallSummary(
     return { ok: data.ok !== false, status: String(data.status ?? "failed"), summary: data.summary, reason: data.reason };
   } catch (e) {
     return { ok: false, status: "failed", reason: e instanceof Error ? e.message : "Could not generate the summary." };
+  }
+}
+
+// Save the staff-confirmed classification for a call (Stage B). Goes through
+// the authenticated route that verifies workspace ownership server-side and
+// rejects invalid outcome values.
+export async function saveStaffOutcome(
+  callId: string,
+  outcome: string,
+  note: string
+): Promise<{ ok: boolean; by?: string; at?: string; error?: string }> {
+  try {
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess.session?.access_token;
+    const res = await fetch("/api/voice/outcome", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ callId, outcome, note }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error ?? "Could not save the outcome." };
+    return { ok: true, by: data.by, at: data.at };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not save the outcome." };
   }
 }
 
