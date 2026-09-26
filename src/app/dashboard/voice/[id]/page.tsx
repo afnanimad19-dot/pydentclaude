@@ -1,10 +1,11 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Phone, MessageSquare, Info, CheckCircle2, Download, User, ClipboardList, Gauge } from "lucide-react";
+import { ArrowLeft, Phone, MessageSquare, Info, CheckCircle2, Download, User, ClipboardList, Gauge, RefreshCw, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui";
-import { fetchVoiceCall, fetchCampaigns, type VoiceCallRecord, type CallMessage } from "@/lib/db";
+import { fetchVoiceCall, fetchCampaigns, retryCallSummary, type VoiceCallRecord, type CallMessage } from "@/lib/db";
+import { deriveSummaryView } from "@/lib/call-summary";
 
 function fmtDur(s: number) {
   const m = Math.floor(s / 60);
@@ -86,13 +87,48 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
   const [call, setCall] = useState<VoiceCallRecord | null>(null);
   const [campaignName, setCampaignName] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [sumBusy, setSumBusy] = useState(false);
+  const [sumError, setSumError] = useState("");
 
-  useEffect(() => {
-    fetchVoiceCall(id).then((c) => {
+  const reload = useCallback(() => {
+    return fetchVoiceCall(id).then((c) => {
       setCall(c);
       if (c?.campaignId) fetchCampaigns().then((cs) => setCampaignName(cs.find((x) => x.id === c.campaignId)?.name ?? ""));
-    }).finally(() => setLoading(false));
+    });
   }, [id]);
+
+  useEffect(() => {
+    reload().finally(() => setLoading(false));
+  }, [reload]);
+
+  // While the AI summary is being generated server-side, refresh the record
+  // every few seconds. The interval clears itself: the view leaves "processing"
+  // once the summary lands or the processing marker goes stale (→ Failed).
+  const summaryView = call
+    ? deriveSummaryView({ summary: call.summary, structuredData: call.structuredData, hasTranscript: Boolean(call.transcript || call.messages.length) })
+    : null;
+  const polling = summaryView?.kind === "processing";
+  useEffect(() => {
+    if (!polling) return;
+    const t = setInterval(() => { void reload(); }, 5000);
+    return () => clearInterval(t);
+  }, [polling, reload]);
+
+  async function onRetrySummary() {
+    if (!call || sumBusy) return;
+    setSumBusy(true);
+    setSumError("");
+    const res = await retryCallSummary(call.id);
+    if (res.status === "available" && res.summary) {
+      setCall({ ...call, summary: res.summary });
+    } else if (res.status === "skipped") {
+      await reload(); // an earlier run already landed one, or one is in flight
+    } else {
+      setSumError(res.reason ?? "Could not generate the summary.");
+      await reload(); // pick up the recorded failed state
+    }
+    setSumBusy(false);
+  }
 
   if (loading) return <p className="py-20 text-center text-sm text-ink-400">Loading call…</p>;
   if (!call) return (
@@ -103,7 +139,8 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
   );
 
   const ended = call.status === "ended";
-  const outcomeEntries = Object.entries(call.structuredData ?? {});
+  // summary_ai is the AI-summary status marker, shown by the summary card — not an outcome.
+  const outcomeEntries = Object.entries(call.structuredData ?? {}).filter(([k]) => k !== "summary_ai");
   // Post-call extraction (the fields configured on the agent) and the worker's
   // per-turn latency metrics. Both are absent on calls that predate them, and on
   // agents whose privacy setting forbids analysis — the cards then stay hidden.
@@ -124,6 +161,52 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
         </div>
         <p className="mt-1 text-sm text-ink-500">{call.callerPhone || "Unknown"} → {call.toPhone || "—"} · {fmtDateTime(call.startedAt)}</p>
       </div>
+
+      {/* AI Call Summary — generated automatically from the stored transcript
+          and confirmed tool results; Retry regenerates only when it's missing. */}
+      <Card className="p-6">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 font-semibold text-ink-900"><Info className="h-4 w-4 text-brand-500" /> AI Call Summary</h2>
+          {summaryView?.kind === "available" ? (
+            <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-semibold text-emerald-600">Available</span>
+          ) : summaryView?.kind === "processing" ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-semibold text-amber-600"><Loader2 className="h-3 w-3 animate-spin" /> Processing</span>
+          ) : summaryView?.kind === "failed" ? (
+            <span className="rounded-full bg-rose-500/15 px-2.5 py-0.5 text-xs font-semibold text-rose-600">Failed</span>
+          ) : null}
+        </div>
+        {summaryView?.kind === "available" ? (
+          <p className="text-sm leading-relaxed text-ink-700">{call.summary}</p>
+        ) : summaryView?.kind === "processing" ? (
+          <p className="text-sm text-ink-500">Generating the summary from this call&apos;s transcript…</p>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-ink-500">
+              {summaryView?.kind === "failed"
+                ? `Summary generation did not complete${summaryView.error ? `: ${summaryView.error}` : "."}`
+                : summaryView?.canRetry
+                  ? "No summary yet for this call."
+                  : !ended && call.status !== "failed"
+                    ? "Call in progress — the summary is generated when it ends."
+                    : "No summary recorded — this call has no stored transcript to summarize."}
+            </p>
+            {sumError && <p className="text-sm text-rose-600">{sumError}</p>}
+            {summaryView?.canRetry && (
+              <button
+                onClick={onRetrySummary}
+                disabled={sumBusy}
+                className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+              >
+                {sumBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                {sumBusy ? "Generating…" : summaryView.kind === "failed" ? "Retry summary" : "Generate summary"}
+              </button>
+            )}
+          </div>
+        )}
+        {call.outcome === "Success" && (
+          <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-semibold text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Goal met</p>
+        )}
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Call Details */}
@@ -163,19 +246,6 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
                   </div>
                 ))}
               </dl>
-            )}
-          </Card>
-
-          {/* Call Summary */}
-          <Card className="p-6">
-            <h2 className="mb-3 flex items-center gap-2 font-semibold text-ink-900"><Info className="h-4 w-4 text-brand-500" /> Call Summary</h2>
-            {call.summary ? (
-              <p className="text-sm leading-relaxed text-ink-700">{call.summary}</p>
-            ) : (
-              <p className="py-4 text-center text-sm text-ink-400">No summary recorded.</p>
-            )}
-            {call.outcome === "Success" && (
-              <p className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-semibold text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Goal met</p>
             )}
           </Card>
         </div>

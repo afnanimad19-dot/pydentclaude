@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { resolveWorkerToken } from "@/lib/livekit";
 import { runPostCallExtraction } from "@/lib/post-call";
+import { runCallSummaryForRow } from "@/lib/call-summary-server";
+import { SUMMARY_AI_KEY } from "@/lib/call-summary";
 import type { ExtractionField } from "@/lib/db";
 
 // The deployed LiveKit worker posts here when a call ends: the transcript,
@@ -13,18 +15,34 @@ export const runtime = "nodejs";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 async function upsert(roomKey: string, row: Record<string, any>) {
-  const { data: existing } = await supabase.from("voice_calls").select("id").eq("vapi_call_id", roomKey).limit(1).maybeSingle();
+  const { data: existing } = await supabase
+    .from("voice_calls").select("id, summary, structured_data").eq("vapi_call_id", roomKey).limit(1).maybeSingle();
+
+  // A worker re-post (retry / duplicate submission) must never lose what an
+  // earlier round already produced: keep a non-empty stored summary when the
+  // incoming one is empty, and carry the summary_ai status key over into the
+  // freshly composed structured_data (the post itself replaces the rest).
+  if (existing) {
+    if (!String(row.summary ?? "").trim() && String(existing.summary ?? "").trim()) row.summary = existing.summary;
+    const priorAi = (existing.structured_data as Record<string, any> | null)?.[SUMMARY_AI_KEY];
+    if (priorAi && row.structured_data && typeof row.structured_data === "object") {
+      row.structured_data = { [SUMMARY_AI_KEY]: priorAi, ...row.structured_data };
+    }
+  }
+
   const write = (r: Record<string, any>) =>
-    existing ? supabase.from("voice_calls").update(r).eq("id", existing.id) : supabase.from("voice_calls").insert({ vapi_call_id: roomKey, ...r });
-  let { error } = await write(row);
+    existing
+      ? supabase.from("voice_calls").update(r).eq("id", existing.id).select("id").maybeSingle()
+      : supabase.from("voice_calls").insert({ vapi_call_id: roomKey, ...r }).select("id").maybeSingle();
+  let { data, error } = await write(row);
   // Older DBs: drop columns that may not be migrated yet and retry.
   if (error && /engine|to_phone|ended_reason|messages|structured_data|campaign_id|latency_metrics|config_version|extracted_data/.test(error.message)) {
     const slim = { ...row };
     delete slim.engine; delete slim.to_phone; delete slim.ended_reason; delete slim.messages; delete slim.structured_data; delete slim.campaign_id;
     delete slim.latency_metrics; delete slim.config_version;
-    ({ error } = await write(slim));
+    ({ data, error } = await write(slim));
   }
-  return error;
+  return { error, id: data?.id ? String(data.id) : existing?.id ? String(existing.id) : "" };
 }
 
 export async function POST(req: NextRequest) {
@@ -54,7 +72,7 @@ export async function POST(req: NextRequest) {
   const ended = body.endedAt ? new Date(body.endedAt) : new Date();
   const duration = started ? Math.max(0, Math.round((ended.getTime() - started.getTime()) / 1000)) : Number(body.durationSec ?? 0) || 0;
 
-  const error = await upsert(`lk:${room}`, {
+  const row: Record<string, any> = {
     workspace_id: ws,
     agent_name: String(body.agentName ?? ""),
     caller_phone: String(body.callerPhone ?? ""),
@@ -73,8 +91,9 @@ export async function POST(req: NextRequest) {
     structured_data: { engine: "livekit", room, source: body.source ?? "", privacy, ...(body.structuredData && typeof body.structuredData === "object" ? body.structuredData : {}) },
     latency_metrics: body.latencyMetrics && typeof body.latencyMetrics === "object" ? body.latencyMetrics : {},
     config_version: Number(body.configVersion) || 1,
-  });
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  };
+  const saved = await upsert(`lk:${room}`, row);
+  if (saved.error) return NextResponse.json({ ok: false, error: saved.error.message }, { status: 500 });
 
   // Post-call data extraction. Runs only when the agent's privacy setting
   // allows analysis, and AFTER the call row is saved — it never delays the
@@ -89,5 +108,24 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ ok: true, extraction: analyze && fields.length ? "queued" : "skipped" });
+  // AI Call Summary — AWAITED before responding: on this serverless runtime a
+  // fire-and-forget promise is frozen once the response is sent, so awaiting
+  // is the only guaranteed way to finish. Generation is deadline-bounded
+  // inside runCallSummaryForRow, the worker posts with a 60s timeout after the
+  // caller already hung up, and runCallSummary itself skips when a summary
+  // already exists (idempotent against re-posts).
+  let summaryStatus = "skipped";
+  if (analyze && saved.id) {
+    const outcome = await runCallSummaryForRow({
+      id: saved.id,
+      summary: row.summary,
+      transcript,
+      messages: row.messages,
+      structured_data: row.structured_data,
+      agent_name: row.agent_name,
+    });
+    summaryStatus = outcome.status;
+  }
+
+  return NextResponse.json({ ok: true, extraction: analyze && fields.length ? "queued" : "skipped", summary: summaryStatus });
 }

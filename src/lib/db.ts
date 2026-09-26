@@ -2239,6 +2239,28 @@ export async function fetchVoiceCall(id: string): Promise<VoiceCallRecord | null
   }
 }
 
+// Ask the server to (re)generate the AI Call Summary for one call. Runs through
+// an authenticated route that verifies the call belongs to the caller's
+// workspace; an existing summary is never overwritten (the server skips it).
+export async function retryCallSummary(
+  callId: string
+): Promise<{ ok: boolean; status: string; summary?: string; reason?: string }> {
+  try {
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess.session?.access_token;
+    const res = await fetch("/api/voice/summary-retry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ callId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, status: "failed", reason: data.error ?? "Could not generate the summary." };
+    return { ok: data.ok !== false, status: String(data.status ?? "failed"), summary: data.summary, reason: data.reason };
+  } catch (e) {
+    return { ok: false, status: "failed", reason: e instanceof Error ? e.message : "Could not generate the summary." };
+  }
+}
+
 // ----------------------------------------------------------- billing (0041)
 
 export interface BillingSettings {
