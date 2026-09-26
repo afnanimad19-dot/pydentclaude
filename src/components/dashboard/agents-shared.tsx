@@ -37,6 +37,7 @@ import {
   Clock,
   Waves,
   ClipboardList,
+  Volume2,
 } from "lucide-react";
 import { Card, PageHeader, DemoBanner, StatusBadge } from "@/components/ui";
 import { Modal, Field, ModalFooter, inputCls } from "@/components/modal";
@@ -1983,6 +1984,10 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<{ speaker: string; text: string }[]>([]);
   const [assistantSpeaking, setAssistantSpeaking] = useState(false);
+  // Audio playback blocked by the browser (needs a click to unlock) and mic
+  // problems — kept separate so the two failure kinds are distinguishable.
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
   const [chats, setChats] = useState<TeamChat[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [viewing, setViewing] = useState<{ role: "user" | "assistant"; content: string }[] | null>(null);
@@ -2038,6 +2043,8 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
       },
       onSpeaking: setAssistantSpeaking,
       onLine: (speaker: "user" | "assistant", text: string) => pushLine(speaker === "assistant" ? agent.name : "You", text),
+      onAudioBlocked: setAudioBlocked,
+      onMicError: setMicError,
     });
   }
 
@@ -2112,6 +2119,8 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
     setState("connecting");
     setError(null);
     setViewing(null);
+    setAudioBlocked(false);
+    setMicError(null);
     savedRef.current = false;
     transcriptRef.current = [];
     setTranscript([]);
@@ -2193,6 +2202,20 @@ export function TestCallModal({ agent, onClose }: { agent: AiAgent; onClose: () 
           {state === "error" && "Call failed."}
         </p>
         {error && <p className="max-w-md text-center text-xs text-amber-600">{error}</p>}
+        {micError && state === "live" && (
+          <p className="max-w-md text-center text-xs text-amber-600">
+            Microphone unavailable ({micError}) — {agent.name} can speak, but can&apos;t hear you. Allow the microphone and call again.
+          </p>
+        )}
+
+        {audioBlocked && state === "live" && (
+          <button
+            onClick={() => callRef.current?.enableAudio?.()}
+            className="flex items-center gap-2 rounded-xl bg-amber-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-amber-500/30 hover:bg-amber-600"
+          >
+            <Volume2 className="h-4 w-4" /> Enable audio — your browser blocked playback
+          </button>
+        )}
 
         {state === "live" || state === "connecting" ? (
           <button
