@@ -10,6 +10,7 @@
     "test": "node --test --experimental-strip-types --import ./tests/alias-loader-register.mjs tests/*.test.mjs"
   },
   "dependencies": {
+    "@azure/storage-blob": "^12.34.0",
     "@livekit/protocol": "^1.51.0",
     "@supabase/supabase-js": "^2.108.1",
     "@vapi-ai/web": "^2.5.2",

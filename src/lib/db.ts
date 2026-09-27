@@ -488,6 +488,9 @@ export interface VoiceSettings {
   maxCallDuration: number;         // minutes · 1–60 · max call length (default 60)
   // Privacy
   dataStorage: "store_analyze" | "store_only" | "no_store"; // default store_analyze
+  // Consent to record LiveKit calls to private storage (Stage C2). Default OFF;
+  // enforced server-side, and no_store always wins over it.
+  recordCalls?: boolean;
   // Call transfer to a human
   transferNumber: string;   // E.164 number to transfer to (empty = no transfer)
   transferMessage: string;  // what the agent says before transferring
@@ -565,6 +568,7 @@ export function defaultVoiceSettings(): VoiceSettings {
     maxSilenceDuration: 120,
     maxCallDuration: 60,
     dataStorage: "store_analyze",
+    recordCalls: false,
     transferNumber: "",
     transferMessage: "",
     extractionFields: [],
@@ -2169,6 +2173,9 @@ export interface VoiceCallRecord {
   staffOutcomeNote: string;
   staffOutcomeBy: string;
   staffOutcomeAt: string | null;
+  /** LiveKit private recording (0063) — object path + lifecycle, never a URL. */
+  recordingPath: string;
+  recordingStatus: string;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -2224,6 +2231,8 @@ function rowToVoiceCall(r: any): VoiceCallRecord {
     staffOutcomeNote: r.staff_outcome_note ?? "",
     staffOutcomeBy: r.staff_outcome_by ?? "",
     staffOutcomeAt: r.staff_outcome_at ?? null,
+    recordingPath: r.recording_path ?? "",
+    recordingStatus: r.recording_status ?? "",
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -2291,6 +2300,27 @@ export async function saveStaffOutcome(
     return { ok: true, by: data.by, at: data.at };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Could not save the outcome." };
+  }
+}
+
+// Fetch a short-lived signed playback/download URL for a LiveKit recording.
+// The server verifies the session and workspace ownership; the URL it returns
+// is blob-scoped and expires within minutes.
+export async function fetchRecordingUrl(
+  callId: string,
+  download = false
+): Promise<{ ok: boolean; url?: string; error?: string }> {
+  try {
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess.session?.access_token;
+    const res = await fetch(`/api/voice/recording?callId=${encodeURIComponent(callId)}${download ? "&download=1" : ""}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data.error ?? "Could not load the recording." };
+    return { ok: true, url: data.url };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not load the recording." };
   }
 }
 

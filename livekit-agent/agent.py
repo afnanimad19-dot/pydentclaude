@@ -181,6 +181,31 @@ ASK_FOR_NUMBER = (
 )
 
 
+def history_to_lines(history: dict[str, Any] | None, started: float) -> list[dict[str, Any]]:
+    """Chat history → transcript lines with REAL per-message offsets.
+
+    Each item's created_at (epoch seconds, present when the history is exported
+    with exclude_timestamp=False) becomes secondsFromStart relative to the call
+    start. An item without a usable timestamp simply omits the field — Pydent
+    never fabricates one.
+    """
+    lines: list[dict[str, Any]] = []
+    for item in (history or {}).get("items", []):
+        role = item.get("role")
+        content = item.get("content")
+        if role not in ("user", "assistant") or not content:
+            continue
+        text = " ".join(c for c in content if isinstance(c, str)) if isinstance(content, list) else str(content)
+        if not text.strip():
+            continue
+        line: dict[str, Any] = {"role": role, "text": text.strip()}
+        created = item.get("created_at")
+        if isinstance(created, (int, float)) and started and created >= started:
+            line["secondsFromStart"] = round(float(created) - started, 1)
+        lines.append(line)
+    return lines
+
+
 # ── Tools (only the ones enabled for this agent are registered) ──────────────
 def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | None = None) -> list[Any]:
     """Return the LiveKit tool list for this agent.
@@ -776,15 +801,10 @@ async def entrypoint(ctx: JobContext):
 
         if store_transcript:
             try:
-                history = session.history.to_dict()
-                for item in history.get("items", []):
-                    role = item.get("role")
-                    content = item.get("content")
-                    if role not in ("user", "assistant") or not content:
-                        continue
-                    text = " ".join(c for c in content if isinstance(c, str)) if isinstance(content, list) else str(content)
-                    if text.strip():
-                        lines.append({"role": role, "text": text.strip()})
+                # exclude_timestamp=False keeps each item's created_at so the
+                # transcript carries REAL per-message offsets from call start.
+                history = session.history.to_dict(exclude_timestamp=False)
+                lines.extend(history_to_lines(history, started))
             except Exception as e:
                 logger.warning("could not read session history: %s", e)
 

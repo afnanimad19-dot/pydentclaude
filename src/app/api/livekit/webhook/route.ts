@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getLivekitCreds, lkConfigured, webhookReceiver, wsFromRoom } from "@/lib/livekit";
+import { egressEndedUpdate } from "@/lib/call-recording";
 
 // LiveKit webhook (set this URL in the LiveKit project → Settings → Webhooks).
 // Gives Call Logs a live "in progress" row the moment a call starts and closes
@@ -28,7 +29,8 @@ export async function POST(req: NextRequest) {
   const body = await req.text();
   let peek: any = {};
   try { peek = JSON.parse(body); } catch { return NextResponse.json({ error: "bad body" }, { status: 400 }); }
-  const roomName: string = peek?.room?.name ?? "";
+  // Egress lifecycle events carry the room inside egressInfo, not room.name.
+  const roomName: string = peek?.room?.name ?? peek?.egressInfo?.roomName ?? "";
   const { ws, kind } = wsFromRoom(roomName);
   if (!ws) return NextResponse.json({ ok: true, ignored: "not a Pydent room" });
 
@@ -60,6 +62,15 @@ export async function POST(req: NextRequest) {
     const startedIso = created ? new Date(created * 1000).toISOString() : null;
     const duration = created ? Math.max(0, Math.round(Date.now() / 1000 - created)) : 0;
     await upsert(key, { workspace_id: ws, status: "ended", ended_at: now, ...(startedIso ? { started_at: startedIso } : {}), duration_sec: duration });
+  } else if (type === "egress_ended") {
+    // Recording finalized (Stage C2): persist the terminal state. Touches ONLY
+    // the recording_* columns; on a DB without migration 0063 the update
+    // errors and is logged — the call record itself is unaffected.
+    const upd = egressEndedUpdate(event?.egressInfo ?? {});
+    if (upd) {
+      const err = await upsert(key, { workspace_id: ws, ...upd });
+      if (err) console.warn(`[recording] egress_ended write failed: ${err.message}`);
+    }
   }
   return NextResponse.json({ ok: true });
 }

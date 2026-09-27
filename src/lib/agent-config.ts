@@ -192,6 +192,8 @@ export function normalizeVoiceSettings(
     maxCallDuration: clampNum(v.maxCallDuration, "maxCallDuration"),
 
     dataStorage: pickEnum(v.dataStorage, ["store_analyze", "store_only", "no_store"] as const, "store_analyze"),
+    // Recording consent is strictly opt-in: anything but boolean true is OFF.
+    recordCalls: v.recordCalls === true,
 
     transferNumber,
     transferMessage: String(v.transferMessage ?? "").slice(0, 300),

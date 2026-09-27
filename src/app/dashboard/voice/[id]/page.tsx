@@ -4,9 +4,10 @@ import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Phone, MessageSquare, Info, CheckCircle2, Download, User, ClipboardList, Gauge, RefreshCw, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui";
-import { fetchVoiceCall, fetchCampaigns, retryCallSummary, saveStaffOutcome, type VoiceCallRecord, type CallMessage } from "@/lib/db";
+import { fetchVoiceCall, fetchCampaigns, retryCallSummary, saveStaffOutcome, fetchRecordingUrl, type VoiceCallRecord, type CallMessage } from "@/lib/db";
 import { deriveSummaryView } from "@/lib/call-summary";
 import { STAFF_OUTCOMES, STAFF_OUTCOME_LABELS } from "@/lib/staff-outcome";
+import { recordingView } from "@/lib/call-recording";
 
 function fmtDur(s: number) {
   const m = Math.floor(s / 60);
@@ -74,6 +75,7 @@ function TimelineRow({ m }: { m: CallMessage }) {
   const isUser = m.role === "user";
   return (
     <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
+      {isUser && <p className="mb-1 text-xs text-ink-400">Caller</p>}
       {!isUser && <p className="mb-1 flex items-center gap-1.5 text-xs text-ink-400"><span className="grid h-6 w-6 place-items-center rounded-full bg-ink-100 text-[10px] font-bold text-ink-500">AI</span> AI Agent</p>}
       <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed ${isUser ? "rounded-br-sm bg-brand-600 text-white" : "rounded-bl-sm border border-ink-200 bg-surface text-ink-800"}`}>
         {m.text}
@@ -94,6 +96,8 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
   const [selNote, setSelNote] = useState("");
   const [outBusy, setOutBusy] = useState(false);
   const [outError, setOutError] = useState("");
+  const [recUrl, setRecUrl] = useState("");
+  const [recError, setRecError] = useState("");
 
   // Which call id the staff-outcome edit state was initialized for: the
   // summary-polling reload must never wipe an unsaved selection mid-edit.
@@ -128,6 +132,31 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
     const t = setInterval(() => { void reload(); }, 5000);
     return () => clearInterval(t);
   }, [polling, reload]);
+
+  // LiveKit recordings live in private storage: when this call has a completed
+  // recording, fetch a short-lived signed URL for the player. Vapi calls keep
+  // their own recordingUrl and never hit this path.
+  const recKind = call && !call.recordingUrl
+    ? recordingView({ recordingStatus: call.recordingStatus, recordingPath: call.recordingPath })
+    : "none";
+  const recCallId = recKind === "complete" ? call?.id ?? "" : "";
+  useEffect(() => {
+    if (!recCallId) return;
+    let cancelled = false;
+    fetchRecordingUrl(recCallId).then((r) => {
+      if (cancelled) return;
+      if (r.ok && r.url) setRecUrl(r.url);
+      else setRecError(r.error ?? "Could not load the recording.");
+    });
+    return () => { cancelled = true; };
+  }, [recCallId]);
+
+  async function onDownloadRecording() {
+    if (!call) return;
+    const r = await fetchRecordingUrl(call.id, true);
+    if (r.ok && r.url) window.location.assign(r.url);
+    else setRecError(r.error ?? "Could not download the recording.");
+  }
 
   async function onSaveOutcome() {
     if (!call || outBusy || !selOutcome) return;
@@ -406,10 +435,30 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
         <h2 className="mb-4 flex items-center gap-2 font-semibold text-ink-900"><MessageSquare className="h-4 w-4 text-brand-500" /> Call Transcript</h2>
 
         {call.recordingUrl ? (
+          // Vapi recording — a plain URL, exactly as before.
           <div className="mb-5 flex items-center gap-3 rounded-xl border border-ink-100 bg-ink-50/60 p-3">
             <audio controls src={call.recordingUrl} className="w-full" />
             <a href={call.recordingUrl} download title="Download recording" className="shrink-0 rounded-lg p-2 text-ink-500 hover:bg-ink-100"><Download className="h-4 w-4" /></a>
           </div>
+        ) : recKind === "complete" ? (
+          // LiveKit recording — private storage, played via a short-lived
+          // signed URL from the authenticated recording route.
+          <div className="mb-5 rounded-xl border border-ink-100 bg-ink-50/60 p-3">
+            {recUrl ? (
+              <div className="flex items-center gap-3">
+                <audio controls src={recUrl} className="w-full" />
+                <button onClick={onDownloadRecording} title="Download recording" className="shrink-0 rounded-lg p-2 text-ink-500 hover:bg-ink-100"><Download className="h-4 w-4" /></button>
+              </div>
+            ) : recError ? (
+              <p className="text-xs text-rose-600">{recError}</p>
+            ) : (
+              <p className="text-xs text-ink-400">Loading recording…</p>
+            )}
+          </div>
+        ) : recKind === "pending" && ended ? (
+          <p className="mb-5 text-xs text-ink-400">Recording is being finalized — it appears here shortly.</p>
+        ) : recKind === "failed" ? (
+          <p className="mb-5 text-xs text-amber-600">Recording failed for this call — the transcript below is unaffected.</p>
         ) : (
           <p className="mb-5 text-xs text-ink-400">{call.status === "in-progress" ? "Call in progress — recording appears when it ends." : "No recording available."}</p>
         )}

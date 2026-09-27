@@ -455,5 +455,49 @@ class WorkerTokenTests(unittest.TestCase):
         self.assertEqual(A.resolve_worker_token({}), "")
 
 
+class HistoryToLinesTests(unittest.TestCase):
+    """Transcript lines carry REAL offsets from chat-item created_at — or none."""
+
+    STARTED = 1_000.0
+
+    def test_created_at_becomes_seconds_from_start(self):
+        history = {"items": [
+            {"role": "assistant", "content": ["Hello!"], "created_at": 1_001.24},
+            {"role": "user", "content": ["Hi, I need a cleaning."], "created_at": 1_007.86},
+        ]}
+        lines = A.history_to_lines(history, self.STARTED)
+        self.assertEqual(lines[0]["secondsFromStart"], 1.2)
+        self.assertEqual(lines[1]["secondsFromStart"], 7.9)
+        self.assertEqual(lines[0]["role"], "assistant")
+        self.assertEqual(lines[1]["text"], "Hi, I need a cleaning.")
+
+    def test_missing_or_bad_timestamp_omits_the_field(self):
+        history = {"items": [
+            {"role": "user", "content": ["no timestamp"]},
+            {"role": "user", "content": ["before start"], "created_at": 999.0},
+            {"role": "user", "content": ["not a number"], "created_at": "soon"},
+        ]}
+        lines = A.history_to_lines(history, self.STARTED)
+        self.assertEqual(len(lines), 3)
+        for line in lines:
+            self.assertNotIn("secondsFromStart", line)
+
+    def test_non_dialogue_items_and_empty_text_are_skipped(self):
+        history = {"items": [
+            {"role": "system", "content": ["prompt"], "created_at": 1_001.0},
+            {"role": "user", "content": ["   "], "created_at": 1_002.0},
+            {"role": "user", "content": [], "created_at": 1_003.0},
+            {"role": "assistant", "content": ["Kept.", {"image": "x"}], "created_at": 1_004.0},
+        ]}
+        lines = A.history_to_lines(history, self.STARTED)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["text"], "Kept.")
+        self.assertEqual(lines[0]["secondsFromStart"], 4.0)
+
+    def test_empty_history_is_safe(self):
+        self.assertEqual(A.history_to_lines(None, self.STARTED), [])
+        self.assertEqual(A.history_to_lines({}, self.STARTED), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -597,6 +597,26 @@ export function PrivacyPanel({ value, onChange }: { value: VoiceSettings; onChan
           </p>
         )}
       </div>
+
+      {/* Call recording consent (Stage C2) — strictly opt-in, enforced on the
+          server, and unavailable when call content may not be stored. */}
+      <label className={`mt-4 flex items-start gap-3 rounded-lg border border-ink-100 p-3 ${store === "no_store" ? "opacity-50" : ""}`}>
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={value.recordCalls === true && store !== "no_store"}
+          disabled={store === "no_store"}
+          onChange={(e) => onChange({ ...value, recordCalls: e.target.checked })}
+        />
+        <span className="text-sm">
+          <span className="font-semibold text-ink-800">Record calls (audio)</span>
+          <span className="mt-0.5 block text-[11px] text-ink-500">
+            Stores the full call audio (caller and agent) in the clinic&apos;s private recording storage. Off by default.
+            {store === "no_store" && " Not available while call content isn't stored."}
+            {" "}Make sure your greeting includes a recording notice before enabling this for real callers.
+          </span>
+        </span>
+      </label>
     </Section>
   );
 }

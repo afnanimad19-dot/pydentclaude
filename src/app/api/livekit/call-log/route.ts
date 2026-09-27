@@ -4,6 +4,7 @@ import { resolveWorkerToken } from "@/lib/livekit";
 import { runPostCallExtraction } from "@/lib/post-call";
 import { runCallSummaryForRow } from "@/lib/call-summary-server";
 import { SUMMARY_AI_KEY } from "@/lib/call-summary";
+import { workerMessagesToRows } from "@/lib/call-transcript";
 import type { ExtractionField } from "@/lib/db";
 
 // The deployed LiveKit worker posts here when a call ends: the transcript,
@@ -86,7 +87,9 @@ export async function POST(req: NextRequest) {
     transcript,
     summary: String(body.summary ?? ""),
     outcome: String(body.outcome ?? ""),
-    messages: messages.map((m: any, i: number) => ({ role: m.role === "assistant" ? "bot" : "user", message: String(m.text ?? m.content ?? ""), secondsFromStart: Number(m.secondsFromStart ?? i) })),
+    // Real per-message offsets only (the worker computes them from each chat
+    // item's created_at). A missing offset stays null — never the array index.
+    messages: workerMessagesToRows(messages),
     engine: "livekit",
     structured_data: { engine: "livekit", room, source: body.source ?? "", privacy, ...(body.structuredData && typeof body.structuredData === "object" ? body.structuredData : {}) },
     latency_metrics: body.latencyMetrics && typeof body.latencyMetrics === "object" ? body.latencyMetrics : {},
