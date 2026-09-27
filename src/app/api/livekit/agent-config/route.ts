@@ -28,8 +28,21 @@ export async function POST(req: NextRequest) {
   if (ws && agent.workspace_id && String(agent.workspace_id) !== ws) {
     return NextResponse.json({ error: "Agent does not belong to this workspace." }, { status: 403 });
   }
-  // Compile the prompt against the CLINIC's timezone, not the server's UTC.
+  // Compile the prompt against the CLINIC's timezone, not the server's UTC,
+  // and resolve the clinic's display name for the default closing message
+  // ("Thank you for calling <clinic>...") — never hardcoded to one clinic.
   const agentWs = String(agent.workspace_id ?? ws ?? "");
   const tz = await clinicTimezone(agentWs || null);
-  return NextResponse.json({ ok: true, config: livekitAgentConfig(agent, agentWs, requestOrigin(req), tz) });
+  let clinicName = "";
+  if (agentWs) {
+    try {
+      const { data: cs } = await supabase.from("clinic_settings").select("clinic_display_name").eq("workspace_id", agentWs).maybeSingle();
+      clinicName = String(cs?.clinic_display_name ?? "").trim();
+      if (!clinicName) {
+        const { data: w } = await supabase.from("workspaces").select("name").eq("id", agentWs).maybeSingle();
+        clinicName = String(w?.name ?? "").trim();
+      }
+    } catch { /* default goodbye falls back to the generic wording */ }
+  }
+  return NextResponse.json({ ok: true, config: livekitAgentConfig(agent, agentWs, requestOrigin(req), tz, clinicName) });
 }

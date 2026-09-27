@@ -181,6 +181,61 @@ ASK_FOR_NUMBER = (
 )
 
 
+# ── Call Ending & Goodbye (configured in Pydent, resolved per call) ─────────
+HANGUP_DELAY_MAX = 3.0
+FALLBACK_GOODBYE = "Thank you for calling. Have a wonderful day!"
+
+# end_call outcome -> configured closing-message key. Anything unknown, and
+# any outcome whose message the admin left empty, falls back to the general
+# goodbye — the caller always hears exactly one configured message.
+_CLOSING_KEYS = {
+    "general": "general",
+    "booking_confirmed": "bookingConfirmed",
+    "booking_changed": "bookingChanged",
+    "enquiry": "enquiry",
+    "unresolved": "unresolved",
+}
+
+
+def clamp_hangup_delay(v: Any) -> float:
+    """Seconds to wait after the goodbye finished playing (0–3, default 0)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    if f != f:  # NaN
+        return 0.0
+    return min(max(f, 0.0), HANGUP_DELAY_MAX)
+
+
+def closing_message_for(call_ending: dict[str, Any] | None, outcome: Any) -> str:
+    """The exact closing message to speak for an end_call outcome."""
+    messages = (call_ending or {}).get("messages") or {}
+    key = _CLOSING_KEYS.get(str(outcome or "").strip().lower(), "general")
+    text = str(messages.get(key) or "").strip()
+    if not text:
+        text = str(messages.get("general") or "").strip()
+    return text or FALLBACK_GOODBYE
+
+
+async def deliver_goodbye(session: Any, goodbye: str, delay: Any) -> bool:
+    """Speak the closing message and wait for it to FINISH playing, then hold
+    the configured hang-up delay. Returns False when the caller interrupted
+    the message — the hang-up must then be cancelled (no delay is applied).
+    A TTS failure never blocks the hang-up (returns True after the delay)."""
+    try:
+        handle = session.say(goodbye, allow_interruptions=True)
+        await handle  # resolves only after playout completes
+        if getattr(handle, "interrupted", False):
+            return False
+    except Exception as e:
+        logger.debug("goodbye playout: %s", e)
+    d = clamp_hangup_delay(delay)
+    if d > 0:
+        await asyncio.sleep(d)
+    return True
+
+
 def history_to_lines(history: dict[str, Any] | None, started: float) -> list[dict[str, Any]]:
     """Chat history → transcript lines with REAL per-message offsets.
 
@@ -227,7 +282,37 @@ def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | N
     def caller_number() -> str:
         return str(state.get("caller_phone") or "")
 
-    if enabled.get("end_call", True):
+    # Call Ending & Goodbye: when ENABLED the tool takes an outcome and the
+    # WORKER speaks the exact configured closing message before hanging up.
+    # Manual mode registers no end_call tool at all — the agent can never
+    # terminate the call. Feature off = the legacy tool, byte-for-byte.
+    call_ending: dict[str, Any] = cfg.get("callEnding") or {}
+    ce_enabled = call_ending.get("enabled") is True
+    ce_mode = str(call_ending.get("mode") or "explicit")
+
+    if ce_enabled and ce_mode == "manual":
+        pass  # never auto-terminates: end_call is not in the LLM's schema
+    elif ce_enabled:
+
+        @function_tool(
+            name="end_call",
+            description=(
+                "End the call once the conversation is genuinely finished. Pass the outcome: "
+                "general, booking_confirmed (only after a booking tool succeeded), booking_changed "
+                "(after a successful reschedule or cancellation), enquiry (question answered) or "
+                "unresolved (follow-up still needed). The system speaks the clinic's configured "
+                "closing message and hangs up — do NOT say a goodbye yourself."
+            ),
+        )
+        async def end_call(outcome: str = "general", reason: str = "conversation finished") -> str:
+            message = closing_message_for(call_ending, outcome)
+            ended = await on_end_call(reason or str(outcome), message)
+            if ended:
+                return "Call ended."
+            return "The caller spoke up and has more to say — continue helping them; do not end the call yet."
+
+        tools.append(end_call)
+    elif enabled.get("end_call", True):
 
         @function_tool(name="end_call", description="End the call politely once the conversation is genuinely finished.")
         async def end_call(reason: str = "conversation finished") -> str:
@@ -751,19 +836,50 @@ async def entrypoint(ctx: JobContext):
     bg_player: BackgroundAudioPlayer | None = None
     closing = asyncio.Event()
 
-    async def end_call(reason: str) -> None:
+    ce_cfg: dict[str, Any] = cfg.get("callEnding") or {}
+    ce_active = ce_cfg.get("enabled") is True
+
+    async def end_call(reason: str, goodbye: str | None = None) -> bool:
+        """Terminate the call, optionally after speaking the configured
+        closing message. Returns False when the caller interrupted the
+        goodbye — the call then STAYS OPEN and the conversation continues.
+
+        The `closing` event guards against duplicate/concurrent endings
+        (tool call racing a watchdog); it is released only on interruption.
+        """
         if closing.is_set():
-            return
+            return True
         closing.set()
+        call_state["ended_reason"] = reason
         logger.info("ending call (%s)", reason)
+        if goodbye:
+            completed = await deliver_goodbye(session, goodbye, ce_cfg.get("hangupDelaySec"))
+            if not completed:
+                # New request mid-goodbye: cancel the pending hang-up.
+                closing.clear()
+                call_state.pop("ended_reason", None)
+                if lifecycle is not None:
+                    lifecycle.note_activity()
+                logger.info("closing message interrupted — call stays open")
+                return False
         try:
             await session.aclose()
         except Exception as e:
             logger.debug("session close: %s", e)
+        if ce_active:
+            # Closing the agent session does NOT disconnect the caller — the
+            # room keeps living until its timeouts. Deleting the room hangs up
+            # every participant (browser and SIP alike). Only when the feature
+            # is enabled, so legacy agents keep today's behavior unchanged.
+            try:
+                await ctx.delete_room()
+            except Exception as e:
+                logger.debug("delete_room: %s", e)
         try:
             ctx.shutdown(reason=reason)
         except Exception:
             pass
+        return True
 
     lifecycle = CallLifecycle(session, cfg, end_call)
 
@@ -822,6 +938,9 @@ async def entrypoint(ctx: JobContext):
                     "source": meta.get("source", ""),
                     "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
                     "endedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    # Why the agent ended the call (tool outcome, silence,
+                    # duration limit) — empty when the caller hung up.
+                    "endedReason": str(call_state.get("ended_reason") or ""),
                     "messages": lines,
                     "latencyMetrics": tracker.summary(),
                     "structuredData": {"toolCalls": list(tool_calls)},

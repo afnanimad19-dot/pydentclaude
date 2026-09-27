@@ -81,6 +81,7 @@ import {
   PrivacyPanel,
   BackgroundAudioField,
   ImportedToolsPanel,
+  CallEndingPanel,
   EndCallPanel,
 } from "@/components/dashboard/agent-advanced";
 
@@ -1658,6 +1659,7 @@ export function AgentModal({
           {activeTab === "tools" && (
             <div className="space-y-4">
               <AgentToolsPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
+              <CallEndingPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
               <EndCallPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
               <ImportedToolsPanel value={form.voiceSettings} onChange={(v) => set("voiceSettings", v)} />
             </div>

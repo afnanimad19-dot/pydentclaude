@@ -3,6 +3,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { languageRule } from "@/lib/agent-reply";
 import { LIVEKIT_DEFAULTS, livekitSttLanguage, type LivekitAgentSettings } from "@/lib/livekit-models";
 import { normalizeVoiceSettings, AGENT_CONFIG_VERSION } from "@/lib/agent-config";
+import { callEndingRules, resolveClosingMessages, applySilencePolicy } from "@/lib/call-ending";
 import { resolveWorkerTokenOrdered } from "@/lib/worker-token";
 import { todayInTz, DEFAULT_CLINIC_TZ } from "@/lib/scheduling";
 import { cloudAgentsHost, parseListAgents } from "@/lib/cloud-agents";
@@ -177,12 +178,16 @@ export async function listCloudAgents(c: LivekitCreds): Promise<import("@/lib/cl
 // (never cached globally) from the agent row, normalized + clamped server-side
 // so a corrupt config can't reach the worker, and containing only safe values —
 // no provider keys, no Supabase keys, no LiveKit secret.
-export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: string) {
+export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: string, clinicName?: string) {
   const vs = normalizeVoiceSettings(agent.voice_settings, {
     canBook: !!agent.can_book,
     canReschedule: !!agent.can_reschedule,
     canCancel: !!agent.can_cancel,
   });
+  // Call Ending & Goodbye (Pydent-native). When ENABLED its generated rules
+  // are authoritative and the imported Builder endCall prompt lines are
+  // skipped (the imported configuration itself stays stored untouched).
+  const callEnding = (vs as any).callEnding ?? { enabled: false };
   const lk: LivekitAgentSettings = { ...LIVEKIT_DEFAULTS, ...((agent.voice_settings?.livekit ?? {}) as Partial<LivekitAgentSettings>) };
   const tools = (vs as any).tools as Record<string, boolean>;
 
@@ -230,12 +235,15 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: 
     // Skipped when the behavior text already carries a CALL ENDING block (an
     // agent imported before the structured config existed) so the rules are
     // never duplicated in the compiled prompt.
-    ...(String(agent.behavior ?? "").includes("CALL ENDING")
+    ...(callEnding.enabled || String(agent.behavior ?? "").includes("CALL ENDING")
       ? []
       : [
           (vs as any).endCall?.conditions ? `CALL ENDING — end the call only when: ${(vs as any).endCall.conditions}` : "",
           (vs as any).endCall?.finalResponse ? `CALL ENDING — before ending: ${(vs as any).endCall.finalResponse}` : "",
         ]),
+    // Call Ending & Goodbye: mode-specific rules; the worker (not the LLM)
+    // speaks the exact configured closing message and terminates the call.
+    ...callEndingRules(callEnding),
   ].filter(Boolean).join("\n\n");
 
   return {
@@ -294,12 +302,29 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: 
     // amd -> livekit.agents.voice.amd.AMD(session, detection_options={timeout})
     amd: { enabled: vs.amdEnabled, multilingual: vs.multilingualAmd, timeout: vs.amdTimeout },
 
-    // Call lifecycle timers (worker-managed asyncio tasks).
-    limits: {
-      silenceBeforeCheck: vs.silenceBeforeCheck,
-      maxCheckAttempts: vs.maxCheckAttempts,
-      maxSilenceDuration: vs.maxSilenceDuration,
-      maxCallMinutes: vs.maxCallDuration,
+    // Call lifecycle timers (worker-managed asyncio tasks). The Call Ending
+    // silence timeout maps onto these limits — a check-in always precedes a
+    // silence hang-up, and 0 disables silence-based ending. When the feature
+    // is off, the legacy sliders pass through unchanged.
+    limits: applySilencePolicy(
+      {
+        silenceBeforeCheck: vs.silenceBeforeCheck,
+        maxCheckAttempts: vs.maxCheckAttempts,
+        maxSilenceDuration: vs.maxSilenceDuration,
+        maxCallMinutes: vs.maxCallDuration,
+      },
+      callEnding
+    ),
+
+    // Call Ending & Goodbye — the worker speaks the resolved closing message
+    // for the outcome the LLM picks, waits for playout, applies the hang-up
+    // delay, then terminates the room. Disabled = legacy end_call behavior.
+    callEnding: {
+      enabled: callEnding.enabled === true,
+      mode: callEnding.mode,
+      confirmBeforeEnding: callEnding.confirmBeforeEnding,
+      hangupDelaySec: callEnding.hangupDelaySec,
+      messages: resolveClosingMessages(callEnding, clinicName),
     },
 
     // Only ENABLED tools are registered with the LLM in the worker.

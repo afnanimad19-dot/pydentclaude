@@ -11,6 +11,7 @@ import {
   type AgentToolState,
 } from "@/lib/agent-config";
 import type { VoiceSettings, ExtractionField } from "@/lib/db";
+import { normalizeCallEnding, HANGUP_DELAYS, SILENCE_TIMEOUTS, type CallEndingSettings } from "@/lib/call-ending";
 
 // Advanced voice-agent configuration panels used by the Edit Agent screen.
 // Every control here writes into the agent's `voice_settings` blob, is clamped
@@ -756,6 +757,109 @@ export function ImportedToolsPanel({ value, onChange }: { value: VoiceSettings; 
 }
 
 const END_CALL_DEFAULT: EndCallConfig = { enabled: true, conditions: "", finalResponse: "", deleteRoom: false, summaryUrl: "", summaryHeaders: {} };
+
+// ── Call Ending & Goodbye (Pydent-native, distinct from the imported
+//    Builder end-call configuration below) ─────────────────────────────────
+export function CallEndingPanel({ value, onChange }: { value: VoiceSettings; onChange: (v: VoiceSettings) => void }) {
+  const ce = normalizeCallEnding(value.callEnding);
+  const set = (patch: Partial<CallEndingSettings>) => onChange({ ...value, callEnding: { ...ce, ...patch } });
+  const setMsg = (key: keyof CallEndingSettings["messages"], text: string) =>
+    set({ messages: { ...ce.messages, [key]: text } });
+
+  return (
+    <Section
+      title="Call Ending & Goodbye"
+      subtitle="How the agent recognizes the end of a call, what it says, and how the call is terminated. Off = the agent behaves exactly as before."
+      right={<Toggle checked={ce.enabled} onChange={(v) => set({ enabled: v })} label="Automatic call ending" />}
+    >
+      {ce.enabled && (
+        <>
+          <Field label="Ending detection">
+            <select className={inputCls} value={ce.mode} onChange={(e) => set({ mode: e.target.value as CallEndingSettings["mode"] })}>
+              <option value="automatic">Automatic — end when the caller is clearly finished</option>
+              <option value="explicit">Explicit — only on a clear goodbye or request to end</option>
+              <option value="manual">Manual — never end the call automatically</option>
+            </select>
+          </Field>
+
+          {ce.mode !== "manual" && (
+            <>
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-ink-100 px-3 py-2.5">
+                <span>
+                  <span className="text-sm font-medium text-ink-800">Confirm before ending</span>
+                  <span className="block text-xs text-ink-500">
+                    Ask once whether the caller needs anything else — never asked again if they already said no.
+                  </span>
+                </span>
+                <Toggle checked={ce.confirmBeforeEnding} onChange={(v) => set({ confirmBeforeEnding: v })} label="Confirm" />
+              </div>
+
+              <p className="text-[11px] text-ink-500">
+                Closing messages — spoken exactly as written, after which the call ends. Leave a field empty to fall back to
+                the general goodbye; leave the general goodbye empty to use “Thank you for calling {"<your clinic>"}. Have a
+                wonderful day!” with your clinic&apos;s name.
+              </p>
+              <Field label="General goodbye">
+                <textarea rows={2} className={inputCls} value={ce.messages.general} maxLength={500}
+                  placeholder="Thank you for calling. Have a wonderful day!"
+                  onChange={(e) => setMsg("general", e.target.value)} />
+              </Field>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="After a successful booking">
+                  <textarea rows={2} className={inputCls} value={ce.messages.bookingConfirmed} maxLength={500}
+                    placeholder="Your appointment is booked — we look forward to seeing you!"
+                    onChange={(e) => setMsg("bookingConfirmed", e.target.value)} />
+                </Field>
+                <Field label="After a cancellation or reschedule">
+                  <textarea rows={2} className={inputCls} value={ce.messages.bookingChanged} maxLength={500}
+                    placeholder="Your appointment has been updated. Thank you for letting us know!"
+                    onChange={(e) => setMsg("bookingChanged", e.target.value)} />
+                </Field>
+                <Field label="After a general enquiry">
+                  <textarea rows={2} className={inputCls} value={ce.messages.enquiry} maxLength={500}
+                    placeholder="Happy to help — call us any time!"
+                    onChange={(e) => setMsg("enquiry", e.target.value)} />
+                </Field>
+                <Field label="Unresolved — follow-up required">
+                  <textarea rows={2} className={inputCls} value={ce.messages.unresolved} maxLength={500}
+                    placeholder="The team will follow up with you shortly. Thank you for your patience!"
+                    onChange={(e) => setMsg("unresolved", e.target.value)} />
+                </Field>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label="Hang-up delay after the goodbye finishes">
+                  <select className={inputCls} value={ce.hangupDelaySec} onChange={(e) => set({ hangupDelaySec: Number(e.target.value) })}>
+                    {HANGUP_DELAYS.map((s) => <option key={s} value={s}>{s === 0 ? "Immediately" : `${s} second${s > 1 ? "s" : ""}`}</option>)}
+                  </select>
+                </Field>
+                <Field label="End the call after silence">
+                  <select className={inputCls} value={ce.silenceTimeoutSec} onChange={(e) => set({ silenceTimeoutSec: Number(e.target.value) })}>
+                    {SILENCE_TIMEOUTS.map((s) => <option key={s} value={s}>{s === 0 ? "Disabled" : `${s} seconds`}</option>)}
+                  </select>
+                </Field>
+              </div>
+              {ce.silenceTimeoutSec > 0 && (
+                <p className="text-[11px] text-ink-500">
+                  The agent always checks in (“Are you still there?”) before ending a silent call.
+                </p>
+              )}
+            </>
+          )}
+          {ce.mode === "manual" && (
+            <p className="text-[11px] text-ink-500">
+              Manual mode: the agent never terminates the call — the end_call tool is not registered and callers hang up themselves.
+            </p>
+          )}
+          <p className="text-[11px] text-ink-400">
+            Takes effect on the next call for agents served by the Pydent worker. Agents bound to an external LiveKit Builder
+            deployment keep their Builder-side behavior until they are dispatched to the Pydent worker.
+          </p>
+        </>
+      )}
+    </Section>
+  );
+}
 
 export function EndCallPanel({ value, onChange }: { value: VoiceSettings; onChange: (v: VoiceSettings) => void }) {
   const ec = value.endCall ?? END_CALL_DEFAULT;

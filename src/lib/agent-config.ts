@@ -9,6 +9,7 @@
 // reduction levels, for example) the mapping is documented next to the field.
 
 import type { VoiceSettings, ExtractionField } from "@/lib/db";
+import { normalizeCallEnding } from "@/lib/call-ending";
 
 export const AGENT_CONFIG_VERSION = 1;
 
@@ -212,6 +213,9 @@ export function normalizeVoiceSettings(
     // parse time; these are display/merge structures, not runtime tool state.
     ...(Array.isArray(v.importedTools) ? { importedTools: (v.importedTools as VoiceSettings["importedTools"])!.slice(0, 40) } : {}),
     ...(v.endCall && typeof v.endCall === "object" ? { endCall: v.endCall as VoiceSettings["endCall"] } : {}),
+    // Call Ending & Goodbye (Pydent-native): fully normalized here — malformed
+    // values collapse to safe defaults and pre-feature agents read as DISABLED.
+    callEnding: normalizeCallEnding(v.callEnding),
     interruptions,
     backgroundAudio: pickEnum(v.backgroundAudio, BACKGROUND_AUDIO.map((b) => b.id) as unknown as readonly string[], "none"),
     tools,

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 import unittest
 
 os.environ.setdefault("LIVEKIT_WORKER_TOKEN", "test-token")
@@ -453,6 +454,143 @@ class WorkerTokenTests(unittest.TestCase):
 
     def test_missing_both_resolves_to_empty_string(self):
         self.assertEqual(A.resolve_worker_token({}), "")
+
+
+class CallEndingTests(unittest.TestCase):
+    """Configured Call Ending & Goodbye: message selection, delay clamping and
+    which end_call tool (if any) is registered per mode."""
+
+    CE = {
+        "enabled": True,
+        "mode": "explicit",
+        "hangupDelaySec": 0,
+        "messages": {
+            "general": "Thanks for calling the clinic. Goodbye!",
+            "bookingConfirmed": "Your appointment is booked. Goodbye!",
+            "bookingChanged": "",
+            "enquiry": "Glad I could help. Goodbye!",
+            "unresolved": "The team will follow up. Goodbye!",
+        },
+    }
+
+    def _tool_names(self, tools):
+        return [t.info.name for t in tools]
+
+    def _tool(self, tools, name):
+        return next(t for t in tools if t.info.name == name)
+
+    # ── closing-message selection ──
+    def test_each_outcome_selects_its_configured_message(self):
+        self.assertEqual(A.closing_message_for(self.CE, "booking_confirmed"), "Your appointment is booked. Goodbye!")
+        self.assertEqual(A.closing_message_for(self.CE, "enquiry"), "Glad I could help. Goodbye!")
+        self.assertEqual(A.closing_message_for(self.CE, "unresolved"), "The team will follow up. Goodbye!")
+        self.assertEqual(A.closing_message_for(self.CE, "general"), "Thanks for calling the clinic. Goodbye!")
+
+    def test_empty_or_unknown_outcomes_fall_back_to_general_then_builtin(self):
+        self.assertEqual(A.closing_message_for(self.CE, "booking_changed"), "Thanks for calling the clinic. Goodbye!")
+        self.assertEqual(A.closing_message_for(self.CE, "something_else"), "Thanks for calling the clinic. Goodbye!")
+        self.assertEqual(A.closing_message_for({}, "general"), A.FALLBACK_GOODBYE)
+        self.assertEqual(A.closing_message_for(None, None), A.FALLBACK_GOODBYE)
+
+    def test_hangup_delay_clamps_to_zero_through_three_seconds(self):
+        self.assertEqual(A.clamp_hangup_delay(0), 0.0)
+        self.assertEqual(A.clamp_hangup_delay(3), 3.0)
+        self.assertEqual(A.clamp_hangup_delay(9), 3.0)
+        self.assertEqual(A.clamp_hangup_delay(-2), 0.0)
+        self.assertEqual(A.clamp_hangup_delay("junk"), 0.0)
+        self.assertEqual(A.clamp_hangup_delay(None), 0.0)
+        self.assertEqual(A.clamp_hangup_delay(float("nan")), 0.0)
+
+    # ── tool registration per mode ──
+    def test_disabled_feature_keeps_the_legacy_end_call_tool(self):
+        calls = []
+
+        async def on_end(reason):
+            calls.append(reason)
+
+        tools = A.build_tools(base_cfg(tools={"end_call": True}), on_end)
+        out = asyncio.run(self._tool(tools, "end_call")())
+        self.assertEqual(out, "Call ended.")
+        self.assertEqual(calls, ["conversation finished"])  # legacy single-arg contract
+
+    def test_manual_mode_registers_no_end_call_tool_at_all(self):
+        cfg = base_cfg(tools={"end_call": True}, callEnding={**self.CE, "mode": "manual"})
+        tools = A.build_tools(cfg, _noop)
+        self.assertNotIn("end_call", self._tool_names(tools))
+
+    def test_enabled_tool_passes_the_selected_goodbye_to_the_terminator(self):
+        seen = []
+
+        async def on_end(reason, goodbye=None):
+            seen.append((reason, goodbye))
+            return True
+
+        cfg = base_cfg(tools={"end_call": True}, callEnding=self.CE)
+        out = asyncio.run(self._tool(tools := A.build_tools(cfg, on_end), "end_call")(outcome="booking_confirmed"))
+        self.assertEqual(out, "Call ended.")
+        self.assertEqual(seen[0][1], "Your appointment is booked. Goodbye!")
+
+    def test_interrupted_goodbye_tells_the_llm_to_keep_helping(self):
+        async def on_end(reason, goodbye=None):
+            return False  # the caller spoke during the closing message
+
+        cfg = base_cfg(tools={"end_call": True}, callEnding=self.CE)
+        out = asyncio.run(self._tool(A.build_tools(cfg, on_end), "end_call")(outcome="general"))
+        self.assertIn("continue helping", out)
+        self.assertNotIn("Call ended", out)
+
+
+class _FakeHandle:
+    def __init__(self, interrupted):
+        self.interrupted = interrupted
+
+    def __await__(self):
+        if False:  # pragma: no cover - makes this a generator
+            yield
+        return self
+
+
+class _FakeSession:
+    def __init__(self, interrupted=False, fail=False):
+        self.said = []
+        self._interrupted = interrupted
+        self._fail = fail
+
+    def say(self, text, allow_interruptions=True):
+        if self._fail:
+            raise RuntimeError("tts down")
+        self.said.append(text)
+        return _FakeHandle(self._interrupted)
+
+
+class DeliverGoodbyeTests(unittest.IsolatedAsyncioTestCase):
+    """The goodbye is spoken to completion, the delay applies AFTER playout,
+    and an interruption cancels the hang-up (no delay, call stays open)."""
+
+    async def test_completed_goodbye_returns_true_after_the_delay(self):
+        session = _FakeSession()
+        t0 = time.monotonic()
+        done = await A.deliver_goodbye(session, "Goodbye!", 0)
+        self.assertTrue(done)
+        self.assertEqual(session.said, ["Goodbye!"])
+        self.assertLess(time.monotonic() - t0, 0.5)
+
+    async def test_interruption_cancels_immediately_without_the_delay(self):
+        session = _FakeSession(interrupted=True)
+        t0 = time.monotonic()
+        done = await A.deliver_goodbye(session, "Goodbye!", 3)
+        self.assertFalse(done)                       # hang-up must be cancelled
+        self.assertLess(time.monotonic() - t0, 0.5)  # the 3s delay never ran
+
+    async def test_tts_failure_never_blocks_the_hangup(self):
+        done = await A.deliver_goodbye(_FakeSession(fail=True), "Goodbye!", 0)
+        self.assertTrue(done)
+
+    async def test_delay_is_applied_after_playout(self):
+        t0 = time.monotonic()
+        done = await A.deliver_goodbye(_FakeSession(), "Goodbye!", 0.2)
+        self.assertTrue(done)
+        self.assertGreaterEqual(time.monotonic() - t0, 0.2)
 
 
 class HistoryToLinesTests(unittest.TestCase):

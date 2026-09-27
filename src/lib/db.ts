@@ -543,6 +543,9 @@ export interface VoiceSettings {
    *  finalResponse reach the runtime prompt; deleteRoom/summaryUrl are
    *  preserved as configuration for the Builder agent. */
   endCall?: import("@/lib/livekit-builder-import").EndCallConfig;
+  // Call Ending & Goodbye (Pydent-native, distinct from the imported endCall
+  // config above). Default DISABLED for every existing agent.
+  callEnding?: import("@/lib/call-ending").CallEndingSettings;
   /** Schema version of this config blob. */
   configVersion?: number;
 }
@@ -573,6 +576,15 @@ export function defaultVoiceSettings(): VoiceSettings {
     transferMessage: "",
     extractionFields: [],
     backgroundAudio: "none",
+    // Call Ending & Goodbye starts DISABLED for every agent until configured.
+    callEnding: {
+      enabled: false,
+      mode: "explicit",
+      messages: { general: "", bookingConfirmed: "", bookingChanged: "", enquiry: "", unresolved: "" },
+      confirmBeforeEnding: true,
+      hangupDelaySec: 1,
+      silenceTimeoutSec: 0,
+    },
     tools: undefined, // resolved from the agent's capability flags on load
     configVersion: 1,
   };
