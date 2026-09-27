@@ -131,6 +131,58 @@ test("the LLM is told not to speak its own goodbye and to keep helping on interr
   assert.match(rules, /ONE clarifying question instead of ending/);
 });
 
+// ── universality: every agent, current and future, gets the feature ─────────
+// normalizeVoiceSettings is the single gate every voice agent's stored blob
+// passes through at compile time (livekitAgentConfig) — so these tests pin
+// the guarantee that NO agent-specific code is ever needed.
+const { normalizeVoiceSettings } = await import("@/lib/agent-config");
+
+test("a brand-new agent (no stored settings) gets the complete default config — future agents need no code changes", () => {
+  for (const stored of [undefined, null, {}]) {
+    const vs = normalizeVoiceSettings(stored);
+    assert.deepEqual(vs.callEnding, CALL_ENDING_DEFAULT, JSON.stringify(stored));
+  }
+});
+
+test("an existing pre-feature agent stays backward compatible: disabled, other settings untouched", () => {
+  const vs = normalizeVoiceSettings({ dataStorage: "store_only", transferNumber: "+15550001111" });
+  assert.equal(vs.callEnding.enabled, false);
+  assert.equal(vs.dataStorage, "store_only");
+  assert.equal(vs.transferNumber, "+15550001111");
+});
+
+test("duplicating an agent (copying voice_settings verbatim) inherits its call-ending config", () => {
+  const source = normalizeVoiceSettings({
+    callEnding: { enabled: true, mode: "automatic", messages: { general: "Bye from source!" }, hangupDelaySec: 2 },
+  });
+  const duplicate = normalizeVoiceSettings(JSON.parse(JSON.stringify(source)));
+  assert.deepEqual(duplicate.callEnding, source.callEnding);
+  assert.equal(duplicate.callEnding.messages.general, "Bye from source!");
+});
+
+test("imported Builder endCall config and Pydent callEnding coexist — neither overwrites the other", () => {
+  const imported = {
+    endCall: { enabled: true, conditions: "caller says bye", finalResponse: "wrap up", deleteRoom: true, summaryUrl: "", summaryHeaders: {} },
+    callEnding: { enabled: true, mode: "explicit", messages: { general: "Pydent goodbye." } },
+  };
+  const vs = normalizeVoiceSettings(imported);
+  assert.equal(vs.endCall.conditions, "caller says bye");   // imported config preserved
+  assert.equal(vs.callEnding.messages.general, "Pydent goodbye.");
+  // And a save round-trip keeps both.
+  const again = normalizeVoiceSettings(JSON.parse(JSON.stringify(vs)));
+  assert.deepEqual(again.endCall, vs.endCall);
+  assert.deepEqual(again.callEnding, vs.callEnding);
+});
+
+test("per-workspace company names give isolated default goodbyes for the same settings", () => {
+  const ce = normalizeCallEnding({ enabled: true });
+  const a = resolveClosingMessages(ce, "Clinic Alpha").general;
+  const b = resolveClosingMessages(ce, "Clinic Beta").general;
+  assert.notEqual(a, b);
+  assert.match(a, /Clinic Alpha/);
+  assert.match(b, /Clinic Beta/);
+});
+
 // ── silence-timeout mapping ──────────────────────────────────────────────────
 const LEGACY = { silenceBeforeCheck: 60, maxCheckAttempts: 4, maxSilenceDuration: 120, maxCallMinutes: 60 };
 
