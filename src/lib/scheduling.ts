@@ -94,6 +94,28 @@ export interface BookedSlot {
   time: string;
   provider?: string | null;
   duration_min?: unknown;
+  // Stable provider UUID (appointments.provider_id, migration 0065). Optional:
+  // historical rows and pre-0065 deployments simply leave it absent.
+  provider_id?: string | null;
+}
+
+// A provider reference that may carry a stable UUID, a legacy free-text name,
+// or both. Rows written before migration 0065 only ever have the name.
+export interface ProviderRef {
+  id?: string | null;
+  name?: string | null;
+}
+
+// ID-first provider identity: when BOTH sides carry a stable UUID the ids
+// decide alone (equal → same provider, different → different provider, even if
+// the names would fuzzy-match). When either side lacks an id, fall back to the
+// legacy fuzzy name matching above — historical appointments still depend on
+// it, so it is a fallback, never removed.
+export function sameProviderRef(a?: ProviderRef | null, b?: ProviderRef | null): boolean {
+  const aId = String(a?.id ?? "").trim();
+  const bId = String(b?.id ?? "").trim();
+  if (aId && bId) return aId === bId;
+  return sameProvider(a?.name, b?.name);
 }
 
 // Would an appointment at `time` for `durationMin` minutes overlap any booked
@@ -103,6 +125,17 @@ export function conflictsWithBooked(booked: BookedSlot[], time: string, duration
   const start = timeToMinutes(time);
   return booked.some((b) => {
     if (!sameProvider(b.provider, doctor)) return false;
+    return rangesOverlap(start, durationMin, timeToMinutes(String(b.time ?? "")), apptDuration(b.duration_min));
+  });
+}
+
+// ID-aware variant of conflictsWithBooked (additive — no existing flow calls
+// it yet). Booked rows that carry provider_id are matched by UUID; rows
+// without one fall back to fuzzy name matching via sameProviderRef.
+export function conflictsWithBookedRef(booked: BookedSlot[], time: string, durationMin: number, provider?: ProviderRef | null): boolean {
+  const start = timeToMinutes(time);
+  return booked.some((b) => {
+    if (!sameProviderRef({ id: b.provider_id, name: b.provider }, provider)) return false;
     return rangesOverlap(start, durationMin, timeToMinutes(String(b.time ?? "")), apptDuration(b.duration_min));
   });
 }
