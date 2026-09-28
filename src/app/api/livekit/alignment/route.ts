@@ -3,20 +3,24 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getLivekitCreds, lkConfigured, livekitAgentConfig, listCloudAgents, workerTokenConfigured, requestOrigin, boundLivekitAgent } from "@/lib/livekit";
 import { splitSources } from "@/lib/kb-retrieval";
 import { AGENT_TOOLS } from "@/lib/agent-config";
+import { authorizeRequest } from "@/lib/server-auth-deps";
 
 // Voice Agent alignment diagnostic — answers "is what Pydent shows for this
 // agent actually what the LiveKit worker will run on the NEXT call?" by
 // building the EXACT config object the worker fetches per call and reporting
 // it alongside LiveKit/worker connectivity. Admin/developer use; no secrets.
+// Workspace members only: the workspace comes from the bearer token.
 //
-//   GET /api/livekit/alignment?ws=<workspace id>&agent=<name or id>
+//   GET /api/livekit/alignment?agent=<name or id>   (Authorization: Bearer <session>)
 export const runtime = "nodejs";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export async function GET(req: NextRequest) {
-  const ws = req.nextUrl.searchParams.get("ws") ?? "";
+  const auth = await authorizeRequest(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+  const ws = auth.workspaceId;
   const agentKey = req.nextUrl.searchParams.get("agent") ?? "";
-  if (!ws || !agentKey) return NextResponse.json({ error: "Pass ?ws=<workspace id>&agent=<agent name or id>." }, { status: 400 });
+  if (!agentKey) return NextResponse.json({ error: "Pass ?agent=<agent name or id>." }, { status: 400 });
 
   let q = supabase.from("agents").select("*").eq("workspace_id", ws).eq("kind", "voice");
   q = /^[0-9a-f-]{36}$/i.test(agentKey) ? q.eq("id", agentKey) : q.ilike("name", agentKey);

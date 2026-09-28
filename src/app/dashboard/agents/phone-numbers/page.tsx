@@ -11,12 +11,12 @@ import {
   deleteVoiceNumber,
   updateVoiceNumber,
   fetchAgents,
-  getWorkspaceId,
   type VoiceNumber,
   type SipCategory,
   type AiAgent,
 } from "@/lib/db";
 import { bindNumberToAgent } from "@/lib/voice-binding";
+import { authFetch } from "@/lib/auth-fetch";
 
 type ProviderKey = "landline" | "livekit" | "sip" | "ziwo" | "goautodial" | "maqsam" | "twilio" | "vocalcom";
 
@@ -64,22 +64,35 @@ const PROVIDER_FIELDS: Record<string, { key: string; label: string; placeholder?
 };
 
 // After saving a number with an assigned agent, register it on Vapi + attach the
-// agent so inbound calls actually route to that agent. Returns a status message.
-async function connectNumberToVapi(opts: { provider: string; number: string; nickname: string; agent?: AiAgent; config: Record<string, unknown> }): Promise<{ ok: boolean; message: string; vapiPhoneNumberId?: string }> {
+// agent so inbound calls actually route to that agent. The server resolves the
+// number, its provider config and the assistant from THIS workspace (only ids
+// are sent) and stores the Vapi link itself. Returns a status message.
+async function connectNumberToVapi(opts: { numberId?: string; agent?: AiAgent }): Promise<{ ok: boolean; message: string }> {
   if (!opts.agent) return { ok: false, message: "Saved — but assign a voice agent so the number can be registered on Vapi and answer calls." };
-  if (!opts.agent.vapiAssistantId) return { ok: false, message: `Saved — but open "${opts.agent.name}" and Save it once so it syncs to Vapi, then Edit this number to connect it.` };
+  if (!opts.agent.vapiAssistantId) return { ok: false, message: `Saved — but open "${opts.agent.name}" and Save it once so it syncs to Vapi, then register this number again.` };
+  if (!opts.numberId) return { ok: false, message: "Saved, but the new number id is missing — refresh and try again." };
   try {
-    const res = await fetch("/api/vapi/phone-numbers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: opts.provider, number: opts.number, nickname: opts.nickname, assistantId: opts.agent.vapiAssistantId, config: opts.config }),
-    });
+    const res = await authFetch("/api/vapi/phone-numbers", { method: "POST", body: JSON.stringify({ numberId: opts.numberId, agentId: opts.agent.id }) });
     const data = await res.json().catch(() => ({}));
-    if (data.ok && data.vapiPhoneNumberId) return { ok: true, message: data.message ?? "Number connected to Vapi.", vapiPhoneNumberId: data.vapiPhoneNumberId };
-    return { ok: false, message: `Saved locally, but NOT registered on Vapi — ${data.error ?? "Vapi error"}. Fix it and use Edit → reassign the agent to retry.` };
+    if (data.ok) return { ok: true, message: data.message ?? "Number connected to Vapi." };
+    return { ok: false, message: `Saved locally, but NOT registered on Vapi — ${data.error ?? "Vapi error"}.` };
   } catch {
-    return { ok: false, message: "Saved locally, but couldn't reach Vapi to register the number. Try Edit → reassign the agent to retry." };
+    return { ok: false, message: "Saved locally, but couldn't confirm the Vapi registration — refresh to check before retrying." };
   }
+}
+
+// Change the answering agent of an EXISTING number. Provider-routed numbers
+// are never changed from this form — only through Voice Agent Settings, which
+// verifies the provider first. Returns a message, or null when unchanged.
+async function applyAgentChange(existing: VoiceNumber, agentId: string, agents: AiAgent[]): Promise<{ ok: boolean; message: string } | null> {
+  if (agentId === (existing.agentId ?? "")) return null;
+  if (isRouted(existing)) return { ok: false, message: "The answering agent was NOT changed — this number has provider routing; change it in Voice Agent Settings." };
+  const r = await bindNumberToAgent(existing, agents.find((a) => a.id === agentId));
+  return { ok: r.ok, message: r.message };
+}
+
+function isRouted(n?: VoiceNumber): boolean {
+  return !!n && ((!!n.routingProvider && n.routingProvider !== "none") || !!n.routingProtected);
 }
 
 function fmtDate(iso: string) {
@@ -190,6 +203,7 @@ function NumberCard({ n, agents, onChanged }: { n: VoiceNumber; agents: AiAgent[
   }, [boxHb, lastHb]);
 
   async function del() {
+    if (isRouted(n)) { toast("This number has linked production routing and can't be deleted here.", "info"); return; }
     if (!confirm(`Delete ${n.number}? This cannot be undone.`)) return;
     await deleteVoiceNumber(n.id);
     toast("Phone number deleted.", "success");
@@ -360,17 +374,17 @@ function TwilioForm({ agents, onBack, onClose, onAdded, existing }: { agents: Ai
     setSaving(true);
     const cfg = { ...ex, twilioAccountSid: accountSid.trim(), twilioAuthToken: authToken.trim(), smsEnabled, numberType: "national", scope: "Global", status: "active" };
     if (existing) {
-      const res = await updateVoiceNumber(existing.id, { number, nickname: label, agentId: agentId || null, direction: direction as VoiceNumber["direction"], config: cfg });
-      if (agentId !== (existing.agentId ?? "")) await bindNumberToAgent({ ...existing, number, nickname: label, direction: direction as VoiceNumber["direction"] }, agents.find((a) => a.id === agentId));
+      const res = await updateVoiceNumber(existing.id, { number, nickname: label, direction: direction as VoiceNumber["direction"], config: cfg });
+      const change = res.ok ? await applyAgentChange(existing, agentId, agents) : null;
       setSaving(false);
-      toast(res.ok ? "Number updated." : res.message, res.ok ? "success" : "info");
+      if (!res.ok) toast(res.message, "info");
+      else toast(change ? change.message : "Number updated.", !change || change.ok ? "success" : "info");
       onAdded(); onClose();
       return;
     }
     const res = await createVoiceNumber({ number, nickname: label, agentId: agentId || null, direction: direction as VoiceNumber["direction"], provider: "twilio", concurrency: 1, config: cfg });
     if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
-    const vapi = await connectNumberToVapi({ provider: "twilio", number, nickname: label, agent: agents.find((a) => a.id === agentId), config: cfg });
-    if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
+    const vapi = await connectNumberToVapi({ numberId: res.id, agent: agents.find((a) => a.id === agentId) });
     setSaving(false);
     toast(vapi.message, vapi.ok ? "success" : "info");
     onAdded();
@@ -400,7 +414,7 @@ function TwilioForm({ agents, onBack, onClose, onAdded, existing }: { agents: Ai
           </button>
         </label>
 
-        <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} />
+        <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} locked={isRouted(existing)} />
         <div className="flex items-start gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-xs text-ink-500">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> We register this number on Vapi using your Twilio SID + token and attach the selected agent, so inbound calls are answered and the number is the caller ID for outbound. (Assign the agent and Save it once so it&apos;s synced to Vapi.)
         </div>
@@ -423,11 +437,11 @@ function splitNumber(full: string): { dial: string; local: string } {
   return { dial: "+971", local: s.replace(/^\+/, "") };
 }
 
-function AgentDir({ agentId, setAgentId, direction, setDirection, agents }: { agentId: string; setAgentId: (v: string) => void; direction: string; setDirection: (v: string) => void; agents: AiAgent[] }) {
+function AgentDir({ agentId, setAgentId, direction, setDirection, agents, locked }: { agentId: string; setAgentId: (v: string) => void; direction: string; setDirection: (v: string) => void; agents: AiAgent[]; locked?: boolean }) {
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      <Field label="Assign voice agent">
-        <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+      <Field label={locked ? "Assigned voice agent (change it in Voice Agent Settings)" : "Assign voice agent"}>
+        <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)} disabled={locked}>
           <option value="">Choose agent…</option>
           {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
         </select>
@@ -464,10 +478,11 @@ function ProviderForm({ provider, agents, onBack, onClose, onAdded, existing }: 
     setSaving(true);
     const cfg = { ...ex, ...creds, numberType, scope: "Global", status };
     if (existing) {
-      const res = await updateVoiceNumber(existing.id, { number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], config: cfg });
-      if (agentId !== (existing.agentId ?? "")) await bindNumberToAgent({ ...existing, number: number.trim(), nickname, direction: direction as VoiceNumber["direction"] }, agents.find((a) => a.id === agentId));
+      const res = await updateVoiceNumber(existing.id, { number: number.trim(), nickname, direction: direction as VoiceNumber["direction"], config: cfg });
+      const change = res.ok ? await applyAgentChange(existing, agentId, agents) : null;
       setSaving(false);
-      toast(res.ok ? "Number updated." : res.message, res.ok ? "success" : "info");
+      if (!res.ok) toast(res.message, "info");
+      else toast(change ? change.message : "Number updated.", !change || change.ok ? "success" : "info");
       onAdded(); onClose();
       return;
     }
@@ -476,8 +491,7 @@ function ProviderForm({ provider, agents, onBack, onClose, onAdded, existing }: 
       config: cfg,
     });
     if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
-    const vapi = await connectNumberToVapi({ provider, number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
-    if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
+    const vapi = await connectNumberToVapi({ numberId: res.id, agent: agents.find((a) => a.id === agentId) });
     setSaving(false);
     toast(vapi.message, vapi.ok ? "success" : "info");
     onAdded();
@@ -515,7 +529,7 @@ function ProviderForm({ provider, agents, onBack, onClose, onAdded, existing }: 
             </select>
           </Field>
         </div>
-        <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} />
+        <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} locked={isRouted(existing)} />
         <div className="flex items-start gap-2 rounded-xl border border-ink-100 bg-ink-50/60 p-3 text-xs text-ink-500">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Pydent stores this provider config and assigns the agent. The live phone connection is completed in {meta.name} / Vapi using these same values.
         </div>
@@ -588,10 +602,11 @@ function LandlineForm({ agents, onBack, onClose, onAdded, existing }: { agents: 
         stasisApp: app,
         connectionMode: "ari_local_outbound",
       };
-      const res = await updateVoiceNumber(existing.id, { number, nickname: nickname || "Clinic landline", agentId: agentId || null, config: cfg });
+      const res = await updateVoiceNumber(existing.id, { number, nickname: nickname || "Clinic landline", config: cfg });
+      const change = res.ok ? await applyAgentChange(existing, agentId, agents) : null;
       setSaving(false);
       if (!res.ok) { toast(res.message, "info"); return; }
-      toast("Landline updated.", "success");
+      toast(change ? `Landline updated. ${change.message}` : "Landline updated.", !change || change.ok ? "success" : "info");
       onAdded();
       onClose();
       return;
@@ -677,8 +692,8 @@ function LandlineForm({ agents, onBack, onClose, onAdded, existing }: { agents: 
           </Field>
           <Field label="Clinic / label"><input className={inputCls} placeholder="LH Clinic Reception" value={nickname} onChange={(e) => setNickname(e.target.value)} /></Field>
           <Field label="PBX type"><input className={inputCls} placeholder="D-Link DVX-2005F" value={pbxType} onChange={(e) => setPbxType(e.target.value)} /></Field>
-          <Field label="Voice agent that answers this landline">
-            <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          <Field label={isRouted(existing) ? "Voice agent that answers this landline (change it in Voice Agent Settings)" : "Voice agent that answers this landline"}>
+            <select className={inputCls} value={agentId} onChange={(e) => setAgentId(e.target.value)} disabled={isRouted(existing)}>
               <option value="">Choose agent…</option>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name} — {a.role}</option>)}
             </select>
@@ -713,17 +728,20 @@ function LivekitSipForm({ agents, onBack, onClose, onAdded, existing }: { agents
   async function submit() {
     const num = number.trim();
     if (!num) { toast("Enter the phone number (E.164, e.g. +9714…).", "info"); return; }
+    // Linked / protected production routing is never deleted or recreated here.
+    if (isRouted(existing)) { toast("This number has linked production routing — its trunk and rule can't be recreated. Change the answering agent in Voice Agent Settings.", "info"); return; }
     setSaving(true);
-    const ws = await getWorkspaceId();
     const addrs = allowedAddresses.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-    // Recreate on LiveKit (remove the previous trunk/rule when editing).
+    // Recreate on LiveKit (remove the previous trunk/rule when editing). Stop if
+    // the removal fails, so a second overlapping trunk/rule is never created.
     if (existing && (ex.livekitTrunkId || ex.livekitRuleId)) {
-      await fetch("/api/livekit/phone", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ws, trunkId: ex.livekitTrunkId, ruleId: ex.livekitRuleId }) }).catch(() => {});
+      const del = await authFetch("/api/livekit/phone", { method: "DELETE", body: JSON.stringify({ trunkId: ex.livekitTrunkId, ruleId: ex.livekitRuleId }) }).catch(() => null);
+      const delData = del ? await del.json().catch(() => ({})) : {};
+      if (!del || !del.ok || !delData.ok) { setSaving(false); toast(`Nothing was changed — the previous LiveKit trunk/rule could not be removed: ${delData.error ?? "request failed"}.`, "info"); return; }
     }
-    const res = await fetch("/api/livekit/phone", {
+    const res = await authFetch("/api/livekit/phone", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ws, number: num, agentId: agentId || null, authUsername: authUsername.trim(), authPassword, allowedAddresses: addrs, nickname }),
+      body: JSON.stringify({ number: num, agentId: agentId || null, authUsername: authUsername.trim(), authPassword, allowedAddresses: addrs, nickname }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) { setSaving(false); toast(data.error ?? "LiveKit setup failed.", "info"); return; }
@@ -796,10 +814,11 @@ function SipForm({ agents, onBack, onClose, onAdded, existing }: { agents: AiAge
     setSaving(true);
     const cfg = { ...ex, terminationUri: terminationUri.trim(), e164LeadingPlus: e164, requiresRegistration: requiresReg, registeredPublicIp: publicIp, username: requiresReg ? username : "", password: requiresReg ? password : "", categories, numberType, scope: "Global", status };
     if (existing) {
-      const res = await updateVoiceNumber(existing.id, { number: number.trim(), nickname, agentId: agentId || null, direction: direction as VoiceNumber["direction"], config: cfg });
-      if (agentId !== (existing.agentId ?? "")) await bindNumberToAgent({ ...existing, number: number.trim(), nickname, direction: direction as VoiceNumber["direction"] }, agents.find((a) => a.id === agentId));
+      const res = await updateVoiceNumber(existing.id, { number: number.trim(), nickname, direction: direction as VoiceNumber["direction"], config: cfg });
+      const change = res.ok ? await applyAgentChange(existing, agentId, agents) : null;
       setSaving(false);
-      toast(res.ok ? "SIP trunk updated." : res.message, res.ok ? "success" : "info");
+      if (!res.ok) toast(res.message, "info");
+      else toast(change ? change.message : "SIP trunk updated.", !change || change.ok ? "success" : "info");
       onAdded(); onClose();
       return;
     }
@@ -808,8 +827,7 @@ function SipForm({ agents, onBack, onClose, onAdded, existing }: { agents: AiAge
       config: cfg,
     });
     if (!res.ok) { setSaving(false); toast(res.message, "info"); return; }
-    const vapi = await connectNumberToVapi({ provider: "sip", number: number.trim(), nickname, agent: agents.find((a) => a.id === agentId), config: cfg });
-    if (res.id && vapi.vapiPhoneNumberId) await updateVoiceNumber(res.id, { vapiPhoneNumberId: vapi.vapiPhoneNumberId });
+    const vapi = await connectNumberToVapi({ numberId: res.id, agent: agents.find((a) => a.id === agentId) });
     setSaving(false);
     toast(vapi.message, vapi.ok ? "success" : "info");
     onAdded();
@@ -836,7 +854,7 @@ function SipForm({ agents, onBack, onClose, onAdded, existing }: { agents: AiAge
             </select>
           </Field>
         </div>
-        <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} />
+        <AgentDir agentId={agentId} setAgentId={setAgentId} direction={direction} setDirection={setDirection} agents={agents} locked={isRouted(existing)} />
 
         <Field label="SIP termination URI (host / domain)"><input className={inputCls} placeholder="sip.yourprovider.com" value={terminationUri} onChange={(e) => setTerminationUri(e.target.value)} /></Field>
 

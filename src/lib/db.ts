@@ -2620,13 +2620,27 @@ export interface VoiceNumber {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config: Record<string, any>;
   createdAt: string;
+  // Provider routing (migration 0064). Written only by the server; absent
+  // (undefined) until the migration is applied.
+  routingProvider?: "none" | "livekit" | "vapi";
+  routingStatus?: "unverified" | "synced" | "pending" | "failed" | "reconcile_needed";
+  routingAgentId?: string | null;
+  routingProtected?: boolean;
+  routingVerifiedAt?: string | null;
+  routingError?: string | null;
+  livekitTrunkId?: string | null;
+  livekitDispatchRuleId?: string | null;
+  assignmentVersion?: number;
 }
 
 export async function fetchVoiceNumbers(): Promise<VoiceNumber[]> {
   try {
     const ws = await getWorkspaceId();
     const { data } = await supabase.from("voice_numbers").select("*").eq("workspace_id", ws).order("created_at", { ascending: false });
-    return (data ?? []).map((r) => ({ id: r.id, number: r.number, nickname: r.nickname ?? "", agentId: r.agent_id ?? null, direction: r.direction ?? "inbound", provider: r.provider ?? "sip", concurrency: r.concurrency ?? 1, vapiPhoneNumberId: r.vapi_phone_number_id ?? null, config: r.config ?? {}, createdAt: r.created_at }));
+    return (data ?? []).map((r) => ({ id: r.id, number: r.number, nickname: r.nickname ?? "", agentId: r.agent_id ?? null, direction: r.direction ?? "inbound", provider: r.provider ?? "sip", concurrency: r.concurrency ?? 1, vapiPhoneNumberId: r.vapi_phone_number_id ?? null, config: r.config ?? {}, createdAt: r.created_at,
+      routingProvider: r.routing_provider ?? undefined, routingStatus: r.routing_status ?? undefined, routingAgentId: r.routing_agent_id ?? null,
+      routingProtected: !!r.routing_protected, routingVerifiedAt: r.routing_verified_at ?? null, routingError: r.routing_error ?? null,
+      livekitTrunkId: r.livekit_trunk_id ?? null, livekitDispatchRuleId: r.livekit_dispatch_rule_id ?? null, assignmentVersion: r.assignment_version ?? undefined }));
   } catch {
     return [];
   }

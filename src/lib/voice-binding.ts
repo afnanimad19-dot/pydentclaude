@@ -1,38 +1,45 @@
-import { updateVoiceNumber, type AiAgent, type VoiceNumber } from "@/lib/db";
+import { type AiAgent, type VoiceNumber } from "@/lib/db";
+import { authFetch, newIdempotencyKey } from "@/lib/auth-fetch";
 
-// Assign (or re-assign) an existing connected number to a voice agent. Persists
-// the link in our DB and re-routes inbound calls on Vapi so the agent actually
-// answers. Used by the Voice Agent Settings page and the Phone Numbers card.
-// Pass agent=undefined to unassign.
-export async function bindNumberToAgent(num: VoiceNumber, agent: AiAgent | undefined): Promise<{ ok: boolean; message: string }> {
-  if (!agent) {
-    await updateVoiceNumber(num.id, { agentId: null });
-    return { ok: true, message: "Number unassigned." };
-  }
-  // Persist the link first so the UI reflects it even if Vapi is unreachable.
-  await updateVoiceNumber(num.id, { agentId: agent.id });
-  if (!agent.vapiAssistantId) {
-    return { ok: true, message: `Assigned. Open "${agent.name}" and Save once so it syncs to Vapi, then re-assign here to connect inbound calls.` };
-  }
+// Assign (or re-assign) a number to a voice agent through the guarded
+// server-side transaction (/api/voice-numbers/[id]/assign): the server checks
+// authorization and the workspace, updates the PROVIDER that really routes the
+// number (LiveKit dispatch rule in place / Vapi), reads it back, and only then
+// records the new agent. Nothing is written from the browser, and `ok` is true
+// only when the server confirmed the outcome. Pass agent=undefined to unassign
+// (allowed only for numbers without provider routing).
+export interface BindResult {
+  ok: boolean;
+  message: string;
+  status?: string;
+  code?: string;
+  assignmentId?: string;
+}
+
+export async function bindNumberToAgent(
+  num: VoiceNumber,
+  agent: AiAgent | undefined,
+  opts: { confirmNumber?: string; idempotencyKey?: string } = {}
+): Promise<BindResult> {
   try {
-    const res = await fetch("/api/vapi/phone-numbers", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+    const res = await authFetch(`/api/voice-numbers/${encodeURIComponent(num.id)}/assign`, {
+      method: "POST",
       body: JSON.stringify({
-        vapiPhoneNumberId: num.vapiPhoneNumberId,
-        provider: num.provider,
-        number: num.number,
-        nickname: num.nickname,
-        assistantId: agent.vapiAssistantId,
-        config: num.config,
+        targetAgentId: agent?.id ?? null,
+        expectedCurrentAgentId: num.agentId ?? null,
+        idempotencyKey: opts.idempotencyKey ?? newIdempotencyKey("assign"),
+        confirmNumber: opts.confirmNumber,
       }),
     });
-    const data = await res.json();
-    if (data.ok && data.vapiPhoneNumberId && data.vapiPhoneNumberId !== num.vapiPhoneNumberId) {
-      await updateVoiceNumber(num.id, { vapiPhoneNumberId: data.vapiPhoneNumberId });
-    }
-    return data.ok ? { ok: true, message: data.message } : { ok: false, message: `Assigned here. Vapi: ${data.error}` };
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: !!data.ok,
+      message: data.message ?? data.error ?? `Request failed (${res.status}).`,
+      status: data.status,
+      code: data.code,
+      assignmentId: data.assignmentId,
+    };
   } catch {
-    return { ok: false, message: "Assigned here, but couldn't reach Vapi to route inbound calls." };
+    return { ok: false, message: "Couldn't confirm the result with Pydent — refresh to see the current routing before retrying." };
   }
 }

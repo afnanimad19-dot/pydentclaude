@@ -1,24 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
+import { authorizeRequest } from "@/lib/server-auth-deps";
 
-// Registers a phone number on Vapi and attaches a specific assistant, so inbound
-// calls to that number are answered by that agent. The clinic NEVER has to open
-// Vapi — our app does it via the Vapi API (VAPI_API_KEY). Supports Twilio (BYOT)
-// and BYO SIP trunks (Custom SIP / Ziwo / Maqsam / Go Auto Dial / Vocalcom).
+// REGISTERS a workspace phone number on Vapi (first time only) and attaches the
+// chosen agent's Vapi assistant. The clinic never opens Vapi — our app does it
+// via the Vapi API (VAPI_API_KEY). Supports Twilio (BYOT) and BYO SIP trunks
+// (Custom SIP / Ziwo / Maqsam / Go Auto Dial / Vocalcom).
 //
-// POST  — first-time register + attach assistant (returns the new Vapi number id).
-// PATCH — re-route an already-registered number to a different agent (by Vapi id,
-//         or by looking the number up); falls back to POST-style create if it was
-//         never registered.
+// Security: admin only; the workspace comes from the bearer token. The browser
+// sends only { numberId, agentId } — the number, its provider config and the
+// assistant id are all resolved server-side from THIS workspace's rows.
+//
+// Never: registers a clinic landline or LiveKit number on Vapi, looks a number
+// up by its digits in the (shared) Vapi account, or re-routes an existing
+// number. Re-routing a registered number is the guarded reassignment in
+// /api/voice-numbers/[id]/assign, which requires the stored Vapi id.
 
 const VAPI_BASE = "https://api.vapi.ai";
 export const runtime = "nodejs";
+
+const VAPI_REGISTRABLE = new Set(["twilio", "sip", "ziwo", "maqsam", "goautodial", "vocalcom"]);
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function headers() {
   return { Authorization: `Bearer ${process.env.VAPI_API_KEY}`, "Content-Type": "application/json" };
 }
-
-const digits = (s: string) => String(s ?? "").replace(/\D/g, "");
 
 // Build the Vapi /phone-number create payload (Twilio direct, or BYO SIP trunk).
 // For SIP it first creates a trunk credential. Returns { payload } or { error }.
@@ -52,72 +58,60 @@ async function buildCreatePayload(opts: { provider: string; number: string; nick
   return { payload: { provider: "byo-phone-number", number, credentialId: credData.id, assistantId, name: nickname || number, numberE164CheckEnabled: false } };
 }
 
-// Create the number on Vapi. Returns the new Vapi phone-number id.
-async function createNumber(opts: { provider: string; number: string; nickname?: string; assistantId: string; config?: any }) {
-  const built = await buildCreatePayload(opts);
-  if (built.error) return { ok: false as const, error: built.error, status: built.status ?? 400 };
-  const res = await fetch(`${VAPI_BASE}/phone-number`, { method: "POST", headers: headers(), body: JSON.stringify(built.payload) });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) return { ok: false as const, error: data?.message ?? `Vapi error ${res.status}`, status: 502 };
-  return { ok: true as const, vapiPhoneNumberId: data?.id as string | undefined };
-}
-
-// Look up an existing Vapi number by E.164 (last 9 digits).
-async function findVapiNumberId(number: string): Promise<string | null> {
-  try {
-    const res = await fetch(`${VAPI_BASE}/phone-number`, { headers: headers() });
-    const data = await res.json().catch(() => []);
-    const match = (Array.isArray(data) ? data : []).find((p: any) => digits(p?.number).endsWith(digits(number).slice(-9)));
-    return match?.id ?? null;
-  } catch {
-    return null;
-  }
-}
-
 export async function POST(req: NextRequest) {
+  const auth = await authorizeRequest(req, { requireAdmin: true });
+  if (!auth.ok) return NextResponse.json({ ok: false, error: auth.error }, { status: auth.status });
   if (!process.env.VAPI_API_KEY) {
     return NextResponse.json({ ok: false, error: "VAPI_API_KEY is not configured." }, { status: 503 });
   }
-  const body = await req.json().catch(() => ({}));
-  const { provider, number, nickname, assistantId, config } = body as { provider: string; number: string; nickname?: string; assistantId?: string | null; config?: any };
-  if (!number) return NextResponse.json({ ok: false, error: "Missing number." }, { status: 400 });
-  if (!assistantId) {
-    return NextResponse.json({ ok: false, error: "Assign a voice agent first — the agent must be saved (synced to Vapi) so the number can route to it." }, { status: 400 });
-  }
-  try {
-    const r = await createNumber({ provider, number, nickname, assistantId, config });
-    if (!r.ok) return NextResponse.json({ ok: false, error: r.error }, { status: r.status });
-    return NextResponse.json({ ok: true, vapiPhoneNumberId: r.vapiPhoneNumberId, message: "Number connected to Vapi and routed to the agent." });
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "Failed to connect the number." }, { status: 502 });
-  }
-}
+  const ws = auth.workspaceId;
+  const { numberId, agentId } = (await req.json().catch(() => ({}))) as { numberId?: string; agentId?: string };
+  if (!numberId || !agentId) return NextResponse.json({ ok: false, error: "numberId and agentId are required." }, { status: 400 });
 
-// Re-route an existing number to a different agent. Prefers the stored Vapi id;
-// otherwise finds the number on Vapi; if it was never registered, creates it.
-export async function PATCH(req: NextRequest) {
-  if (!process.env.VAPI_API_KEY) {
-    return NextResponse.json({ ok: false, error: "VAPI_API_KEY is not configured." }, { status: 503 });
+  const { data: row } = await supabase.from("voice_numbers").select("*").eq("workspace_id", ws).eq("id", String(numberId)).maybeSingle();
+  if (!row) return NextResponse.json({ ok: false, error: "Phone number not found." }, { status: 404 });
+  if (!VAPI_REGISTRABLE.has(String(row.provider))) {
+    return NextResponse.json({ ok: false, error: "This number is not a Vapi-connectable number (clinic landlines and LiveKit numbers are never registered on Vapi)." }, { status: 409 });
   }
-  const body = await req.json().catch(() => ({}));
-  const { vapiPhoneNumberId, provider, number, nickname, assistantId, config } = body as { vapiPhoneNumberId?: string | null; provider: string; number: string; nickname?: string; assistantId?: string | null; config?: any };
-  if (!number) return NextResponse.json({ ok: false, error: "Missing number." }, { status: 400 });
-  if (!assistantId) {
+  if (row.vapi_phone_number_id) {
+    return NextResponse.json({ ok: false, error: "Already registered on Vapi — change its agent from Voice Agent Settings." }, { status: 409 });
+  }
+  if (row.routing_provider && row.routing_provider !== "none") {
+    return NextResponse.json({ ok: false, error: "This number already has provider routing." }, { status: 409 });
+  }
+  const { data: agent } = await supabase.from("agents").select("id, name, vapi_assistant_id").eq("workspace_id", ws).eq("id", String(agentId)).maybeSingle();
+  if (!agent) return NextResponse.json({ ok: false, error: "Agent not found in this workspace." }, { status: 404 });
+  if (!agent.vapi_assistant_id) {
     return NextResponse.json({ ok: false, error: "Assign a voice agent that's been saved (synced to Vapi) so the number can route to it." }, { status: 400 });
   }
+
   try {
-    const id = vapiPhoneNumberId || (await findVapiNumberId(number));
-    if (id) {
-      const res = await fetch(`${VAPI_BASE}/phone-number/${id}`, { method: "PATCH", headers: headers(), body: JSON.stringify({ assistantId }) });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return NextResponse.json({ ok: false, error: data?.message ?? `Vapi error ${res.status}` }, { status: 502 });
-      return NextResponse.json({ ok: true, vapiPhoneNumberId: data?.id ?? id, message: "Inbound calls now route to this agent." });
+    const built = await buildCreatePayload({ provider: String(row.provider), number: String(row.number), nickname: row.nickname ?? "", assistantId: agent.vapi_assistant_id, config: row.config ?? {} });
+    if (built.error) return NextResponse.json({ ok: false, error: built.error }, { status: built.status ?? 400 });
+    const res = await fetch(`${VAPI_BASE}/phone-number`, { method: "POST", headers: headers(), body: JSON.stringify(built.payload) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.id) return NextResponse.json({ ok: false, error: data?.message ?? `Vapi error ${res.status}` }, { status: 502 });
+    const vapiPhoneNumberId = String(data.id);
+
+    // Record the registration server-side (the browser can no longer write
+    // routing fields once migration 0064 is applied).
+    const withRouting = {
+      vapi_phone_number_id: vapiPhoneNumberId,
+      agent_id: agent.id,
+      routing_provider: "vapi",
+      routing_agent_id: agent.id,
+      routing_status: "synced",
+      routing_verified_at: new Date().toISOString(),
+    };
+    let { error } = await supabase.from("voice_numbers").update(withRouting).eq("workspace_id", ws).eq("id", row.id);
+    if (error && /routing_|assignment_/.test(error.message)) {
+      ({ error } = await supabase.from("voice_numbers").update({ vapi_phone_number_id: vapiPhoneNumberId, agent_id: agent.id }).eq("workspace_id", ws).eq("id", row.id));
     }
-    // Never registered — create it now.
-    const r = await createNumber({ provider, number, nickname, assistantId, config });
-    if (!r.ok) return NextResponse.json({ ok: false, error: r.error }, { status: r.status });
-    return NextResponse.json({ ok: true, vapiPhoneNumberId: r.vapiPhoneNumberId, message: "Number registered on Vapi and routed to the agent." });
+    if (error) {
+      return NextResponse.json({ ok: false, vapiPhoneNumberId, error: `Registered on Vapi, but the link could not be saved: ${error.message}` }, { status: 500 });
+    }
+    return NextResponse.json({ ok: true, vapiPhoneNumberId, message: "Number connected to Vapi and routed to the agent." });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "Failed to update the number." }, { status: 502 });
+    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "Failed to connect the number." }, { status: 502 });
   }
 }

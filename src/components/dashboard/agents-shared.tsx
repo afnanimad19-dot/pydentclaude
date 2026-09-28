@@ -74,6 +74,7 @@ import { LIVEKIT_STT, LIVEKIT_LLM, LIVEKIT_TTS, LIVEKIT_DEFAULTS, livekitVoiceLa
 import { normalizeVoiceSettings, validateVoiceSettings } from "@/lib/agent-config";
 import { parseBuilderExport, mapBuilderModels, callEndingText, BUILDER_FIELDS, parseBuilderTools, mergeImportedTools, type BuilderField } from "@/lib/livekit-builder-import";
 import { parseBuilderZip, type ZipParseResult } from "@/lib/livekit-zip-import";
+import { authFetch } from "@/lib/auth-fetch";
 import {
   AgentToolsPanel,
   AgentAdvancedPanel,
@@ -159,12 +160,10 @@ function LivekitModelPicker({ value, onChange }: { value: LivekitAgentSettings; 
   const [workerName, setWorkerName] = useState("pydent-agent");
   const [deployedErr, setDeployedErr] = useState<string | null>(null);
   useEffect(() => {
-    getWorkspaceId().then((ws) =>
-      fetch(`/api/livekit/agents?ws=${ws ?? ""}`)
-        .then((r) => r.json())
-        .then((d) => { setDeployed(d.agents ?? []); setWorkerName(d.workerAgentName ?? "pydent-agent"); if (!d.ok) setDeployedErr(d.error ?? null); })
-        .catch(() => setDeployedErr("Could not reach LiveKit."))
-    );
+    authFetch("/api/livekit/agents")
+      .then((r) => r.json())
+      .then((d) => { setDeployed(d.agents ?? []); setWorkerName(d.workerAgentName ?? "pydent-agent"); if (!d.ok) setDeployedErr(d.error ?? null); })
+      .catch(() => setDeployedErr("Could not reach LiveKit."));
   }, []);
   const external = !!value.agentName && value.agentName !== workerName;
   const consoleAgents = deployed.filter((a) => a.agentName !== workerName);
@@ -2299,19 +2298,17 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
 
   useEffect(() => {
     fetchAgents().then((r) => setExistingAgents(r.agents.filter((a) => a.kind === "voice")));
-    getWorkspaceId().then((ws) =>
-      fetch(`/api/livekit/agents?ws=${ws ?? ""}`)
-        .then((r) => r.json())
-        .then((d) => {
-          setWorkerName(d.workerAgentName ?? "pydent-agent");
-          const list = (d.agents ?? []).filter((a: { agentName: string }) => a.agentName !== (d.workerAgentName ?? "pydent-agent"));
-          setDeployed(list);
-          if (!d.ok) setErr(d.error ?? "Could not list LiveKit agents.");
-          if (list[0]) { setPicked(list[0].agentName); setName(list[0].agentName); }
-        })
-        .catch(() => setErr("Could not reach LiveKit."))
-        .finally(() => setLoading(false))
-    );
+    authFetch("/api/livekit/agents")
+      .then((r) => r.json())
+      .then((d) => {
+        setWorkerName(d.workerAgentName ?? "pydent-agent");
+        const list = (d.agents ?? []).filter((a: { agentName: string }) => a.agentName !== (d.workerAgentName ?? "pydent-agent"));
+        setDeployed(list);
+        if (!d.ok) setErr(d.error ?? "Could not list LiveKit agents.");
+        if (list[0]) { setPicked(list[0].agentName); setName(list[0].agentName); }
+      })
+      .catch(() => setErr("Could not reach LiveKit."))
+      .finally(() => setLoading(false));
   }, []);
 
   const [manual, setManual] = useState("");
