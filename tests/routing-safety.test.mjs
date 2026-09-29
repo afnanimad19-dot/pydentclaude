@@ -10,7 +10,7 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
 const src = (p) => fs.readFileSync(path.join(root, p), "utf8");
-const REASSIGN_FILES = ["src/lib/number-routing.ts", "src/lib/number-routing-server.ts", "src/lib/number-routing-route.ts", "src/app/api/voice-numbers/[id]/assign/route.ts", "src/app/api/voice-numbers/[id]/routing/route.ts", "src/app/api/voice-numbers/[id]/rollback/route.ts"];
+const REASSIGN_FILES = ["src/lib/number-routing.ts", "src/lib/livekit-rule-semantics.ts", "src/lib/number-routing-server.ts", "src/lib/number-routing-route.ts", "src/app/api/voice-numbers/[id]/assign/route.ts", "src/app/api/voice-numbers/[id]/routing/route.ts", "src/app/api/voice-numbers/[id]/rollback/route.ts"];
 
 test("reassignment code never creates, deletes or updates a trunk, and never creates/deletes a rule", () => {
   for (const f of REASSIGN_FILES) {
@@ -52,4 +52,13 @@ test("migration 0064 is additive and idempotent", () => {
   const updates = active.match(/^update\s[\s\S]*?;/gim) ?? [];
   assert.equal(updates.length, 1);
   assert.match(updates[0], /set routing_provider = 'vapi'[\s\S]*vapi_phone_number_id is not null/);
+});
+
+test("representability uses the SDK's STRICT parser (unknown provider fields fail closed)", () => {
+  const sem = src("src/lib/livekit-rule-semantics.ts");
+  assert.match(sem, /import \{ SIPDispatchRuleInfo \} from "livekit-server-sdk"/, "the same SDK class that writes the rule");
+  assert.doesNotMatch(sem, /ignoreUnknownFields\s*:/, "strict parse only (no ignoreUnknownFields option anywhere)");
+  const core = src("src/lib/number-routing.ts");
+  assert.match(core, /checkRuleRepresentable\(raw\)/);
+  assert.doesNotMatch(core, /unsupportedRuleFields|fieldPaths|isDefault\(/, "the old field-path heuristic is gone");
 });

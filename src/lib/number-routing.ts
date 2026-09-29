@@ -13,7 +13,10 @@
 //   `reconcile_needed` (provider state unknown).
 //
 // LiveKit: the linked dispatch rule is REPLACED IN PLACE (same rule id) with a
-// copy of itself whose roomConfig.agents is the only thing changed. The inbound
+// copy of itself whose dispatched agent (agentName + Pydent routing metadata)
+// is the only thing changed. The rule must first round-trip through the SDK's
+// strict parser (lib/livekit-rule-semantics.ts), and the readback must be
+// semantically identical to the request with no other field moved. The inbound
 // trunk is read for verification and NEVER written — the adapter interface has
 // no trunk-mutation method at all. Rules are never deleted or recreated.
 // Existing calls keep their agent: a dispatch rule is evaluated only when a new
@@ -23,6 +26,8 @@
 // assistantId is patched, read back, and restored on failure. Never created,
 // never looked up by digits.
 //
+import { checkRuleRepresentable, sameRuleSemantics, semanticDiff, stripProviderManaged } from "@/lib/livekit-rule-semantics";
+
 // Every dependency (database, LiveKit, Vapi, clock) is injected, so the whole
 // transaction is exercised in tests with synthetic fakes. Server bindings live
 // in number-routing-server.ts.
@@ -186,8 +191,15 @@ function sortKeys(v: any): any {
 export function stableJson(v: unknown): string {
   return JSON.stringify(sortKeys(v));
 }
+/** Semantic (SDK-canonical) rule equality; provider-managed timestamps are ignored. */
 export function sameRule(a: RuleJson | null | undefined, b: RuleJson | null | undefined): boolean {
-  return !!a && !!b && stableJson(a) === stableJson(b);
+  return sameRuleSemantics(a, b);
+}
+
+/** Provider-aware snapshot equality: LiveKit rules semantically, Vapi assistant ids exactly. */
+function sameProviderState(provider: RoutingProvider, a: any, b: any): boolean {
+  if (!a || !b) return false;
+  return provider === "livekit" ? sameRuleSemantics(a, b) : stableJson(a) === stableJson(b);
 }
 
 export function ruleIdOf(rule: RuleJson | null | undefined): string {
@@ -233,49 +245,44 @@ export function dispatchEntryFor(agent: AgentRow, workspaceId: string, workerAge
     : { agentName: t.name, metadata: workerDispatchMetadata(agent.id, workspaceId) };
 }
 
-/** A copy of `before` whose ONLY difference is roomConfig.agents = [entry]. */
+/**
+ * A copy of `before` in which ONLY the dispatched agent changes:
+ *  - agentName and the Pydent routing metadata are set for the target agent;
+ *  - every other setting of the existing agent entry is preserved
+ *    (restartPolicy, attributes, and any other supported entry field);
+ *  - DEPLOYMENT POLICY: `deployment` names a deployment OF A SPECIFIC LiveKit
+ *    agent, so it is kept only when the dispatched agentName stays the same.
+ *    When the agent changes it is dropped, and LiveKit dispatches the target
+ *    agent's default deployment — exactly how Pydent's working browser test
+ *    calls dispatch the worker. Rollback restores the original entry (its
+ *    deployment included) byte-for-byte from the audit snapshot.
+ *  - provider-managed fields (createdAt / updatedAt) are not written back.
+ */
 export function buildReplacementRule(before: RuleJson, entry: { agentName: string; metadata: string }): RuleJson {
-  const after = JSON.parse(JSON.stringify(before));
-  after.roomConfig = { ...(after.roomConfig ?? {}), agents: [{ agentName: entry.agentName, ...(entry.metadata ? { metadata: entry.metadata } : {}) }] };
+  const after = stripProviderManaged(before);
+  const old: Record<string, any> = { ...(ruleAgents(before)[0] ?? {}) };
+  const next: Record<string, any> = { ...old, agentName: entry.agentName };
+  if (entry.metadata) next.metadata = entry.metadata;
+  else delete next.metadata;
+  if (String(old.agentName ?? "") !== entry.agentName) delete next.deployment;
+  after.roomConfig = { ...(after.roomConfig ?? {}), agents: [next] };
   return after;
 }
 
-/** Defensive invariant: everything except roomConfig.agents is byte-identical. */
-export function onlyAgentsDiffer(before: RuleJson, after: RuleJson): boolean {
-  const strip = (r: RuleJson) => {
-    const c = JSON.parse(JSON.stringify(r));
-    if (c.roomConfig) {
-      delete c.roomConfig.agents;
-      if (Object.keys(c.roomConfig).length === 0) delete c.roomConfig;
-    }
-    return c;
-  };
-  return stableJson(strip(before)) === stableJson(strip(after));
+/**
+ * Field paths a reassignment may change: the dispatched agent's identity and
+ * its Pydent routing metadata — plus `deployment`, only when the agent itself
+ * changes (see buildReplacementRule).
+ */
+export function reassignAllowedPaths(before: RuleJson, after: RuleJson): string[] {
+  const allowed = ["roomConfig.agents[0].agentName", "roomConfig.agents[0].metadata"];
+  if (String(ruleAgents(before)[0]?.agentName ?? "") !== String(ruleAgents(after)[0]?.agentName ?? "")) allowed.push("roomConfig.agents[0].deployment");
+  return allowed;
 }
 
-// Map-valued fields: their keys are user data, not schema fields.
-const MAP_KEYS = new Set(["attributes", "headers", "headersToAttributes", "attributesToHeaders"]);
-const camel = (k: string) => k.replace(/_([a-z0-9])/g, (_m, c: string) => c.toUpperCase());
-function isDefault(v: any): boolean {
-  return v === null || v === undefined || v === "" || v === 0 || v === false || (Array.isArray(v) && v.length === 0) || (typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0);
-}
-function fieldPaths(v: any, prefix: string, out: Set<string>) {
-  if (Array.isArray(v)) { v.forEach((x) => fieldPaths(x, `${prefix}[]`, out)); return; }
-  if (!v || typeof v !== "object") return;
-  for (const [k0, val] of Object.entries(v)) {
-    if (isDefault(val)) continue;
-    const k = camel(k0);
-    const p = prefix ? `${prefix}.${k}` : k;
-    out.add(p);
-    if (!MAP_KEYS.has(k)) fieldPaths(val, p, out);
-  }
-}
-/** Non-default fields present in the server's raw JSON but lost by SDK parsing. */
-export function unsupportedRuleFields(raw: Record<string, any> | null, parsed: RuleJson | null): string[] {
-  if (!raw || !parsed) return [];
-  const a = new Set<string>(); const b = new Set<string>();
-  fieldPaths(raw, "", a); fieldPaths(parsed, "", b);
-  return [...a].filter((p) => !b.has(p)).sort();
+/** Semantic changes between two rules that are NOT in `allowed` (empty = only permitted changes). */
+export function unexpectedRuleChanges(before: RuleJson, after: RuleJson, allowed: string[]): string[] {
+  return semanticDiff(before, after).filter((p) => !allowed.includes(p));
 }
 
 export interface RouteCheck { ok: boolean; code?: string; error?: string; overlapping?: string[] }
@@ -401,6 +408,8 @@ interface ChangeCtx {
   after: any;
   fromName: string;
   toName: string;
+  /** LiveKit only: which semantic field paths this change may alter relative to `before`. */
+  mayChange: (path: string) => boolean;
 }
 
 async function executeChange(c: ChangeCtx): Promise<RoutingOutcome> {
@@ -422,8 +431,10 @@ async function executeChange(c: ChangeCtx): Promise<RoutingOutcome> {
   }
   const v1 = c.version + 1;
 
+  const isLivekit = number.routing_provider === "livekit";
   const write = async (snap: any) => {
-    if (number.routing_provider === "livekit") await deps.livekit!.replaceRule(number.livekit_dispatch_rule_id!, snap);
+    // Provider-managed timestamps are never written back.
+    if (isLivekit) await deps.livekit!.replaceRule(number.livekit_dispatch_rule_id!, stripProviderManaged(snap));
     else await deps.vapi!.setAssistantId(number.vapi_phone_number_id!, snap.assistantId);
   };
   const read = async (): Promise<any> => {
@@ -431,14 +442,21 @@ async function executeChange(c: ChangeCtx): Promise<RoutingOutcome> {
     const id = await deps.vapi!.getAssistantId(number.vapi_phone_number_id!);
     return id ? { assistantId: id } : null;
   };
-  const same = (a: any, b: any) => !!a && !!b && stableJson(a) === stableJson(b);
+  // Semantic comparison for LiveKit rules (SDK-canonical, timestamps ignored).
+  const same = (a: any, b: any) => sameProviderState(number.routing_provider, a, b);
+  // Fields of the readback that moved although this change must preserve them.
+  const offLimits = (got: any): string[] => {
+    if (!isLivekit || !got) return [];
+    try { return semanticDiff(c.before, got).filter((p) => !c.mayChange(p)); } catch { return ["(unparseable readback)"]; }
+  };
 
   let mutErr: string | null = null;
   try { await write(c.after); } catch (e) { mutErr = errText(e); }
   let got: any = undefined;
   try { got = await read(); } catch (e) { got = undefined; mutErr = mutErr ?? `readback failed: ${errText(e)}`; }
 
-  if (same(got, c.after)) {
+  const unexpected = same(got, c.after) ? offLimits(got) : [];
+  if (same(got, c.after) && unexpected.length === 0) {
     // Even if the write call errored (e.g. a lost response), the readback proves it applied.
     const committed = await deps.store.updateNumberIfVersion(ws, number.id, v1, {
       agent_id: c.toAgentId,
@@ -464,8 +482,14 @@ async function executeChange(c: ChangeCtx): Promise<RoutingOutcome> {
       };
     }
     mutErr = "database commit failed after the provider update";
+  } else if (unexpected.length) {
+    mutErr = `provider readback changed settings that must be preserved: ${unexpected.join(", ")}`;
   } else if (!mutErr) {
-    mutErr = got === undefined || got === null ? "provider readback unavailable" : "provider readback did not match the requested routing";
+    let differs: string[] = [];
+    if (isLivekit && got) { try { differs = semanticDiff(c.after, got); } catch { differs = []; } }
+    mutErr = got === undefined || got === null
+      ? "provider readback unavailable"
+      : `provider readback did not match the requested routing${differs.length ? ` (differs in: ${differs.join(", ")})` : ""}`;
   }
 
   // ── restore the BEFORE snapshot and prove it ──
@@ -493,6 +517,7 @@ async function executeChange(c: ChangeCtx): Promise<RoutingOutcome> {
         numberId: number.id,
         agentId: number.agent_id,
         assignmentId: c.auditId,
+        details: { rollbackVerified: true },
       },
     };
   }
@@ -512,6 +537,7 @@ async function executeChange(c: ChangeCtx): Promise<RoutingOutcome> {
       message: `The provider update could not be verified and the previous routing could not be confirmed. Check the number's routing status and reconcile before making further changes. (${mutErr})`,
       numberId: number.id,
       assignmentId: c.auditId,
+      details: { rollbackVerified: false },
     },
   };
 }
@@ -538,9 +564,19 @@ async function readLivekit(deps: RoutingDeps, n: NumberRow): Promise<LivekitSnap
   }
   const check = checkLivekitRoute({ number: n.number, trunkId: n.livekit_trunk_id, ruleId: n.livekit_dispatch_rule_id, rule, rulesForTrunk, trunk });
   if (!check.ok) return fail(409, check.code!, check.error!, { details: check.overlapping ? { overlapping: check.overlapping } : undefined });
-  const unsupported = unsupportedRuleFields(raw, rule);
-  if (unsupported.length) {
-    return fail(409, "rule_has_unsupported_fields", "The dispatch rule has settings this server's LiveKit SDK cannot preserve — refusing to replace it (they would be erased).", { details: { fields: unsupported } });
+  // Strict SDK parse of the RAW provider JSON: anything the SDK cannot model
+  // would be erased by a full replace, so it fails closed (read-only check).
+  const representable = checkRuleRepresentable(raw);
+  if (!representable.ok) {
+    return fail(409, "rule_has_unsupported_fields", "The dispatch rule has settings this server's LiveKit SDK cannot preserve — refusing to replace it (they would be erased).", {
+      details: { fields: representable.unknownKey ? [representable.unknownKey] : [], reason: representable.reason },
+    });
+  }
+  // The raw and SDK views must describe the same rule.
+  let rawVsSdk: string[];
+  try { rawVsSdk = semanticDiff(representable.normalized, rule!); } catch { rawVsSdk = ["(unparseable)"]; }
+  if (rawVsSdk.length) {
+    return fail(409, "rule_read_inconsistent", "LiveKit's raw and parsed views of the dispatch rule disagree — refusing to continue.", { details: { fields: rawVsSdk } });
   }
   const agents = await deps.store.listVoiceAgents(n.workspace_id);
   return { rule: rule!, actual: resolveRuleAgent(rule!, agents, n.workspace_id, lk.workerAgentName), deployed, agents };
@@ -651,13 +687,16 @@ export async function reassignNumber(deps: RoutingDeps, req: ReassignRequest): P
     const el = targetEligibility(target!, "livekit", { deployed, workerAgentName: deps.livekit!.workerAgentName, workerTokenConfigured: deps.livekit!.workerTokenConfigured });
     if (!el.eligible) return fail(422, "target_ineligible", el.reason!);
     const after = buildReplacementRule(rule, dispatchEntryFor(target!, ws, deps.livekit!.workerAgentName, deps.externalMetadata));
-    if (!onlyAgentsDiffer(rule, after) || ruleIdOf(after) !== number.livekit_dispatch_rule_id) {
-      return fail(500, "invariant_violation", "Refusing: the replacement rule would change more than the dispatched agent.");
+    let unexpected: string[];
+    try { unexpected = unexpectedRuleChanges(rule, after, reassignAllowedPaths(rule, after)); } catch { unexpected = ["(unparseable)"]; }
+    if (unexpected.length || ruleIdOf(after) !== number.livekit_dispatch_rule_id) {
+      return fail(500, "invariant_violation", "Refusing: the replacement rule would change more than the dispatched agent.", { details: { fields: unexpected } });
     }
     const a = await beginAudit(deps, { ...auditBase, provider_before: rule, provider_after: after });
     if ("httpStatus" in a) return a;
     const fromName = agents.find((x) => x.id === actual.agentId)?.name ?? "the current agent";
-    return executeChange({ deps, number, auditId: a.id, version: number.assignment_version, toAgentId: target!.id, before: rule, after, fromName, toName: target!.name });
+    const allowed = reassignAllowedPaths(rule, after);
+    return executeChange({ deps, number, auditId: a.id, version: number.assignment_version, toAgentId: target!.id, before: rule, after, fromName, toName: target!.name, mayChange: (p) => allowed.includes(p) });
   }
 
   // ── Vapi ──
@@ -686,7 +725,7 @@ export async function reassignNumber(deps: RoutingDeps, req: ReassignRequest): P
   const after = { assistantId: target!.vapi_assistant_id };
   const a = await beginAudit(deps, { ...auditBase, provider_before: before, provider_after: after });
   if ("httpStatus" in a) return a;
-  return executeChange({ deps, number, auditId: a.id, version: number.assignment_version, toAgentId: target!.id, before, after, fromName: actualAgent?.name ?? "the current agent", toName: target!.name });
+  return executeChange({ deps, number, auditId: a.id, version: number.assignment_version, toAgentId: target!.id, before, after, fromName: actualAgent?.name ?? "the current agent", toName: target!.name, mayChange: () => true });
 }
 
 /** Restore the exact provider snapshot recorded before an applied change. */
@@ -729,7 +768,7 @@ export async function rollbackAssignment(
       return fail(502, "provider_unavailable", `Could not read Vapi routing (nothing was changed): ${errText(e)}`);
     }
   }
-  if (stableJson(current) !== stableJson(target.provider_after)) {
+  if (!sameProviderState(number.routing_provider, current, target.provider_after)) {
     return fail(409, "provider_changed_since", "Provider routing changed after this assignment — refusing to overwrite it; reconcile first.");
   }
   fromName = agents.find((x) => x.id === target.to_agent_id)?.name ?? fromName;
@@ -751,7 +790,8 @@ export async function rollbackAssignment(
     error: null,
   });
   if ("httpStatus" in a) return a;
-  return executeChange({ deps, number, auditId: a.id, version: number.assignment_version, toAgentId: target.from_agent_id, before: current, after: target.provider_before, fromName, toName });
+  // A rollback restores the exact earlier agent entry; nothing outside the dispatched agent may move.
+  return executeChange({ deps, number, auditId: a.id, version: number.assignment_version, toAgentId: target.from_agent_id, before: current, after: target.provider_before, fromName, toName, mayChange: (p) => p.startsWith("roomConfig.agents[0].") });
 }
 
 /** Register an EXISTING trunk + dispatch rule against a number — read-only on LiveKit. */
@@ -930,7 +970,7 @@ export async function getRoutingStatus(deps: RoutingDeps, workspaceId: string, n
     lastApplied.from_agent_id &&
     !drift &&
     currentProviderSnapshot &&
-    stableJson(currentProviderSnapshot) === stableJson(lastApplied.provider_after)
+    sameProviderState(number.routing_provider, currentProviderSnapshot, lastApplied.provider_after)
       ? { assignmentId: lastApplied.id, restoresAgentId: lastApplied.from_agent_id, restoresAgentName: nameOf(lastApplied.from_agent_id) }
       : null;
 

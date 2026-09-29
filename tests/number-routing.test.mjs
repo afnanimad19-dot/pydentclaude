@@ -164,7 +164,7 @@ test("Laura → Tina: rule updated IN PLACE, verified, then committed", async ()
   assert.deepEqual(after.attributes, { team: "front-desk" });
   // Only the dispatched agent changed: the Pydent worker, Tina selected by metadata.
   assert.deepEqual(after.roomConfig.agents, [{ agentName: "pydent-agent", metadata: JSON.stringify({ pydentAgentId: TINA, ws: WS, source: "phone" }) }]);
-  assert.ok(R.onlyAgentsDiffer(w.baseRule, after));
+  assert.deepEqual(R.unexpectedRuleChanges(w.baseRule, after, R.reassignAllowedPaths(w.baseRule, after)), []);
   const audit = w.audits.at(-1);
   assert.equal(audit.status, "applied");
   assert.deepEqual(audit.provider_before, w.baseRule);
@@ -463,10 +463,11 @@ test("a rule carrying fields the SDK cannot represent is refused (a full replace
   const w = world({ faults: { rawExtra: { future_setting: { enabled: true } } } });
   const out = await toTina(w);
   assert.equal(out.body.code, "rule_has_unsupported_fields");
-  assert.deepEqual(out.body.details.fields, ["futureSetting", "futureSetting.enabled"]);
+  assert.deepEqual(out.body.details.fields, ["future_setting"]);
   assert.equal(writes(w).length, 0);
-  // Default-valued / snake_case spellings of KNOWN fields are not false positives.
-  assert.deepEqual(R.unsupportedRuleFields({ sip_dispatch_rule_id: "SDR_x", trunk_ids: ["ST_a"], hide_phone_number: false, attributes: { any_key: "v" } }, { sipDispatchRuleId: "SDR_x", trunkIds: ["ST_a"], attributes: { any_key: "v" } }), []);
+  // Known fields in any SDK-accepted spelling (snake_case, zero enums by name) are NOT refused.
+  const w2 = world({ faults: { rawExtra: { hide_phone_number: false, media_encryption: "SIP_MEDIA_ENCRYPT_DISABLE" } } });
+  assert.equal((await toTina(w2)).body.status, "synced");
 });
 
 test("a trunk that lists numbers must include this number", async () => {
