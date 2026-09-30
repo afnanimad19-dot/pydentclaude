@@ -40,7 +40,7 @@ export function isAdminRole(role: string | null | undefined): boolean {
 export async function authorizeWorkspaceRequest(
   deps: WorkspaceAuthDeps,
   token: string | null | undefined,
-  opts: { requireAdmin?: boolean } = {}
+  opts: { requireAdmin?: boolean; allowedRoles?: readonly string[]; roleError?: string } = {}
 ): Promise<WorkspaceAuthResult> {
   if (!token) return { ok: false, status: 401, error: "Sign in first." };
   let userId: string | null = null;
@@ -57,6 +57,10 @@ export async function authorizeWorkspaceRequest(
   const isAdmin = isAdminRole(role);
   if (opts.requireAdmin && !isAdmin) {
     return { ok: false, status: 403, error: "Only a workspace owner or admin can change phone-number routing." };
+  }
+  // An explicit role allow-list (e.g. agent management: owner / manager only).
+  if (opts.allowedRoles && !opts.allowedRoles.includes(String(role).toLowerCase())) {
+    return { ok: false, status: 403, error: opts.roleError ?? "Your role is not allowed to do this." };
   }
   return { ok: true, userId, workspaceId, role, isAdmin };
 }

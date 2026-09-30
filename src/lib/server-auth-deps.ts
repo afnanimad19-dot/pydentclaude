@@ -38,7 +38,10 @@ export const workspaceAuthDeps: WorkspaceAuthDeps = {
 };
 
 /** Authorize an incoming route request from its Authorization header. */
-export function authorizeRequest(req: NextRequest, opts: { requireAdmin?: boolean } = {}): Promise<WorkspaceAuthResult> {
+export function authorizeRequest(
+  req: NextRequest,
+  opts: { requireAdmin?: boolean; allowedRoles?: readonly string[]; roleError?: string } = {}
+): Promise<WorkspaceAuthResult> {
   return authorizeWorkspaceRequest(workspaceAuthDeps, bearerToken(req.headers.get("authorization")), opts);
 }
 

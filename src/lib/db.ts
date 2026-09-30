@@ -720,14 +720,28 @@ export async function setAgentVapiId(id: string, vapiId: string): Promise<void> 
   await supabase.from("agents").update({ vapi_assistant_id: vapiId }).eq("id", id);
 }
 
-export async function deleteAgent(id: string): Promise<{ ok: boolean; message: string }> {
-  const { error } = await supabase.from("agents").delete().eq("id", id);
-  if (error) return { ok: false, message: error.message };
-  return { ok: true, message: "Agent deleted." };
-}
+// Agent deletion is server-side only: /api/agents/[id]/delete (lib/agent-management.ts)
+// checks phone-number, LiveKit and configuration references first. There is
+// deliberately no unchecked browser-side delete helper.
 
 export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
+  return writeAgentRow(id, agentToRow(input));
+}
+
+/**
+ * Save an EXISTING agent's configuration WITHOUT touching agents.name. The
+ * Edit Agent form and the LiveKit re-import use this, so a stale name in the
+ * browser can never overwrite a rename. Renaming goes through the protected
+ * server route /api/agents/[id]/rename (lib/agent-management.ts).
+ */
+export async function updateAgentConfig(id: string, input: Omit<AiAgent, "id" | "vapiAssistantId">): Promise<{ ok: boolean; message: string }> {
   const row = agentToRow(input);
+  delete row.name;
+  return writeAgentRow(id, row);
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+async function writeAgentRow(id: string, row: Record<string, any>): Promise<{ ok: boolean; message: string }> {
   let { error } = await supabase.from("agents").update(row).eq("id", id);
   if (error && /purpose|first_message_mode|kb_files|behavior|voice_id|voice_settings|agent_identity/.test(error.message)) {
     delete row.purpose;
@@ -742,6 +756,7 @@ export async function updateAgent(id: string, input: Omit<AiAgent, "id" | "vapiA
   if (error) return { ok: false, message: error.message };
   return { ok: true, message: "Agent updated." };
 }
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ------------------------------------------------------------ Nova (outbound sales closer)
 // Nova is the clinic's OUTBOUND agent and closer — same brain, two bodies: a

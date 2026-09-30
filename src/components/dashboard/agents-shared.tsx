@@ -47,9 +47,9 @@ import {
   fetchAgents,
   createAgent,
   updateAgent,
+  updateAgentConfig,
   updateAgentStatus,
   setAgentVapiId,
-  deleteAgent,
   fetchChannelDefaults,
   setChannelDefault,
   fetchClinicSettings,
@@ -75,6 +75,7 @@ import { normalizeVoiceSettings, validateVoiceSettings } from "@/lib/agent-confi
 import { parseBuilderExport, mapBuilderModels, callEndingText, BUILDER_FIELDS, parseBuilderTools, mergeImportedTools, type BuilderField } from "@/lib/livekit-builder-import";
 import { parseBuilderZip, type ZipParseResult } from "@/lib/livekit-zip-import";
 import { authFetch } from "@/lib/auth-fetch";
+import { AgentActionsMenu } from "@/components/dashboard/agent-actions";
 import {
   AgentToolsPanel,
   AgentAdvancedPanel,
@@ -440,18 +441,8 @@ export function AgentsView({
                 >
                   <Pencil className="h-4 w-4" /> Edit
                 </button>
-                <button
-                  onClick={async () => {
-                    if (!confirm(`Delete agent "${a.name}"? This cannot be undone.`)) return;
-                    const res = await deleteAgent(a.id);
-                    if (res.ok) { setAgents((prev) => prev.filter((x) => x.id !== a.id)); }
-                    else alert(res.message);
-                  }}
-                  title="Delete agent"
-                  className="flex items-center justify-center rounded-xl border border-ink-200 px-3 py-2 text-ink-400 hover:bg-rose-500/10 hover:text-rose-500"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                {/* Rename / Duplicate / Delete — protected server routes (owner / manager). */}
+                <AgentActionsMenu agent={a} onChanged={refresh} />
               </div>
             </Card>
           ))}
@@ -1246,7 +1237,14 @@ export function AgentModal({
     // Use the existing row on retry (savedAgentId) so a Vapi failure after a
     // successful create doesn't insert a duplicate agent on the next attempt.
     const existingId = initial?.id ?? savedAgentId;
-    if (existingId) {
+    if (initial?.id) {
+      // Existing agent: save everything EXCEPT the name — renaming goes through
+      // the protected Rename action (server-validated), never this form.
+      res = await updateAgentConfig(initial.id, payload);
+      res = { ...res, id: initial.id };
+    } else if (existingId) {
+      // Retry of a create from this same session (e.g. after a Vapi failure):
+      // still the New Agent flow, so the name typed here is saved.
       res = await updateAgent(existingId, payload);
       res = { ...res, id: existingId };
     } else {
@@ -1403,7 +1401,14 @@ export function AgentModal({
             <>
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Agent name">
-                <input className={inputCls} placeholder="Nora" value={form.name} onChange={(e) => set("name", e.target.value)} />
+                {initial ? (
+                  <>
+                    <input className={`${inputCls} cursor-not-allowed bg-ink-50 text-ink-500`} value={initial.name} readOnly aria-readonly="true" />
+                    <span className="mt-1 block text-[11px] text-ink-400">Use Rename from the agent actions menu to change the agent name.</span>
+                  </>
+                ) : (
+                  <input className={inputCls} placeholder="Nora" value={form.name} onChange={(e) => set("name", e.target.value)} />
+                )}
               </Field>
               <Field label="Agent type">
                 <select
@@ -2405,7 +2410,8 @@ function ImportLivekitAgentModal({ onClose, onImported }: { onClose: () => void;
         endingText && !(alreadyImported.behavior ?? "").includes("CALL ENDING")
           ? [alreadyImported.behavior, endingText].filter(Boolean).join("\n\n")
           : alreadyImported.behavior;
-      res = await updateAgent(alreadyImported.id, {
+      // Re-import never renames: the name is kept server-side (updateAgentConfig).
+      res = await updateAgentConfig(alreadyImported.id, {
         ...alreadyImported,
         ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
         ...(greeting.trim() ? { firstMessage: greeting.trim() } : {}),
