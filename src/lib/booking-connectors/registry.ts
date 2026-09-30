@@ -1,16 +1,17 @@
-// BookingConnector registry (M1C): resolves a connector implementation from a
+// BookingConnector registry: resolves a connector implementation from a
 // BookingConnection, with hard workspace-safety checks — and nothing more.
-// Every registered type is a PLACEHOLDER in M1C: it declares NO capabilities
-// and every operation returns a clear `not_implemented` error, so nothing can
-// mistake an unwired connector for a functional one. M1D wraps the existing
-// Open Dental gateway behind this interface; until then no caller in the app
-// uses this module, and legacy booking paths are untouched.
+// opendental resolves to the real adapter over the existing gateway (M1D-A);
+// d4w and pydent_native remain PLACEHOLDERS that declare NO capabilities and
+// return a clear `not_implemented` error for every operation, so nothing can
+// mistake an unwired connector for a functional one. No production caller
+// uses this module yet — legacy booking paths are untouched until M1D-B.
 
 import {
   type BookingConnection,
   getPrimaryBookingConnection,
   normalizeConnectorType,
 } from "@/lib/booking-connections-server";
+import { createOpenDentalConnector } from "@/lib/booking-connectors/opendental";
 import {
   type BookingConnector,
   type BookingConnectorContext,
@@ -49,12 +50,13 @@ function placeholderConnector(type: string): BookingConnector {
 }
 
 // ── Registrations ───────────────────────────────────────────────────────────
-// connector_type → implementation factory. M1C registers the three known
-// types as placeholders; M1D+ replace entries with real implementations
-// (opendental first). An unknown type is REJECTED — never silently mapped to
+// connector_type → implementation factory. opendental resolves to the REAL
+// adapter (M1D-A) — a translation layer over the existing gateway, still
+// unused by any production caller; d4w and pydent_native remain honest
+// placeholders. An unknown type is REJECTED — never silently mapped to
 // another connector.
 const REGISTRY: Record<string, (connection: BookingConnection) => BookingConnector> = {
-  opendental: () => placeholderConnector("opendental"),
+  opendental: () => createOpenDentalConnector(),
   d4w: () => placeholderConnector("d4w"),
   pydent_native: () => placeholderConnector("pydent_native"),
 };

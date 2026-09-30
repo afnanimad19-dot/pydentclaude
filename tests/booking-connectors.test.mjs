@@ -90,8 +90,10 @@ test("a disabled connection never resolves to a connector", () => {
 });
 
 // ── 8. Placeholders cannot masquerade as operational ────────────────────────
+// (Since M1D-A, 'opendental' resolves to the real adapter — the placeholder
+// guarantees are pinned on the still-unwired 'd4w' type.)
 test("placeholder connectors declare zero capabilities and every operation says not_implemented", async () => {
-  const r = resolveBookingConnector(fictConnection(), CTX);
+  const r = resolveBookingConnector(fictConnection({ connectorType: "d4w" }), CTX);
   assert.equal(r.ok, true);
   const c = r.resolved.connector;
   assert.deepEqual(c.getCapabilities(), NO_CAPABILITIES);
@@ -133,9 +135,11 @@ test("primary resolver: fails closed without workspace, clearly with no connecti
   const foreign = await getPrimaryBookingConnector("ws-fict-A", { getPrimary: async () => fictConnection({ workspaceId: "ws-fict-B" }) });
   assert.equal(foreign.ok, false);
 
-  const okCase = await getPrimaryBookingConnector("ws-fict-A", { getPrimary: async () => fictConnection() });
+  // (d4w here: since M1D-A 'opendental' resolves to the real adapter, whose
+  // behavior is covered with injected deps in tests/opendental-connector.)
+  const okCase = await getPrimaryBookingConnector("ws-fict-A", { getPrimary: async () => fictConnection({ connectorType: "d4w" }) });
   assert.equal(okCase.ok, true);
-  assert.equal(okCase.resolved.connector.type, "opendental");
+  assert.equal(okCase.resolved.connector.type, "d4w");
   assert.deepEqual(okCase.resolved.context, CTX);
   // …but the resolved placeholder still refuses to operate:
   const health = await okCase.resolved.connector.testConnection(CTX);

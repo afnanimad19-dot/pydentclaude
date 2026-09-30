@@ -148,7 +148,11 @@ export interface ConnectorAppointment {
   externalId: string | null;
   date: string;              // "YYYY-MM-DD"
   time: string;              // "HH:MM" clinic-local
-  durationMin: number;       // explicit, integer minutes
+  // Explicit integer minutes, or null when the EXTERNAL system did not report
+  // a duration for this appointment. Connectors must never fabricate one —
+  // null is the honest value. (Request inputs that need a duration still
+  // require a number: see CreateConnectorAppointmentInput.)
+  durationMin: number | null;
   provider: ConnectorEntityRef;
   operatory: ConnectorEntityRef | null;
   service: string;           // free-text service/treatment name
