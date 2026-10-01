@@ -28,6 +28,7 @@ import {
   getExternalMapping,
   type ExternalMapping,
 } from "@/lib/booking-connections-server";
+import { getService, getServiceExternalId, type Service } from "@/lib/services-server";
 import { getPrimaryBookingConnector, type ResolvedConnector, type ResolveResult } from "@/lib/booking-connectors/registry";
 import {
   type BookingConnectorCapabilities,
@@ -42,12 +43,17 @@ export interface BookingConnectorServiceDeps {
   getPrimary: typeof getPrimaryBookingConnection;
   resolvePrimary: typeof getPrimaryBookingConnector;
   getMapping: (workspaceId: string, connectionId: string, entityType: string, pydentEntityId: string) => Promise<ExternalMapping | null>;
+  // M1E-B service-identity seams (real M1E-A helpers by default):
+  getService: (workspaceId: string, serviceId: string) => Promise<Service | null>;
+  getServiceExternal: (workspaceId: string, connectionId: string, serviceId: string) => Promise<string | null>;
 }
 
 const REAL_DEPS: BookingConnectorServiceDeps = {
   getPrimary: getPrimaryBookingConnection,
   resolvePrimary: getPrimaryBookingConnector,
   getMapping: getExternalMapping,
+  getService,
+  getServiceExternal: (ws, connectionId, serviceId) => getServiceExternalId(ws, connectionId, serviceId),
 };
 
 // ── Resolution + capability gate ────────────────────────────────────────────
@@ -128,25 +134,67 @@ export async function connectorAvailability(
   });
 }
 
+// ── Service identity (catalog + mappings only — never names or codes) ───────
+
+export interface ResolvedServiceIdentity {
+  pydentServiceId: string;
+  externalServiceId: string;           // the PMS identity from external_mappings
+  defaultDurationMin: number | null;   // honest: null when the catalog doesn't know
+}
+
+// Pydent service UUID → the external system's service/procedure identity for
+// one connection. Fail-closed ladder (M1E-B):
+//   1. explicit workspace + connection + service id      → invalid_request
+//   2. service exists IN THIS WORKSPACE                  → config_missing
+//      (a foreign workspace's service id gets the same answer as an unknown
+//       one — nothing leaks about other workspaces' catalogs)
+//   3. service active AND booking_enabled                → unavailable
+//   4. external mapping for THIS connection              → config_missing
+//   5. → the mapped external identity
+// The service NAME and the Pydent-internal CODE are never consulted, and
+// there is no first-service fallback — resolution reuses the M1E-A helpers
+// (which reuse the generic M1B mapping reader); nothing here duplicates
+// mapping logic or writes anything.
+export async function resolveServiceForConnection(
+  workspaceId: string,
+  connectionId: string,
+  pydentServiceId: string,
+  deps: BookingConnectorServiceDeps = REAL_DEPS
+): Promise<ConnectorResult<ResolvedServiceIdentity>> {
+  const sid = String(pydentServiceId ?? "").trim();
+  if (!workspaceId || !connectionId || !sid) {
+    return connectorFail("invalid_request", "A workspace, connection and Pydent service id are all required.");
+  }
+  const svc = await deps.getService(workspaceId, sid);
+  if (!svc) {
+    return connectorFail("config_missing", "No such service is configured in this workspace's catalog.");
+  }
+  if (!svc.active || !svc.bookingEnabled) {
+    return connectorFail("unavailable", "This service is not currently bookable.");
+  }
+  const ext = await deps.getServiceExternal(workspaceId, connectionId, sid);
+  if (!ext) {
+    return connectorFail("config_missing", "This service has no external identity mapped for the workspace's booking connection — map the service before using it externally.");
+  }
+  return { ok: true, data: { pydentServiceId: sid, externalServiceId: ext, defaultDurationMin: svc.defaultDurationMin } };
+}
+
 // ── Create appointment: UNAVAILABLE in M1D-B, explicitly ────────────────────
 
-// Why createAppointment fails closed here (the key M1D-B review point) —
-// and why the failure is CONFIG_MISSING, not unsupported_capability: the
-// connector genuinely supports creation (Open Dental advertises
-// createAppointment: true, and the capability gate above would pass). The
-// blocker is ORCHESTRATION READINESS in Pydent's own domain layer: a safe
-// external booking needs unambiguous SERVICE/PROCEDURE identity, and Pydent
-// cannot provide one yet — procedures are free text with no entity to map
-// through external_mappings, and the clinic middleware is known to fall back
-// to its FIRST configured service for an unrecognized id, a fallback this
-// layer must never legitimize. That is missing identity CONFIGURATION, so
-// config_missing is the accurate existing code. (Patient find-or-create
-// policy is a separate adoption question, documented — not a capability
-// statement either.) Until the service identity model exists (M1E decision),
-// this layer refuses rather than guesses; the connector's createAppointment
-// is NEVER invoked through this path.
+// Why createAppointment STILL fails closed (M1E-B) — and why the failure is
+// CONFIG_MISSING, not unsupported_capability: the connector genuinely
+// supports creation (Open Dental advertises createAppointment: true, and
+// the capability gate above would pass). The blocker is ORCHESTRATION
+// READINESS. M1E-B added safe service-identity resolution
+// (resolveServiceForConnection above), but external create remains locked
+// because the PATIENT-IDENTITY policy for external systems has not been
+// approved (M1E-C decision: today's adapter behavior is find-or-create by
+// phone — legacy convenience, not approved resolution). Until then this
+// layer refuses rather than guesses; the connector's createAppointment is
+// NEVER invoked through this path, even when provider AND service
+// identities resolve successfully.
 export const CREATE_UNAVAILABLE_REASON =
-  "Appointment creation requires a configured external service/procedure identity, and Pydent has no service identity model mapped for this connection yet. Guessing (or inheriting a first-service fallback) is not acceptable — the operation was not attempted.";
+  "Appointment creation through the booking connector is not enabled yet: service identity can now be resolved, but the patient-identity policy for external systems awaits approval (M1E-C). The operation was not attempted.";
 
 export async function connectorCreateAppointment(
   workspaceId: string,

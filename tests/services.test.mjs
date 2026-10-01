@@ -115,24 +115,29 @@ test("no public services API route exists", async () => {
 });
 
 test("no production code imports services-server yet; M1D-B create remains locked", async () => {
+  // The booking-connectors layer is the SANCTIONED consumer (M1E-B service
+  // resolution) and is itself policed by its own import-scan; every other
+  // file under src/ is a production caller and must not touch the module.
   const offenders = [];
   async function walk(dir) {
     for (const e of await readdir(dir, { withFileTypes: true })) {
       const p = join(dir, e.name);
-      if (e.isDirectory()) { if (e.name === "node_modules") continue; await walk(p); }
+      if (e.isDirectory()) { if (e.name === "node_modules" || p.includes("booking-connectors")) continue; await walk(p); }
       else if (/\.(ts|tsx)$/.test(e.name) && !p.endsWith("services-server.ts")) {
         if ((await readFile(p, "utf8")).includes("services-server")) offenders.push(p);
       }
     }
   }
   await walk(new URL("../src", import.meta.url).pathname);
-  assert.deepEqual(offenders, [], "no production file may import services-server in M1E-A");
+  assert.deepEqual(offenders, [], "no production file may import services-server");
   // appointments.procedure untouched: the module never references the
   // appointments table at all.
   assert.equal(await_src.includes("appointments"), false);
-  // M1D-B's fail-closed create is NOT unlocked: the orchestration service
-  // still returns config_missing and does not import the services module.
+  // The fail-closed create is NOT unlocked: the orchestration service still
+  // returns config_missing. (Since M1E-B it DOES import services-server —
+  // that import is the sanctioned service-resolution path, covered in
+  // tests/booking-connector-service.test.mjs.)
   const orchestration = await readFile(new URL("../src/lib/booking-connectors/service.ts", import.meta.url), "utf8");
   assert.match(orchestration, /connectorFail\("config_missing", CREATE_UNAVAILABLE_REASON\)/);
-  assert.equal(orchestration.includes("services-server"), false);
+  assert.match(orchestration, /from "@\/lib\/services-server"/);
 });

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-const { connectorAvailability, connectorCreateAppointment, connectorReschedule, connectorCancel, resolveProviderExternalId, CREATE_UNAVAILABLE_REASON } =
+const { connectorAvailability, connectorCreateAppointment, connectorReschedule, connectorCancel, resolveProviderExternalId, resolveServiceForConnection, CREATE_UNAVAILABLE_REASON } =
   await import("@/lib/booking-connectors/service");
 const { getPrimaryBookingConnector } = await import("@/lib/booking-connectors/registry");
 const { NO_CAPABILITIES } = await import("@/lib/booking-connectors/types");
@@ -48,11 +48,20 @@ function fakeConnector(caps, results = {}) {
 }
 
 // Service deps: real registry resolution logic, injected connection + fake
-// connector + injectable mappings. mappings: { "provider:prov-1": "12", … }
-function fakeDeps({ connection = fictConnection(), fake = fakeConnector({ availability: true, createAppointment: true, updateAppointment: true, cancelAppointment: true }), mappings = {} } = {}) {
+// connector + injectable mappings and catalog. mappings:
+// { "provider:prov-1": "12", … }; services: { "svc-1": {active, bookingEnabled, defaultDurationMin} };
+// serviceMappings: { "conn-fict-1:svc-1": "OD-ext-77" }.
+function fakeDeps({ connection = fictConnection(), fake = fakeConnector({ availability: true, createAppointment: true, updateAppointment: true, cancelAppointment: true }), mappings = {}, services = {}, serviceMappings = {} } = {}) {
   return {
     fake,
     deps: {
+      getService: async (ws, sid) => {
+        const s = services[sid];
+        return s && ws === (s.workspaceId ?? "ws-fict-A")
+          ? { id: sid, workspaceId: ws, name: s.name ?? "Fictional Service", displayName: null, code: s.code ?? null, description: null, defaultDurationMin: s.defaultDurationMin ?? null, active: s.active !== false, bookingEnabled: s.bookingEnabled !== false, createdAt: "", updatedAt: "" }
+          : null;
+      },
+      getServiceExternal: async (ws, connId, sid) => serviceMappings[`${connId}:${sid}`] ?? null,
       getPrimary: async () => connection,
       resolvePrimary: async (ws, { getPrimary }) => {
         const conn = await getPrimary(ws);
@@ -133,7 +142,7 @@ test("create is a config_missing readiness failure: no guessing, connector never
   assert.equal(r.ok, false);
   assert.equal(r.error.code, "config_missing");
   assert.notEqual(r.error.code, "unsupported_capability");
-  assert.match(r.error.message, /configured external service\/procedure identity/);
+  assert.match(r.error.message, /patient-identity policy/); // M1E-B: service identity resolves; patient policy is the remaining blocker
   assert.equal(r.error.message, CREATE_UNAVAILABLE_REASON.slice(0, r.error.message.length));
   assert.deepEqual(fake.calls, [], "createAppointment must never reach the connector in M1D-B");
   // The REAL Open Dental adapter still advertises the capability:
@@ -220,6 +229,91 @@ test("no production code outside booking-connectors imports the service (or the 
   }
   await walk(new URL("../src", import.meta.url).pathname);
   assert.deepEqual(offenders, [], "the connector service must have no production callers in M1D-B");
+});
+
+// ════ M1E-B: appointment ↔ service identity ═════════════════════════════════
+
+const sql68 = await readFile(new URL("../supabase/migrations/0068_appointment_service_identity.sql", import.meta.url), "utf8");
+
+test("0068: nullable service_id, workspace-consistent composite FK, ON DELETE RESTRICT", () => {
+  assert.match(sql68, /add column if not exists service_id uuid;/);          // nullable — no NOT NULL anywhere
+  assert.doesNotMatch(sql68, /service_id uuid not null/);
+  assert.match(sql68, /add constraint services_id_ws_uq unique \(id, workspace_id\)/); // supporting pair (0067 untouched)
+  // Composite FK with explicit RESTRICT: a service referenced by any
+  // appointment is intentionally undeletable (retire with active=false);
+  // a service nothing references deletes normally — no trigger/rule in the
+  // migration blocks that, only this FK governs deletion.
+  assert.match(sql68, /foreign key \(service_id, workspace_id\)\s+references public\.services \(id, workspace_id\)\s+on delete restrict/);
+  assert.doesNotMatch(sql68, /set null/i, "no SET NULL form (and no PG15 column-list dependency) may remain");
+  assert.doesNotMatch(sql68, /create trigger|create rule/i);
+  assert.match(sql68, /active = false/, "retirement-by-flag must be the documented alternative to deletion");
+  // MATCH SIMPLE guard RETAINED: appointments.workspace_id is nullable in
+  // the real schema (0014 added it without NOT NULL), so the check is
+  // required, not redundant:
+  assert.match(sql68, /check \(service_id is null or workspace_id is not null\)/);
+  assert.match(sql68, /create index if not exists appointments_ws_service_idx\s+on public\.appointments \(workspace_id, service_id\)/);
+  // No backfill, no derivation, no touch of the legacy procedure column:
+  assert.doesNotMatch(sql68, /update public\.appointments|UPDATE appointments/i);
+  assert.equal(sql68.includes("procedure ="), false);
+});
+
+test("legacy appointment writers never supply service_id", async () => {
+  for (const f of ["../src/lib/db.ts", "../src/lib/booking-server.ts"]) {
+    const src = await readFile(new URL(f, import.meta.url), "utf8");
+    assert.equal(src.includes("service_id"), false, `${f} must not set service_id (caller adoption is a later milestone)`);
+  }
+});
+
+test("service resolution: fail-closed ladder (inputs, unknown, inactive, non-bookable, unmapped)", async () => {
+  const base = { services: { "svc-fict-1": { defaultDurationMin: 45 } }, serviceMappings: { "conn-fict-1:svc-fict-1": "OD-ext-77" } };
+  const { deps } = fakeDeps(base);
+  for (const [ws, conn, sid] of [["", "conn-fict-1", "svc-fict-1"], ["ws-fict-A", "", "svc-fict-1"], ["ws-fict-A", "conn-fict-1", " "]]) {
+    assert.equal((await resolveServiceForConnection(ws, conn, sid, deps)).error.code, "invalid_request");
+  }
+  assert.equal((await resolveServiceForConnection("ws-fict-A", "conn-fict-1", "svc-fict-unknown", deps)).error.code, "config_missing");
+  const inactive = fakeDeps({ ...base, services: { "svc-fict-1": { active: false } } });
+  assert.equal((await resolveServiceForConnection("ws-fict-A", "conn-fict-1", "svc-fict-1", inactive.deps)).error.code, "unavailable");
+  const notBookable = fakeDeps({ ...base, services: { "svc-fict-1": { bookingEnabled: false } } });
+  assert.equal((await resolveServiceForConnection("ws-fict-A", "conn-fict-1", "svc-fict-1", notBookable.deps)).error.code, "unavailable");
+  const unmapped = fakeDeps({ ...base, serviceMappings: {} });
+  const um = await resolveServiceForConnection("ws-fict-A", "conn-fict-1", "svc-fict-1", unmapped.deps);
+  assert.equal(um.error.code, "config_missing");
+  assert.match(um.error.message, /no external identity mapped/);
+});
+
+test("service resolution: mapped service resolves for the right connection; name/code never used; no leak across workspaces", async () => {
+  const { deps } = fakeDeps({
+    services: { "svc-fict-1": { name: "Cleaning", code: "CLN-internal", defaultDurationMin: 45 } },
+    serviceMappings: { "conn-fict-1:svc-fict-1": "OD-ext-77", "conn-OTHER:svc-fict-1": "WRONG-99" },
+  });
+  const ok = await resolveServiceForConnection("ws-fict-A", "conn-fict-1", "svc-fict-1", deps);
+  assert.deepEqual(ok, { ok: true, data: { pydentServiceId: "svc-fict-1", externalServiceId: "OD-ext-77", defaultDurationMin: 45 } });
+  // The external identity is the MAPPING for THIS connection — never the
+  // name, never the internal code, never another connection's mapping:
+  assert.notEqual(ok.data.externalServiceId, "Cleaning");
+  assert.notEqual(ok.data.externalServiceId, "CLN-internal");
+  assert.notEqual(ok.data.externalServiceId, "WRONG-99");
+  const src = await readFile(new URL("../src/lib/booking-connectors/service.ts", import.meta.url), "utf8");
+  assert.equal(/svc\.name|svc\.code/.test(src), false, "resolution must not consult service name/code");
+  // A foreign workspace's service id gets the SAME answer as an unknown one:
+  const foreign = await resolveServiceForConnection("ws-fict-B", "conn-fict-1", "svc-fict-1", deps);
+  const unknown = await resolveServiceForConnection("ws-fict-A", "conn-fict-1", "svc-fict-nope", deps);
+  assert.equal(foreign.error.code, "config_missing");
+  assert.deepEqual(foreign.error, unknown.error, "wrong-workspace must be indistinguishable from unknown");
+});
+
+test("create stays locked even when provider AND service identities fully resolve", async () => {
+  const { deps, fake } = fakeDeps({
+    mappings: { "provider:prov-fict-1": "12" },
+    services: { "svc-fict-1": { defaultDurationMin: 45 } },
+    serviceMappings: { "conn-fict-1:svc-fict-1": "OD-ext-77" },
+  });
+  const ready = await resolveServiceForConnection("ws-fict-A", "conn-fict-1", "svc-fict-1", deps);
+  assert.equal(ready.ok, true); // prerequisites resolve…
+  const r = await connectorCreateAppointment("ws-fict-A", { serviceId: "svc-fict-1" }, deps);
+  assert.equal(r.ok, false);    // …and create still refuses
+  assert.equal(r.error.code, "config_missing");
+  assert.deepEqual(fake.calls, [], "connector.createAppointment must never be invoked by M1E-B");
 });
 
 // ── 18/19. Structured errors, no secret leakage ─────────────────────────────
