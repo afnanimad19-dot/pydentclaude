@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getHfxCreds, hfxCall, hfxConfigured } from "@/lib/hyperfx";
+import { authorizeRequest } from "@/lib/server-auth-deps";
+import { withKbAuth } from "@/lib/kb-auth";
+import { assertSafeUrl, UnsafeUrlError } from "@/lib/safe-url";
+import { safeFetchText } from "@/lib/safe-fetch";
 
 // Fetches a clinic's web page and returns its readable text, so an agent can learn
 // from the website (hours, services, pricing, FAQs). Server-side to avoid CORS.
 // Order of attempts: Firecrawl whole-site crawl (if configured) → plain fetch →
 // the marketing engine's web_fetch_page (renders JavaScript sites properly), so
 // "Fetch site" works on modern JS-built clinic websites too.
+//
+// Security: requires a signed-in workspace member; the workspace (for engine
+// credentials) comes from the session, never the body. Every URL Pydent itself
+// fetches — the target, sitemap and crawled pages, and every redirect hop — goes
+// through the SSRF boundary (lib/safe-url.ts + lib/safe-fetch.ts), and the
+// target is validated BEFORE it is handed to Firecrawl or the engine.
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -94,12 +104,19 @@ function pageScore(u: URL): number {
 
 async function fetchText(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "PydentBot/1.0 (+knowledge-import)" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(PAGE_TIMEOUT),
-    });
-    return res.ok ? await res.text() : null;
+    const res = await safeFetchText(url, { timeoutMs: PAGE_TIMEOUT, headers: { "User-Agent": "PydentBot/1.0 (+knowledge-import)" } });
+    return res.ok ? res.text : null;
+  } catch (e) {
+    // A blocked hop (private address / unsafe redirect) is surfaced to the caller.
+    if (e instanceof UnsafeUrlError) throw e;
+    return null;
+  }
+}
+
+/** Sitemap entries and crawled sub-pages: an unsafe hop just skips that page. */
+async function fetchOptional(url: string): Promise<string | null> {
+  try {
+    return await fetchText(url);
   } catch {
     return null;
   }
@@ -116,7 +133,7 @@ function sameSite(url: string, origin: URL): boolean {
 
 /** Page URLs from sitemap.xml (one level of sitemap-index supported). */
 async function urlsFromSitemap(origin: URL): Promise<string[]> {
-  const xml = await fetchText(new URL("/sitemap.xml", origin).href);
+  const xml = await fetchOptional(new URL("/sitemap.xml", origin).href);
   if (!xml) return [];
   const locs = [...xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1]);
   if (!locs.length) return [];
@@ -127,7 +144,7 @@ async function urlsFromSitemap(origin: URL): Promise<string[]> {
     const children = locs.filter((l) => sameSite(l, origin)).sort((a, b) => rank(a) - rank(b)).slice(0, 4);
     const all: string[] = [];
     for (const c of children) {
-      const child = await fetchText(c);
+      const child = await fetchOptional(c);
       if (child) all.push(...[...child.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)].map((m) => m[1]));
     }
     return all;
@@ -178,7 +195,12 @@ function stripBoilerplate(pages: { url: string; text: string }[]): { url: string
 }
 
 export async function POST(req: NextRequest) {
-  const { url, ws } = await req.json().catch(() => ({}));
+  return withKbAuth(() => authorizeRequest(req), ({ workspaceId }) => importWebsite(req, workspaceId));
+}
+
+async function importWebsite(req: NextRequest, ws: string) {
+  // Any `ws` in the body is ignored — the workspace is the caller's session.
+  const { url } = await req.json().catch(() => ({}));
   if (!url || typeof url !== "string") {
     return NextResponse.json({ error: "Provide a website URL." }, { status: 400 });
   }
@@ -189,6 +211,14 @@ export async function POST(req: NextRequest) {
     if (!/^https?:$/.test(u.protocol)) throw new Error("bad protocol");
   } catch {
     return NextResponse.json({ error: "That doesn't look like a valid URL." }, { status: 400 });
+  }
+  // SSRF: refuse private / internal / metadata targets before ANY fetch or
+  // hand-off to Firecrawl / the engine.
+  try {
+    await assertSafeUrl(target);
+  } catch (e) {
+    if (e instanceof UnsafeUrlError) return NextResponse.json({ error: e.message, code: e.code }, { status: 400 });
+    throw e;
   }
 
   // When Firecrawl is configured, import the WHOLE site (much richer knowledge).
@@ -217,7 +247,7 @@ export async function POST(req: NextRequest) {
         for (let i = 0; i < picked.length; i += 6) {
           const batch = await Promise.all(
             picked.slice(i, i + 6).map(async (pageUrl) => {
-              const html = await fetchText(pageUrl);
+              const html = await fetchOptional(pageUrl);
               return html ? { url: pageUrl, text: htmlToText(html) } : null;
             })
           );
@@ -232,15 +262,18 @@ export async function POST(req: NextRequest) {
     }
     // Thin or blocked page (usually a JavaScript-rendered site) → let the
     // engine's browser-grade fetcher render it.
-    const rendered = await fetchViaEngine(target, ws ?? null);
+    const rendered = await fetchViaEngine(target, ws);
     if (rendered) return NextResponse.json({ ok: true, title: target, text: rendered.slice(0, 200_000) });
     return NextResponse.json(
       { error: homeHtml ? "The page had little readable text (it may be JavaScript-rendered, and the marketing engine couldn't read it either)." : "Could not load the page." },
       { status: homeHtml ? 422 : 502 }
     );
   } catch (e) {
+    // A redirect / crawled page that resolves into a private network: refuse, and
+    // don't hand the same target to the engine either.
+    if (e instanceof UnsafeUrlError) return NextResponse.json({ error: e.message, code: e.code }, { status: 400 });
     // Network failure on the direct fetch — the engine may still reach it.
-    const rendered = await fetchViaEngine(target, ws ?? null);
+    const rendered = await fetchViaEngine(target, ws);
     if (rendered) return NextResponse.json({ ok: true, title: target, text: rendered.slice(0, 200_000) });
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Failed to fetch the website." },

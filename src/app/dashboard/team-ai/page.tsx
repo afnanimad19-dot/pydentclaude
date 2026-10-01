@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { authFetch } from "@/lib/auth-fetch";
 import { Sparkles, Send, ArrowLeft, Bot, Lock, Megaphone, Search, Radio, Mail, Check, Plug, Plus, History, Pencil, Trash2, FileText, Activity, Clock, Play, Pause, LayoutGrid, Paperclip, Mic, X } from "lucide-react";
 import Link from "next/link";
 import { Card, PageHeader } from "@/components/ui";
@@ -299,7 +300,7 @@ function AgentWorkspace({ agent, onBack }: { agent: TeamAgent; onBack: () => voi
           const fd = new FormData();
           fd.append("file", file, file.name);
           fd.append("name", file.name);
-          const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+          const res = await authFetch("/api/kb/extract", { method: "POST", body: fd });
           const data = await res.json().catch(() => ({}));
           setPendingDocs((p) => [...p, { name: file.name, text: res.ok ? String(data.text ?? "") : `[Could not read ${file.name}]` }]);
         } else {
@@ -733,7 +734,7 @@ function BrandModal({ brand, onClose, onSaved, onDocsChanged }: { brand: BrandKn
         if (/\.(txt|md|csv|json)$/i.test(file.name)) text = await file.text();
         else if (/\.(pdf|docx|doc)$/i.test(file.name)) {
           const fd = new FormData(); fd.append("file", file, file.name); fd.append("name", file.name);
-          const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+          const res = await authFetch("/api/kb/extract", { method: "POST", body: fd });
           const data = await res.json();
           text = res.ok ? data.text : `[Could not read ${file.name}: ${data.error ?? "extraction failed"}]`;
         } else text = `[Uploaded file: ${file.name}]`;

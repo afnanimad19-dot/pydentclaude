@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { authFetch } from "@/lib/auth-fetch";
 import { Palette, Plus, Trash2, UploadCloud, FileText, Save, Stethoscope, Building2 } from "lucide-react";
 import { Card, PageHeader } from "@/components/ui";
 import { Field, inputCls } from "@/components/modal";
@@ -62,7 +63,7 @@ export default function BrandIdentityPage() {
         } else {
           const fd = new FormData();
           fd.append("file", file);
-          const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+          const res = await authFetch("/api/kb/extract", { method: "POST", body: fd });
           const j = await res.json().catch(() => ({}));
           content = j.text ?? "";
         }

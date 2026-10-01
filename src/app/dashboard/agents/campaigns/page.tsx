@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { authFetch } from "@/lib/auth-fetch";
 import { useRouter } from "next/navigation";
 import { Megaphone, Plus, Trash2, PhoneOutgoing, PhoneIncoming, Users, Bot, PhoneCall, Pencil, UploadCloud, MessageCircle, Send, Loader2, RefreshCw } from "lucide-react";
 import { Card, PageHeader, StatusBadge } from "@/components/ui";
@@ -330,7 +331,7 @@ function QuickOutreach({ agents, numbers, onSynced }: { agents: AiAgent[]; numbe
     if (/\.(csv|txt|tsv)$/i.test(f.name)) { const c = await f.text(); setText((t) => `${t}\n${c}`.trim()); return; }
     // xlsx / other → extract text on the server, then scan for numbers.
     const fd = new FormData(); fd.append("file", f, f.name);
-    const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+    const res = await authFetch("/api/kb/extract", { method: "POST", body: fd });
     const d = await res.json().catch(() => ({}));
     if (d.text) setText((t) => `${t}\n${d.text}`.trim());
     else toast("Couldn't read that file — paste the numbers or upload a CSV.", "info");

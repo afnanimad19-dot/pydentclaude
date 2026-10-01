@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ocrViaEngine } from "@/lib/kb-ocr";
+import { authorizeRequest } from "@/lib/server-auth-deps";
+import { withKbAuth } from "@/lib/kb-auth";
 
 // Extracts plain text from an uploaded knowledge-base document so the agent can
 // actually read it. Supports PDF (pdf-parse), Word .docx (mammoth), a best-effort
@@ -59,7 +61,13 @@ function scrapeLegacyDoc(buf: Buffer): string {
   return text;
 }
 
+// Requires a signed-in workspace member (no workspace data is read, but the
+// parser/OCR must not be free public compute).
 export async function POST(req: NextRequest) {
+  return withKbAuth(() => authorizeRequest(req), () => extract(req));
+}
+
+async function extract(req: NextRequest) {
   const form = await req.formData();
   const file = form.get("file");
   if (!(file instanceof Blob)) {

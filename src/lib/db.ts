@@ -2,6 +2,7 @@
 // dataset when the database is unreachable or hasn't been migrated yet.
 
 import { supabase } from "./supabase";
+import { authFetch } from "./auth-fetch";
 import {
   type Patient,
   type Appointment,
@@ -1929,10 +1930,10 @@ export async function seedInboundReceptionist(
   const url = (websiteUrl ?? "").trim();
   if (url) {
     try {
-      const res = await fetch("/api/kb/website", {
+      const res = await authFetch("/api/kb/website", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, ws }),
+        body: JSON.stringify({ url }),
       });
       const data = await res.json().catch(() => ({}));
       const text = String(data.text ?? data.content ?? "").trim();

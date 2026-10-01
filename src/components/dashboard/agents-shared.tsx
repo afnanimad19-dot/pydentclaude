@@ -76,6 +76,7 @@ import { parseBuilderExport, mapBuilderModels, callEndingText, BUILDER_FIELDS, p
 import { parseBuilderZip, type ZipParseResult } from "@/lib/livekit-zip-import";
 import { authFetch } from "@/lib/auth-fetch";
 import { AgentActionsMenu } from "@/components/dashboard/agent-actions";
+import { composeKnowledge, removeKbSection, isFailedExtraction } from "@/lib/kb-sections";
 import {
   AgentToolsPanel,
   AgentAdvancedPanel,
@@ -1120,11 +1121,11 @@ export function AgentModal({
     if (!url || importingWeb) return;
     setImportingWeb(true);
     try {
-      const ws = await getWorkspaceId();
-      const res = await fetch("/api/kb/website", {
+      // The server takes the workspace from the signed-in session (authFetch).
+      const res = await authFetch("/api/kb/website", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, ws }),
+        body: JSON.stringify({ url }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not read the website.");
@@ -1146,7 +1147,9 @@ export function AgentModal({
     if (!list) return;
     const files = Array.from(list);
     for (const file of files) {
-      if (form.kbFiles.includes(file.name)) continue;
+      // A file with the same name REPLACES that document's knowledge (in place,
+      // on Save) — it is no longer silently skipped.
+      const replacing = form.kbFiles.includes(file.name);
       let text = "";
       if (/\.(txt|md|csv|json)$/i.test(file.name)) {
         text = await file.text();
@@ -1157,7 +1160,7 @@ export function AgentModal({
           const fd = new FormData();
           fd.append("file", file, file.name);
           fd.append("name", file.name);
-          const res = await fetch("/api/kb/extract", { method: "POST", body: fd });
+          const res = await authFetch("/api/kb/extract", { method: "POST", body: fd });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error ?? "Could not read this document.");
           text = data.text;
@@ -1169,8 +1172,13 @@ export function AgentModal({
       } else {
         text = `[Document on file: ${file.name}]`;
       }
+      if (replacing && isFailedExtraction(text)) {
+        // Never trade good knowledge for a failed read: keep the existing section.
+        setResult({ ok: false, message: `Couldn't read the new "${file.name}" — the existing version was kept.` });
+        continue;
+      }
       setFileTexts((prev) => ({ ...prev, [file.name]: text.slice(0, 200_000) }));
-      setForm((f) => ({ ...f, kbFiles: [...f.kbFiles, file.name] }));
+      setForm((f) => ({ ...f, kbFiles: f.kbFiles.includes(file.name) ? f.kbFiles : [...f.kbFiles, file.name] }));
     }
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -1203,7 +1211,9 @@ export function AgentModal({
   }
 
   function removeFile(name: string) {
-    setForm((f) => ({ ...f, kbFiles: f.kbFiles.filter((x) => x !== name) }));
+    // Remove the document's knowledge too — not just its name — so the agent
+    // stops answering from it once the agent is saved.
+    setForm((f) => ({ ...f, kbFiles: f.kbFiles.filter((x) => x !== name), knowledgeBase: removeKbSection(f.knowledgeBase ?? "", name) }));
     setFileTexts((prev) => {
       const next = { ...prev };
       delete next[name];
@@ -1224,13 +1234,12 @@ export function AgentModal({
       }
     }
     setSaving(true);
-    const uploadedText = form.kbFiles
-      .map((name) => (fileTexts[name] ? `--- ${name} ---\n${fileTexts[name]}` : ""))
-      .filter(Boolean)
-      .join("\n\n");
+    // Documents read in this session are upserted under their "--- name ---"
+    // marker: a re-uploaded file replaces its section in place (never a second
+    // copy), and a failed re-read keeps the existing knowledge.
     const payload = {
       ...form,
-      knowledgeBase: [form.knowledgeBase, uploadedText].filter(Boolean).join("\n\n"),
+      knowledgeBase: composeKnowledge(form.knowledgeBase ?? "", fileTexts, form.kbFiles),
     };
 
     let res: { ok: boolean; message: string; id?: string };

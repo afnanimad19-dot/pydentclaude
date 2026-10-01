@@ -8,7 +8,10 @@ export async function authFetch(input: string, init: RequestInit = {}): Promise<
   const token = data.session?.access_token;
   const headers = new Headers(init.headers ?? {});
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  // JSON bodies get a JSON content type; FormData must keep the browser's own
+  // multipart boundary header, so it is never overridden.
+  const isForm = typeof FormData !== "undefined" && init.body instanceof FormData;
+  if (init.body && !isForm && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   return fetch(input, { ...init, headers });
 }
 
