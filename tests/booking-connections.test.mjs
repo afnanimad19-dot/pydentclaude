@@ -79,6 +79,52 @@ test("insertPatientMapping fails closed on missing workspace or identity fields"
   assert.equal(block.includes("entityType"), false, "no caller-supplied entity type — this is not a generic write");
 });
 
+// ── Appointment mapping + intent ledger (M1E-C-C) ───────────────────────────
+test("insertAppointmentMapping fails closed and is hard-scoped to appointment rows", async () => {
+  const { insertAppointmentMapping } = await import("@/lib/booking-connections-server");
+  assert.equal((await insertAppointmentMapping("", { connectionId: "c", pydentAppointmentId: "a", externalId: "900" })).ok, false);
+  for (const bad of [{}, { connectionId: "c", pydentAppointmentId: "a" }, { connectionId: "c", externalId: "900" }, { pydentAppointmentId: "a", externalId: "900" }]) {
+    const r = await insertAppointmentMapping("ws-fict-A", bad);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /required/);
+  }
+  // Hard-scoped like the patient writer: entity_type "appointment" is a
+  // literal in the source and no caller-supplied entity type exists.
+  const src = await readFile(new URL("../src/lib/booking-connections-server.ts", import.meta.url), "utf8");
+  const block = src.slice(src.indexOf("export async function insertAppointmentMapping"), src.indexOf("export interface SyncIntent"));
+  assert.match(block, /entity_type: "appointment"/);
+  assert.equal(block.includes("entityType"), false, "no caller-supplied entity type — this is not a generic write");
+  // Insert-not-overwrite: a differing existing identity is refused, never replaced.
+  assert.match(block, /conflictingExternalId: existing\.externalId/);
+  assert.equal(/\.update\(|upsert/.test(block), false, "the appointment mapping writer must only insert");
+});
+
+test("intent ledger helpers fail closed without workspace/identity, and 'unknown' is a first-class status", async () => {
+  const { createSyncIntent, updateSyncIntent, latestAppointmentIntent, writeLegacyAppointmentExternalRef, getWorkspaceAppointmentRow, SYNC_RUN_STATUSES } =
+    await import("@/lib/booking-connections-server");
+  // The app vocabulary extends 0066's free-text status column — no migration
+  // needed, and the unknown-outcome state is explicit, never conflated with
+  // failed (failed = definitely did not happen; unknown = must reconcile).
+  assert.deepEqual([...SYNC_RUN_STATUSES], ["running", "succeeded", "failed", "partial", "unknown"]);
+  // 0066 really does leave status free text (no CHECK constraint to violate):
+  assert.match(sql, /status text not null default 'running'/);
+  assert.doesNotMatch(sql, /status text not null default 'running'[^,\n]*check/i);
+  // Fail-closed inputs:
+  assert.equal((await createSyncIntent("", { connectionId: "c", syncType: "appointment_push", detail: {} })).ok, false);
+  assert.equal((await createSyncIntent("ws-fict-A", { connectionId: "", syncType: "appointment_push", detail: {} })).ok, false);
+  assert.equal((await createSyncIntent("ws-fict-A", { connectionId: "c", syncType: "", detail: {} })).ok, false);
+  assert.equal((await updateSyncIntent("", "intent-fict-1", { status: "failed" })).ok, false);
+  assert.equal((await updateSyncIntent("ws-fict-A", "", { status: "failed" })).ok, false);
+  assert.equal(await latestAppointmentIntent("", "c", "appt-fict-1"), null);
+  assert.equal(await latestAppointmentIntent("ws-fict-A", "", "appt-fict-1"), null);
+  assert.equal(await latestAppointmentIntent("ws-fict-A", "c", ""), null);
+  assert.equal(await writeLegacyAppointmentExternalRef("", "appt-fict-1", "900"), false);
+  assert.equal(await writeLegacyAppointmentExternalRef("ws-fict-A", "", "900"), false);
+  assert.equal(await writeLegacyAppointmentExternalRef("ws-fict-A", "appt-fict-1", ""), false);
+  assert.equal(await getWorkspaceAppointmentRow("", "appt-fict-1"), null);
+  assert.equal(await getWorkspaceAppointmentRow("ws-fict-A", ""), null);
+});
+
 // ── Fail-closed workspace handling ──────────────────────────────────────────
 test("every helper fails closed without an explicit workspace id", async () => {
   assert.deepEqual(await listBookingConnections(""), []);

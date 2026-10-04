@@ -53,6 +53,7 @@ export const OPENDENTAL_CAPABILITIES: BookingConnectorCapabilities = {
   sync: false,
   findPatients: true,       // /find-patients (direct OD API mode; middleware mode reports unavailable at runtime)
   createPatient: true,      // /create-patient (same mode caveat)
+  findAppointments: true,   // /find-appointments reconciliation probe (same mode caveat)
 };
 
 // Injectable seams so tests run with fictional data and no network/database.
@@ -91,6 +92,9 @@ function mapGatewayError<T>(status: number, data: any): ConnectorResult<T> {
   }
   if (status === 400 && /turned off/i.test(detail)) {
     return connectorFail<T>("unavailable", "The Open Dental connection is disabled in this workspace's settings.");
+  }
+  if (status === 409) {
+    return connectorFail<T>("slot_unavailable", "The requested slot is no longer available in Open Dental.");
   }
   if (status === 502) {
     return connectorFail<T>("unavailable", `Open Dental could not be reached: ${scrubUpstreamDetail(detail) || "network failure"}.`);
@@ -131,16 +135,23 @@ export function odSlotsToAvailability(slots: unknown, req: ConnectorAvailability
     }));
 }
 
-// Generic create input → the EXISTING gateway body shape (unchanged since
-// booking-server.ts uses the same one). durationMin is NOT transmitted — the
-// current gateway/OD path has no duration parameter (OD derives the slot).
+// Generic create input → the gateway body. Since M1E-C-C the connector path
+// REQUIRES the established external patient identity: it is transmitted as
+// patientExternalId (direct OD API branch — skips find-or-create) AND patNum
+// (the clinic middleware's existing explicit-patient field), so neither mode
+// ever re-resolves the patient from demographics. Service identity is the
+// MAPPED external id when provided, never free text. durationMin is still
+// not transmitted (no gateway parameter — OD derives the slot).
 export function createInputToOdBody(input: CreateConnectorAppointmentInput): Record<string, unknown> {
+  const ext = String(input.patient?.externalId ?? "").trim();
   return {
     name: String(input.patient?.name ?? "").trim(),
     phone: String(input.patient?.phone ?? "").trim(),
     email: String(input.patient?.email ?? "").trim(),
+    patientExternalId: ext,
+    patNum: ext,
     doctorId: String(input.provider?.externalId ?? ""),
-    serviceId: String(input.service ?? "").trim(),
+    serviceId: String(input.serviceExternalId ?? "").trim() || String(input.service ?? "").trim(),
     datetime: `${input.date}T${input.time}`,
     consent: true,
   };
@@ -230,6 +241,27 @@ export function createOpenDentalConnector(deps: OpenDentalConnectorDeps = REAL_D
       return mapGatewayError(r.status, r.data);
     },
 
+    async findAppointments(ctx, req): Promise<ConnectorResult<{ externalId: string; date: string; time: string }[]>> {
+      if (badCtx(ctx)) return connectorFail("invalid_request", CTX_ERROR);
+      const pat = String(req?.patient?.externalId ?? "").trim();
+      const date = String(req?.date ?? "").slice(0, 10);
+      if (!pat || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return connectorFail("invalid_request", "A mapped external patient identity and a date (YYYY-MM-DD) are required for the appointment probe.");
+      }
+      const r = await deps.forward(ctx.workspaceId, "/find-appointments", { method: "POST", body: { patientExternalId: pat, date } });
+      /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+      const rows = (r.data as any)?.appointments;
+      if (r.status === 200 && Array.isArray(rows)) {
+        // Every row, untouched — adjudication belongs to the caller.
+        /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+        return { ok: true, data: rows.map((a: any) => ({ externalId: String(a?.id ?? ""), date: String(a?.dateTime ?? "").slice(0, 10), time: String(a?.dateTime ?? "").slice(11, 16) })).filter((a: { externalId: string }) => a.externalId) };
+      }
+      if (r.status === 404) {
+        return connectorFail("unsupported_capability", "The configured Open Dental endpoint does not support appointment lookup (clinic middleware mode) — automatic reconciliation is unavailable.");
+      }
+      return mapGatewayError(r.status, r.data);
+    },
+
     getSchedules: () => unsupported("schedules"),
     getOperatories: () => unsupported("operatories"),
     getAppointments: () => unsupported("reading appointments"),
@@ -264,8 +296,10 @@ export function createOpenDentalConnector(deps: OpenDentalConnectorDeps = REAL_D
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
         return connectorFail("invalid_request", "A date (YYYY-MM-DD) and time (HH:MM) are required.");
       }
-      if (!String(input.patient?.name ?? "").trim() && !String(input.patient?.phone ?? "").trim()) {
-        return connectorFail("invalid_request", "The patient needs at least a name or phone so Open Dental can find or create the record.");
+      // M1E-C-C: the connector create path operates ONLY on an established
+      // patient identity — it never finds, creates, or guesses a patient.
+      if (!String(input.patient?.externalId ?? "").trim()) {
+        return connectorFail("invalid_request", "Appointment creation requires the patient's established external identity (patient.externalId) — establish the patient mapping first.");
       }
       if (input.provider && !String(input.provider.externalId ?? "").trim() && String(input.provider.pydentId ?? "").trim()) {
         return connectorFail("provider_not_found", "This provider has no Open Dental identity mapped yet.");

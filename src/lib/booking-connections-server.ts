@@ -33,7 +33,11 @@ export type KnownMappingEntityType = (typeof MAPPING_ENTITY_TYPES)[number];
 export type MappingEntityType = KnownMappingEntityType | (string & {});
 
 export const SYNC_RUN_TYPES = ["initial_import", "incremental", "reconciliation", "provider_import", "appointment_push", "appointment_pull"] as const;
-export const SYNC_RUN_STATUSES = ["running", "succeeded", "failed", "partial"] as const;
+// "unknown" (M1E-C-C): an external write whose outcome is indeterminate — a
+// timeout after dispatch. The 0066 schema stores status as free text with NO
+// CHECK constraint, deliberately (vocabularies are app-layer), so this is an
+// app-vocabulary extension, not a schema change.
+export const SYNC_RUN_STATUSES = ["running", "succeeded", "failed", "partial", "unknown"] as const;
 
 // ── Types (rows as the app sees them) ───────────────────────────────────────
 
@@ -305,6 +309,171 @@ export async function insertPatientMapping(
     return { ok: true, status: "created", message: "Patient mapping established." };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Could not persist the patient mapping (is migration 0066 applied?)." };
+  }
+}
+
+// ── Appointment mapping establishment (M1E-C-C) ─────────────────────────────
+// Clone of insertPatientMapping for appointment identity: the ONE sanctioned
+// write path for entity_type='appointment' rows. Insert-not-overwrite —
+// identical existing mapping is idempotent, a different external identity is
+// refused, never replaced. external_mappings is AUTHORITATIVE for connector
+// appointment identity; the appointments table's legacy external-id column
+// is dual-written separately, strictly for compatibility.
+export async function insertAppointmentMapping(
+  workspaceId: string,
+  input: { connectionId: string; pydentAppointmentId: string; externalId: string; metadata?: Record<string, unknown> }
+): Promise<{ ok: boolean; status?: "created" | "existing"; conflictingExternalId?: string; message: string }> {
+  if (!workspaceId) return { ok: false, message: "A workspace id is required." };
+  const connectionId = String(input?.connectionId ?? "").trim();
+  const appointmentId = String(input?.pydentAppointmentId ?? "").trim();
+  const externalId = String(input?.externalId ?? "").trim();
+  if (!connectionId || !appointmentId || !externalId) {
+    return { ok: false, message: "connectionId, pydentAppointmentId and externalId are all required." };
+  }
+  const conn = await getBookingConnection(workspaceId, connectionId);
+  if (!conn) return { ok: false, message: "Booking connection not found." };
+  try {
+    const existing = await getExternalMapping(workspaceId, connectionId, "appointment", appointmentId);
+    if (existing) {
+      if (existing.externalId === externalId) return { ok: true, status: "existing", message: "Appointment mapping already established." };
+      return { ok: false, conflictingExternalId: existing.externalId, message: "This appointment already has a DIFFERENT external identity mapped for this connection — not overwritten." };
+    }
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("external_mappings").insert({
+      workspace_id: workspaceId,
+      connection_id: connectionId,
+      entity_type: "appointment",
+      pydent_entity_id: appointmentId,
+      external_id: externalId,
+      sync_status: "established",
+      metadata: input?.metadata && typeof input.metadata === "object" ? input.metadata : {},
+      last_synced_at: now,
+      updated_at: now,
+    });
+    if (error) return { ok: false, message: error.message };
+    return { ok: true, status: "created", message: "Appointment mapping established." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not persist the appointment mapping (is migration 0066 applied?)." };
+  }
+}
+
+// ── Create-intent ledger (M1E-C-C) — rows in booking_sync_runs ──────────────
+// Non-sensitive correlation only: Pydent ids, the external patient id, the
+// requested date/time, and (once known) the created external appointment id.
+// Never patient names/phones/emails, never clinical data.
+
+export interface SyncIntent {
+  id: string;
+  status: string;
+  detail: Record<string, unknown>;
+}
+
+export async function createSyncIntent(
+  workspaceId: string,
+  input: { connectionId: string; syncType: string; detail: Record<string, unknown> }
+): Promise<{ ok: boolean; id?: string; message: string }> {
+  if (!workspaceId) return { ok: false, message: "A workspace id is required." };
+  const connectionId = String(input?.connectionId ?? "").trim();
+  const syncType = String(input?.syncType ?? "").trim();
+  if (!connectionId || !syncType) return { ok: false, message: "connectionId and syncType are required." };
+  try {
+    const { data, error } = await supabase
+      .from("booking_sync_runs")
+      .insert({ workspace_id: workspaceId, connection_id: connectionId, sync_type: syncType, status: "running", detail: input?.detail ?? {} })
+      .select("id")
+      .single();
+    if (error || !data) return { ok: false, message: error?.message ?? "Could not record the intent." };
+    return { ok: true, id: data.id, message: "Intent recorded." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not record the intent (is migration 0066 applied?)." };
+  }
+}
+
+export async function updateSyncIntent(
+  workspaceId: string,
+  intentId: string,
+  patch: { status?: string; detail?: Record<string, unknown>; finished?: boolean }
+): Promise<{ ok: boolean; message: string }> {
+  if (!workspaceId || !intentId) return { ok: false, message: "A workspace id and intent id are required." };
+  const row: Record<string, unknown> = {};
+  if (patch.status !== undefined) row.status = String(patch.status);
+  if (patch.detail !== undefined) row.detail = patch.detail;
+  if (patch.finished) row.finished_at = new Date().toISOString();
+  try {
+    const { data, error } = await supabase.from("booking_sync_runs").update(row).eq("workspace_id", workspaceId).eq("id", intentId).select("id");
+    if (error) return { ok: false, message: error.message };
+    if (!data?.length) return { ok: false, message: "Intent not found." };
+    return { ok: true, message: "Intent updated." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not update the intent." };
+  }
+}
+
+// Latest appointment_push intent for one Pydent appointment on one connection.
+export async function latestAppointmentIntent(
+  workspaceId: string,
+  connectionId: string,
+  pydentAppointmentId: string
+): Promise<SyncIntent | null> {
+  if (!workspaceId || !connectionId || !pydentAppointmentId) return null;
+  try {
+    const { data } = await supabase
+      .from("booking_sync_runs")
+      .select("id, status, detail")
+      .eq("workspace_id", workspaceId)
+      .eq("connection_id", connectionId)
+      .eq("sync_type", "appointment_push")
+      .eq("detail->>pydentAppointmentId", pydentAppointmentId)
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!data) return null;
+    return { id: data.id, status: data.status ?? "", detail: (data.detail && typeof data.detail === "object" ? data.detail : {}) as Record<string, unknown> };
+  } catch {
+    return null;
+  }
+}
+
+// ── Legacy compatibility (M1E-C-C) ──────────────────────────────────────────
+// Dual-write of the appointments table's legacy external-id column so legacy
+// readers (findAppointmentRef & co.) keep seeing connector-created identity.
+// STRICTLY COMPATIBILITY: external_mappings is authoritative; this column
+// write is best-effort and its failure never un-establishes an appointment.
+export async function writeLegacyAppointmentExternalRef(
+  workspaceId: string,
+  pydentAppointmentId: string,
+  externalId: string
+): Promise<boolean> {
+  if (!workspaceId || !pydentAppointmentId || !externalId) return false;
+  try {
+    const { error } = await supabase
+      .from("appointments")
+      .update({ external_id: externalId })
+      .eq("workspace_id", workspaceId)
+      .eq("id", pydentAppointmentId);
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+// Workspace-owned appointment row check for the connector create path: the
+// Pydent row must already exist (Pydent-first write stays with the caller).
+export async function getWorkspaceAppointmentRow(
+  workspaceId: string,
+  pydentAppointmentId: string
+): Promise<{ id: string; date: string; time: string } | null> {
+  if (!workspaceId || !pydentAppointmentId) return null;
+  try {
+    const { data } = await supabase
+      .from("appointments")
+      .select("id, date, time")
+      .eq("workspace_id", workspaceId)
+      .eq("id", pydentAppointmentId)
+      .maybeSingle();
+    return data ? { id: data.id, date: String(data.date ?? ""), time: String(data.time ?? "").slice(0, 5) } : null;
+  } catch {
+    return null;
   }
 }
 

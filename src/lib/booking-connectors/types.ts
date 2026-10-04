@@ -44,6 +44,7 @@ export interface BookingConnectorCapabilities {
   sync: boolean;               // background import/reconciliation
   findPatients: boolean;       // search external patients by contact evidence (M1E-C-B)
   createPatient: boolean;      // create an external patient record (M1E-C-B)
+  findAppointments: boolean;   // reconciliation probe: one patient's appointments on one day (M1E-C-C)
 }
 
 export const NO_CAPABILITIES: BookingConnectorCapabilities = {
@@ -58,6 +59,7 @@ export const NO_CAPABILITIES: BookingConnectorCapabilities = {
   sync: false,
   findPatients: false,
   createPatient: false,
+  findAppointments: false,
 };
 
 // ── Error model ─────────────────────────────────────────────────────────────
@@ -190,11 +192,28 @@ export interface CreateConnectorAppointmentInput {
   patient: ConnectorPatientRef;
   provider?: ConnectorEntityRef | null;
   operatory?: ConnectorEntityRef | null;
-  service: string;
+  service: string;                      // display/description text
+  // The MAPPED external service/procedure identity (external_mappings,
+  // entity_type='service'). When present, it — never the free-text name —
+  // is what crosses to the PMS as service identity (M1E-C-C).
+  serviceExternalId?: string | null;
   date: string;
   time: string;
   durationMin: number;
   note?: string;
+}
+
+// Reconciliation probe request/row (M1E-C-C): the appointments of ONE
+// already-mapped external patient on ONE day. Used only to adjudicate an
+// indeterminate external create — never as a general read model.
+export interface ConnectorAppointmentProbeRequest {
+  patient: ConnectorEntityRef;          // externalId required by implementations
+  date: string;                         // "YYYY-MM-DD"
+}
+export interface ConnectorAppointmentProbeRow {
+  externalId: string;
+  date: string;                         // "YYYY-MM-DD"
+  time: string;                         // "HH:MM"
 }
 
 export interface UpdateConnectorAppointmentInput {
@@ -259,6 +278,9 @@ export interface BookingConnector {
    *  Identity establishment — persisting the mapping — is the caller's job
    *  and must complete before the patient counts as established. */
   createPatient(ctx: BookingConnectorContext, input: ConnectorPatientRef): Promise<ConnectorResult<{ externalId: string }>>;
+  /** Reconciliation probe — ALL of one mapped patient's appointments on one
+   *  day; the caller adjudicates, an implementation never pre-selects. */
+  findAppointments(ctx: BookingConnectorContext, req: ConnectorAppointmentProbeRequest): Promise<ConnectorResult<ConnectorAppointmentProbeRow[]>>;
 
   createAppointment(ctx: BookingConnectorContext, input: CreateConnectorAppointmentInput): Promise<ConnectorResult<ConnectorAppointment>>;
   updateAppointment(ctx: BookingConnectorContext, input: UpdateConnectorAppointmentInput): Promise<ConnectorResult<ConnectorAppointment>>;

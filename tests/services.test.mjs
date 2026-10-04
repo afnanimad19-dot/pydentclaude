@@ -133,11 +133,12 @@ test("no production code imports services-server yet; M1D-B create remains locke
   // appointments.procedure untouched: the module never references the
   // appointments table at all.
   assert.equal(await_src.includes("appointments"), false);
-  // The fail-closed create is NOT unlocked: the orchestration service still
-  // returns config_missing. (Since M1E-B it DOES import services-server —
-  // that import is the sanctioned service-resolution path, covered in
-  // tests/booking-connector-service.test.mjs.)
+  // Since M1E-C-C create is unlocked, but it uses the sanctioned
+  // services-server resolution path and NEVER implicitly establishes a
+  // patient (resolution only — establishment stays a separate explicit op):
   const orchestration = await readFile(new URL("../src/lib/booking-connectors/service.ts", import.meta.url), "utf8");
-  assert.match(orchestration, /connectorFail\("config_missing", CREATE_UNAVAILABLE_REASON\)/);
   assert.match(orchestration, /from "@\/lib\/services-server"/);
+  const createBody = orchestration.slice(orchestration.indexOf("export async function connectorCreateAppointment"), orchestration.indexOf("export async function reconcileAppointmentCreate"));
+  assert.equal(/establishPatient/.test(createBody), false, "create must never call patient establishment implicitly");
+  assert.match(createBody, /resolvePatientForConnection/);
 });

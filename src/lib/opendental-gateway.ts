@@ -190,6 +190,38 @@ async function odApiCreateAppt(cfg: OdGatewayConfig, body: any): Promise<{ statu
   const dt = String(body?.datetime ?? "");
   const date = dt.slice(0, 10);
   if (!date) return { status: 400, data: { error: "No date/time provided." } };
+
+  // M1E-C-C explicit mapped-patient branch: when the caller supplies the
+  // already-established external patient identity, find-or-create is SKIPPED
+  // entirely, and slot handling is strict — the requested time must match an
+  // open slot (whose operatory is used); there is no first-slot-of-day and
+  // no Op:1 fallback on this branch. Legacy callers never send the field, so
+  // the legacy branch below is byte-identical.
+  const explicitPat = String(body?.patientExternalId ?? "").replace(/\D/g, "");
+  if (explicitPat) {
+    const want = odDateTime(dt);
+    const slotsR = await odApiFetch(cfg, "GET", `/appointments/Slots?date=${date}`);
+    const list: any[] = Array.isArray(slotsR.data) ? slotsR.data : [];
+    const hit = list.find((s) => String(s.DateTimeStart ?? "").startsWith(want.slice(0, 16)));
+    if (!hit || hit.OpNum == null) {
+      return { status: 409, data: { error: "The requested slot is no longer available." } };
+    }
+    const payload: Record<string, unknown> = {
+      PatNum: Number(explicitPat),
+      AptDateTime: want,
+      Op: hit.OpNum,
+      Note: `Booked via Pydent${body?.serviceId ? ` — ${body.serviceId}` : ""}`,
+    };
+    const provArg = String(body?.doctorId ?? "").replace(/\D/g, "");
+    if (provArg) payload.ProvNum = Number(provArg);
+    else if (hit?.ProvNum) payload.ProvNum = hit.ProvNum;
+    const r = await odApiFetch(cfg, "POST", "/appointments", payload);
+    const apt = (r.data as any)?.AptNum;
+    if (r.status >= 200 && r.status < 300 && apt) return { status: 200, data: { appointmentId: String(apt) } };
+    const detail = typeof r.data === "string" ? r.data : (r.data as any)?.error ?? (r.data as any)?.message ?? "";
+    return { status: r.status || 502, data: { error: `Open Dental rejected the appointment (HTTP ${r.status})${detail ? `: ${String(detail).slice(0, 200)}` : ""}.` } };
+  }
+
   const patNum = await odApiFindOrCreatePatient(cfg, String(body?.name ?? ""), String(body?.phone ?? ""), String(body?.email ?? ""));
   if (!patNum) return { status: 502, data: { error: "Open Dental could not find or create the patient record." } };
 
@@ -258,6 +290,24 @@ async function odApiCreatePatient(cfg: OdGatewayConfig, body: any): Promise<{ st
   return { status: r.status || 502, data: { error: `Open Dental could not create the patient (HTTP ${r.status}).` } };
 }
 
+// M1E-C-C reconciliation probe (direct OD API mode only): the existing
+// appointments of ONE known external patient on ONE day, as neutral rows —
+// used to adjudicate an indeterminate create. Returns every row; the caller
+// decides, never this function.
+async function odApiFindAppointments(cfg: OdGatewayConfig, body: any): Promise<{ status: number; data: unknown }> {
+  const pat = String(body?.patientExternalId ?? "").replace(/\D/g, "");
+  const date = String(body?.date ?? "").slice(0, 10);
+  if (!pat || !date) return { status: 400, data: { error: "patientExternalId and date are required." } };
+  const r = await odApiFetch(cfg, "GET", `/appointments?PatNum=${encodeURIComponent(pat)}&dateStart=${date}&dateEnd=${date}`);
+  if (r.status !== 200 || !Array.isArray(r.data)) {
+    return { status: r.status || 502, data: { error: `Open Dental appointment lookup returned HTTP ${r.status}.` } };
+  }
+  const appointments = (r.data as any[])
+    .filter((a) => a?.AptNum)
+    .map((a) => ({ id: String(a.AptNum), dateTime: String(a.AptDateTime ?? "") }));
+  return { status: 200, data: { appointments } };
+}
+
 async function odApiForward(
   cfg: OdGatewayConfig,
   path: string,
@@ -274,6 +324,8 @@ async function odApiForward(
       return odApiCreateAppt(cfg, body);
     case "/find-patients":
       return odApiFindPatients(cfg, body);
+    case "/find-appointments":
+      return odApiFindAppointments(cfg, body);
     case "/create-patient":
       return odApiCreatePatient(cfg, body);
     case "/reschedule-appointment": {

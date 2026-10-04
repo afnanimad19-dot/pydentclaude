@@ -57,7 +57,7 @@ test("capability matrix matches reality: false capabilities return unsupported_c
   assert.deepEqual(OPENDENTAL_CAPABILITIES, {
     providers: true, schedules: false, operatories: false, appointments: false,
     availability: true, createAppointment: true, updateAppointment: true, cancelAppointment: true, sync: false,
-    findPatients: true, createPatient: true,
+    findPatients: true, createPatient: true, findAppointments: true,
   });
   const c = createOpenDentalConnector(fakeDeps([]));
   for (const out of await Promise.all([
@@ -119,25 +119,66 @@ test("gateway slots translate to generic availability slots", async () => {
   assert.equal(noMap.error.code, "provider_not_found");
 });
 
-// ── 9/10. Create translation ────────────────────────────────────────────────
-test("generic create input maps onto the existing gateway body and returns externalId", async () => {
+// ── 9/10. Create translation (M1E-C-C: established patient identity only) ──
+test("create transmits the ESTABLISHED patient identity and mapped service id; missing externalId fails", async () => {
   assert.deepEqual(
-    createInputToOdBody({ patient: { name: "Fictional Patient", phone: "+971500000001", email: "f@example.test" }, provider: { externalId: "12" }, service: "Cleaning", date: "2099-01-10", time: "10:00", durationMin: 30 }),
-    { name: "Fictional Patient", phone: "+971500000001", email: "f@example.test", doctorId: "12", serviceId: "Cleaning", datetime: "2099-01-10T10:00", consent: true }
+    createInputToOdBody({ patient: { externalId: "301", name: "Fictional Patient", phone: "+971500000001", email: "f@example.test" }, provider: { externalId: "12" }, service: "Cleaning", serviceExternalId: "D1110-ext", date: "2099-01-10", time: "10:00", durationMin: 30 }),
+    { name: "Fictional Patient", phone: "+971500000001", email: "f@example.test", patientExternalId: "301", patNum: "301", doctorId: "12", serviceId: "D1110-ext", datetime: "2099-01-10T10:00", consent: true }
   );
   const deps = fakeDeps([{ status: 200, data: { appointmentId: 987 } }]);
   const c = createOpenDentalConnector(deps);
-  const r = await c.createAppointment(CTX, { patient: { name: "Fictional Patient", phone: "+971500000001" }, provider: { externalId: "12" }, service: "Cleaning", date: "2099-01-10", time: "10:00", durationMin: 30 });
+  const r = await c.createAppointment(CTX, { patient: { externalId: "301", name: "Fictional Patient" }, provider: { externalId: "12" }, service: "", serviceExternalId: "D1110-ext", date: "2099-01-10", time: "10:00", durationMin: 30 });
   assert.equal(r.ok, true);
   assert.equal(r.data.externalId, "987");
   assert.equal(r.data.status, "Scheduled");
   // The gateway has no duration parameter, so the external appointment's
   // duration is unknown — the result must say null, never echo the request.
   assert.equal(r.data.durationMin, null);
-  assert.equal(deps.calls[0].path, "/create-appointment");
-  const noPatient = await c.createAppointment(CTX, { patient: {}, service: "Cleaning", date: "2099-01-10", time: "10:00", durationMin: 30 });
-  assert.equal(noPatient.ok, false);
-  assert.equal(noPatient.error.code, "invalid_request");
+  assert.equal(deps.calls[0].body.patientExternalId, "301");
+  // Without an established external patient identity, create refuses — the
+  // connector path never finds-or-creates a patient:
+  const noExt = await c.createAppointment(CTX, { patient: { name: "Fictional", phone: "+971500000001" }, service: "Cleaning", date: "2099-01-10", time: "10:00", durationMin: 30 });
+  assert.equal(noExt.ok, false);
+  assert.equal(noExt.error.code, "invalid_request");
+  assert.match(noExt.error.message, /establish/i);
+  assert.deepEqual(fakeDeps([]).calls, []);
+  // A 409 from the strict slot branch maps to slot_unavailable:
+  const stale = createOpenDentalConnector(fakeDeps([{ status: 409, data: { error: "The requested slot is no longer available." } }]));
+  const s = await stale.createAppointment(CTX, { patient: { externalId: "301" }, service: "", serviceExternalId: "D1110-ext", date: "2099-01-10", time: "10:00", durationMin: 30 });
+  assert.equal(s.error.code, "slot_unavailable");
+});
+
+test("gateway source: explicit-patient branch skips find-or-create, no first-slot/Op:1 fallback; legacy branch intact", async () => {
+  const gw = await readFile(new URL("../src/lib/opendental-gateway.ts", import.meta.url), "utf8");
+  const explicitStart = gw.indexOf("const explicitPat");
+  const legacyStart = gw.indexOf("const patNum = await odApiFindOrCreatePatient");
+  assert.ok(explicitStart > -1 && legacyStart > explicitStart, "explicit branch precedes the untouched legacy branch");
+  const explicitBlock = gw.slice(explicitStart, legacyStart);
+  assert.equal(explicitBlock.includes("odApiFindOrCreatePatient"), false, "explicit identity must skip find-or-create entirely");
+  assert.equal(explicitBlock.includes("?? list[0]"), false, "no first-slot fallback on the connector branch");
+  assert.equal(explicitBlock.includes("?? 1"), false, "no Op:1 fallback on the connector branch");
+  assert.match(explicitBlock, /status: 409/);
+  // Legacy branch keeps its historical behavior, verbatim markers:
+  const legacyBlock = gw.slice(legacyStart);
+  assert.match(legacyBlock, /\?\? list\[0\]/);
+  assert.match(legacyBlock, /hit\?\.OpNum \?\? 1/);
+});
+
+test("findAppointments probe returns every row with opaque ids; middleware mode honestly unsupported", async () => {
+  const deps = fakeDeps([{ status: 200, data: { appointments: [{ id: 501, dateTime: "2099-01-10 10:00:00" }, { id: 502, dateTime: "2099-01-10 15:00:00" }] } }]);
+  const c = createOpenDentalConnector(deps);
+  const r = await c.findAppointments(CTX, { patient: { externalId: "301" }, date: "2099-01-10" });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.data, [
+    { externalId: "501", date: "2099-01-10", time: "10:00" },
+    { externalId: "502", date: "2099-01-10", time: "15:00" },
+  ]);
+  assert.deepEqual(deps.calls[0].body, { patientExternalId: "301", date: "2099-01-10" });
+  assert.equal(JSON.stringify(r.data).includes("AptNum"), false);
+  const noPat = await c.findAppointments(CTX, { patient: {}, date: "2099-01-10" });
+  assert.equal(noPat.error.code, "invalid_request");
+  const mw = createOpenDentalConnector(fakeDeps([{ status: 404, data: {} }]));
+  assert.equal((await mw.findAppointments(CTX, { patient: { externalId: "301" }, date: "2099-01-10" })).error.code, "unsupported_capability");
 });
 
 // ── 11. Update/reschedule translation ───────────────────────────────────────

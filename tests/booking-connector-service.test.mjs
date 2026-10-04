@@ -12,7 +12,7 @@ const {
   connectorAvailability, connectorCreateAppointment, connectorReschedule, connectorCancel,
   resolveProviderExternalId, resolveServiceForConnection,
   resolvePatientForConnection, establishPatientMapping, establishPatientByCreation,
-  CREATE_UNAVAILABLE_REASON,
+  reconcileAppointmentCreate,
 } = await import("@/lib/booking-connectors/service");
 const { getPrimaryBookingConnector } = await import("@/lib/booking-connectors/registry");
 const { NO_CAPABILITIES } = await import("@/lib/booking-connectors/types");
@@ -45,6 +45,7 @@ function fakeConnector(caps, results = {}) {
       getAvailability: op("getAvailability", { ok: true, data: [{ date: "2099-01-10", time: "09:00", durationMin: null, provider: null, operatory: null }] }),
       findPatients: op("findPatients", { ok: true, data: [] }),
       createPatient: op("createPatient", { ok: true, data: { externalId: "ext-pat-new" } }),
+      findAppointments: op("findAppointments", { ok: true, data: [] }),
       createAppointment: op("createAppointment", { ok: true, data: {} }),
       updateAppointment: op("updateAppointment", { ok: true, data: { externalId: "987", date: "2099-01-11", time: "11:00", durationMin: null } }),
       cancelAppointment: op("cancelAppointment", { ok: true, data: { cancelled: true } }),
@@ -63,12 +64,26 @@ function fakeDeps({
   mappings = {}, services = {}, serviceMappings = {},
   patients = {},          // { "pat-fict-1": { workspaceId?, name, phone, email } }
   persistResult = { ok: true, status: "created", message: "Patient mapping established." },
+  appointments = {},      // { "appt-fict-9": { date, time } }
+  apptPersistResult = { ok: true, status: "created", message: "Appointment mapping established." },
+  priorIntent = null,     // { id, status, detail } returned by latestIntent
+  intentCreateResult = { ok: true, id: "intent-fict-1", message: "Intent recorded." },
 } = {}) {
   const persistCalls = [];
+  const apptPersistCalls = [];
+  const intentCreates = [];
+  const intentUpdates = [];
+  const legacyWrites = [];
   return {
     fake,
-    persistCalls,
+    persistCalls, apptPersistCalls, intentCreates, intentUpdates, legacyWrites,
     deps: {
+      getAppointment: async (ws, id) => (appointments[id] && ws === "ws-fict-A" ? { id, date: appointments[id].date, time: appointments[id].time } : null),
+      persistApptMapping: async (ws, input) => { apptPersistCalls.push({ ws, input }); return apptPersistResult; },
+      createIntent: async (ws, input) => { intentCreates.push({ ws, input }); return intentCreateResult; },
+      updateIntent: async (ws, id, patch) => { intentUpdates.push({ ws, id, patch }); return { ok: true, message: "updated" }; },
+      latestIntent: async () => priorIntent,
+      writeLegacyRef: async (ws, apptId, extId) => { legacyWrites.push({ ws, apptId, extId }); return true; },
       getPatient: async (ws, id) => {
         const p = patients[id];
         return p && ws === (p.workspaceId ?? "ws-fict-A")
@@ -154,25 +169,40 @@ test("provider NAMES are never used as identity and there is no first-provider f
 });
 
 // ── 10. Service identity never falls back to a first service ────────────────
-// Capability vs readiness: the connector DOES support creation (Open Dental
-// advertises createAppointment: true), so the failure is config_missing —
-// missing Pydent-side identity configuration — never unsupported_capability.
-test("create is a config_missing readiness failure: no guessing, connector never invoked", async () => {
-  const { deps, fake } = fakeDeps(); // fake declares createAppointment: true
-  const r = await connectorCreateAppointment(WS, { anything: true }, deps);
-  assert.equal(r.ok, false);
+// Since M1E-C-C create is UNLOCKED but strictly precondition-gated: every
+// unresolved identity is a non-invoking failure, and a connector that
+// genuinely lacks the capability fails before anything else.
+test("create preconditions: unresolved identities fail closed without any connector call", async () => {
+  // Valid row + patient mapping, but the service is unmapped → config_missing:
+  const base = {
+    appointments: { "appt-fict-9": { date: "2099-01-10", time: "10:00" } },
+    patients: PAT,
+    mappings: { "patient:pat-fict-1": "ext-pat-77" },
+    services: { "svc-fict-1": { defaultDurationMin: 45 } },
+  };
+  const REQ = { pydentAppointmentId: "appt-fict-9", pydentPatientId: "pat-fict-1", pydentServiceId: "svc-fict-1", date: "2099-01-10", time: "10:00", durationMin: 30 };
+  const svcUnmapped = fakeDeps(base);
+  const r = await connectorCreateAppointment(WS, REQ, svcUnmapped.deps);
   assert.equal(r.error.code, "config_missing");
-  assert.notEqual(r.error.code, "unsupported_capability");
-  assert.match(r.error.message, /patient-identity policy/); // M1E-B: service identity resolves; patient policy is the remaining blocker
-  assert.equal(r.error.message, CREATE_UNAVAILABLE_REASON.slice(0, r.error.message.length));
-  assert.deepEqual(fake.calls, [], "createAppointment must never reach the connector in M1D-B");
-  // The REAL Open Dental adapter still advertises the capability:
-  const { OPENDENTAL_CAPABILITIES } = await import("@/lib/booking-connectors/opendental");
-  assert.equal(OPENDENTAL_CAPABILITIES.createAppointment, true);
-  // A connector that genuinely lacks the capability still gets the accurate
-  // capability error, BEFORE the readiness check:
+  assert.deepEqual(svcUnmapped.fake.calls, []);
+  assert.deepEqual(svcUnmapped.intentCreates, [], "no intent before identities resolve");
+  // Unmapped patient → config_missing, non-invoking:
+  const patUnmapped = fakeDeps({ ...base, mappings: {}, serviceMappings: { "conn-fict-1:svc-fict-1": "OD-ext-77" } });
+  assert.equal((await connectorCreateAppointment(WS, REQ, patUnmapped.deps)).error.code, "config_missing");
+  assert.deepEqual(patUnmapped.fake.calls, []);
+  // Supplied provider that doesn't map is NEVER silently discarded:
+  const provUnmapped = fakeDeps({ ...base, mappings: { "patient:pat-fict-1": "ext-pat-77" }, serviceMappings: { "conn-fict-1:svc-fict-1": "OD-ext-77" } });
+  const p = await connectorCreateAppointment(WS, { ...REQ, pydentProviderId: "prov-fict-unmapped" }, provUnmapped.deps);
+  assert.equal(p.error.code, "provider_not_found");
+  assert.deepEqual(provUnmapped.fake.calls, []);
+  // Missing Pydent row / slot disagreement:
+  const noRow = fakeDeps({ ...base, appointments: {} });
+  assert.equal((await connectorCreateAppointment(WS, REQ, noRow.deps)).error.code, "appointment_not_found");
+  const drift = fakeDeps(base);
+  assert.equal((await connectorCreateAppointment(WS, { ...REQ, time: "11:00" }, drift.deps)).error.code, "invalid_request");
+  // A connector that genuinely lacks the capability fails first:
   const noCap = fakeDeps({ fake: fakeConnector({}) });
-  const capErr = await connectorCreateAppointment(WS, {}, noCap.deps);
+  const capErr = await connectorCreateAppointment(WS, REQ, noCap.deps);
   assert.equal(capErr.error.code, "unsupported_capability");
   assert.deepEqual(noCap.fake.calls, []);
   // And availability never forwards a free-text service filter at all:
@@ -325,18 +355,166 @@ test("service resolution: mapped service resolves for the right connection; name
   assert.deepEqual(foreign.error, unknown.error, "wrong-workspace must be indistinguishable from unknown");
 });
 
-test("create stays locked even when provider AND service identities fully resolve", async () => {
-  const { deps, fake } = fakeDeps({
-    mappings: { "provider:prov-fict-1": "12" },
-    services: { "svc-fict-1": { defaultDurationMin: 45 } },
-    serviceMappings: { "conn-fict-1:svc-fict-1": "OD-ext-77" },
+// (M1E-C-C) The former lock test becomes the HAPPY PATH: with every identity
+// resolved, the saga runs in the mandated order.
+const CREATE_FIXTURES = {
+  appointments: { "appt-fict-9": { date: "2099-01-10", time: "10:00" } },
+  mappings: { "patient:pat-fict-1": "ext-pat-77", "provider:prov-fict-1": "12" },
+  services: { "svc-fict-1": { defaultDurationMin: 45 } },
+  serviceMappings: { "conn-fict-1:svc-fict-1": "OD-ext-77" },
+};
+const CREATE_REQ = { pydentAppointmentId: "appt-fict-9", pydentPatientId: "pat-fict-1", pydentServiceId: "svc-fict-1", pydentProviderId: "prov-fict-1", date: "2099-01-10", time: "10:00", durationMin: 30 };
+
+function happyCreateDeps(extra = {}) {
+  return fakeDeps({
+    ...CREATE_FIXTURES,
+    patients: PAT,
+    fake: fakeConnector(
+      { availability: true, createAppointment: true },
+      {
+        getAvailability: { ok: true, data: [{ date: "2099-01-10", time: "10:00", durationMin: null, provider: null, operatory: null }] },
+        createAppointment: { ok: true, data: { pydentAppointmentId: null, externalId: "ext-appt-500", date: "2099-01-10", time: "10:00", durationMin: null, provider: {}, operatory: null, service: "", status: "Scheduled", patient: null } },
+      }
+    ),
+    ...extra,
   });
-  const ready = await resolveServiceForConnection("ws-fict-A", "conn-fict-1", "svc-fict-1", deps);
-  assert.equal(ready.ok, true); // prerequisites resolve…
-  const r = await connectorCreateAppointment("ws-fict-A", { serviceId: "svc-fict-1" }, deps);
-  assert.equal(r.ok, false);    // …and create still refuses
-  assert.equal(r.error.code, "config_missing");
-  assert.deepEqual(fake.calls, [], "connector.createAppointment must never be invoked by M1E-B");
+}
+
+test("unlocked create happy path follows the mandated saga order", async () => {
+  const d = happyCreateDeps();
+  const r = await connectorCreateAppointment(WS, CREATE_REQ, d.deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.data.externalId, "ext-appt-500");
+  // Order: availability re-check → intent → EXTERNAL WRITE; intent precedes the write:
+  assert.deepEqual(d.fake.calls.map((c) => c.name), ["getAvailability", "createAppointment"]);
+  assert.equal(d.intentCreates.length, 1);
+  assert.equal(d.intentCreates[0].input.syncType, "appointment_push");
+  const det = d.intentCreates[0].input.detail;
+  assert.deepEqual(det, { pydentAppointmentId: "appt-fict-9", pydentPatientId: "pat-fict-1", patientExternalId: "ext-pat-77", serviceExternalId: "OD-ext-77", date: "2099-01-10", time: "10:00" });
+  assert.equal(Object.keys(det).some((k) => /name|phone|email/i.test(k)), false, "intent carries correlation only, no PII");
+  // External write carried the MAPPED identities, not names/free text:
+  const sent = d.fake.calls[1].args[1];
+  assert.equal(sent.patient.externalId, "ext-pat-77");
+  assert.equal(sent.serviceExternalId, "OD-ext-77");
+  assert.equal(sent.provider.externalId, "12");
+  // Then mapping → legacy compat → intent succeeded:
+  assert.equal(d.apptPersistCalls.length, 1);
+  assert.equal(d.apptPersistCalls[0].input.externalId, "ext-appt-500");
+  assert.deepEqual(d.legacyWrites, [{ ws: WS, apptId: "appt-fict-9", extId: "ext-appt-500" }]);
+  const last = d.intentUpdates.at(-1);
+  assert.equal(last.patch.status, "succeeded");
+  assert.equal(last.patch.detail.externalId, "ext-appt-500");
+});
+
+test("stale slot blocks the write; duplicate (already mapped) is idempotent with zero external calls", async () => {
+  const stale = happyCreateDeps({
+    fake: fakeConnector({ availability: true, createAppointment: true }, { getAvailability: { ok: true, data: [{ date: "2099-01-10", time: "09:00", durationMin: null, provider: null, operatory: null }] } }),
+  });
+  const s = await connectorCreateAppointment(WS, CREATE_REQ, stale.deps);
+  assert.equal(s.error.code, "slot_unavailable");
+  assert.equal(stale.fake.calls.some((c) => c.name === "createAppointment"), false);
+  assert.deepEqual(stale.intentCreates, [], "no intent for a write that was never attempted");
+
+  const dup = happyCreateDeps({ mappings: { ...CREATE_FIXTURES.mappings, "appointment:appt-fict-9": "ext-appt-500" } });
+  const r = await connectorCreateAppointment(WS, CREATE_REQ, dup.deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.data.externalId, "ext-appt-500");
+  assert.deepEqual(dup.fake.calls, [], "completed duplicate returns the existing mapping — zero external calls");
+});
+
+test("pending/unknown intents block; a ledger-recorded external id recovers WITHOUT a second PMS create", async () => {
+  const unknown = happyCreateDeps({ priorIntent: { id: "intent-old", status: "unknown", detail: { pydentAppointmentId: "appt-fict-9" } } });
+  const u = await connectorCreateAppointment(WS, CREATE_REQ, unknown.deps);
+  assert.equal(u.error.code, "external_error");
+  assert.match(u.error.message, /reconciliation/i);
+  assert.deepEqual(unknown.fake.calls, [], "no blind retry while an outcome is unknown");
+
+  const recoverable = happyCreateDeps({ priorIntent: { id: "intent-old", status: "running", detail: { pydentAppointmentId: "appt-fict-9", externalId: "ext-appt-500" } } });
+  const rec = await connectorCreateAppointment(WS, CREATE_REQ, recoverable.deps);
+  assert.equal(rec.ok, true);
+  assert.equal(rec.data.externalId, "ext-appt-500");
+  assert.deepEqual(recoverable.fake.calls, [], "recovery completes local persistence with ZERO second PMS creates");
+  assert.equal(recoverable.apptPersistCalls.length, 1);
+  assert.equal(recoverable.intentUpdates.at(-1).patch.status, "succeeded");
+});
+
+test("definite rejection marks failed (retry allowed); indeterminate transport marks unknown; mapping failure retains the id", async () => {
+  const rejected = happyCreateDeps({
+    fake: fakeConnector({ availability: true, createAppointment: true }, {
+      getAvailability: { ok: true, data: [{ date: "2099-01-10", time: "10:00", durationMin: null, provider: null, operatory: null }] },
+      createAppointment: { ok: false, error: { code: "slot_unavailable", message: "The requested slot is no longer available in Open Dental." } },
+    }),
+  });
+  const rej = await connectorCreateAppointment(WS, CREATE_REQ, rejected.deps);
+  assert.equal(rej.error.code, "slot_unavailable");
+  assert.equal(rejected.intentUpdates.at(-1).patch.status, "failed");
+
+  const timedOut = happyCreateDeps({
+    fake: fakeConnector({ availability: true, createAppointment: true }, {
+      getAvailability: { ok: true, data: [{ date: "2099-01-10", time: "10:00", durationMin: null, provider: null, operatory: null }] },
+      createAppointment: { ok: false, error: { code: "unavailable", message: "Open Dental could not be reached: timed out — nothing answered in time." } },
+    }),
+  });
+  const t = await connectorCreateAppointment(WS, CREATE_REQ, timedOut.deps);
+  assert.equal(t.error.code, "external_error");
+  assert.match(t.error.message, /UNKNOWN/);
+  assert.equal(timedOut.intentUpdates.at(-1).patch.status, "unknown");
+
+  // Provably-not-sent network failure stays a DEFINITE failure:
+  const refused = happyCreateDeps({
+    fake: fakeConnector({ availability: true, createAppointment: true }, {
+      getAvailability: { ok: true, data: [{ date: "2099-01-10", time: "10:00", durationMin: null, provider: null, operatory: null }] },
+      createAppointment: { ok: false, error: { code: "unavailable", message: "Open Dental could not be reached: connection refused at fict.example." } },
+    }),
+  });
+  await connectorCreateAppointment(WS, CREATE_REQ, refused.deps);
+  assert.equal(refused.intentUpdates.at(-1).patch.status, "failed");
+
+  // PMS success + mapping persistence failure: id retained in the ledger,
+  // caller told recovery needs no second create; intent NOT marked failed.
+  const persistFail = happyCreateDeps({ apptPersistResult: { ok: false, message: "insert failed" } });
+  const pf = await connectorCreateAppointment(WS, CREATE_REQ, persistFail.deps);
+  assert.equal(pf.error.code, "external_error");
+  assert.match(pf.error.message, /no second external create|without a second/i);
+  const idUpdate = persistFail.intentUpdates.find((u) => u.patch.detail?.externalId === "ext-appt-500");
+  assert.ok(idUpdate, "the returned external id must be retained in the intent ledger before mapping");
+  // And a mapping conflict is surfaced, never overwritten:
+  const conflict = happyCreateDeps({ apptPersistResult: { ok: false, conflictingExternalId: "ext-OLD", message: "different" } });
+  assert.equal((await connectorCreateAppointment(WS, CREATE_REQ, conflict.deps)).error.code, "external_conflict");
+});
+
+test("reconciliation: ledger-adopt, probe zero clears, exactly one adopts, several fail closed", async () => {
+  const mkIntent = (detail) => ({ id: "intent-old", status: "unknown", detail: { pydentAppointmentId: "appt-fict-9", patientExternalId: "ext-pat-77", date: "2099-01-10", time: "10:00", ...detail } });
+  const probe = (rows) => fakeConnector({ findAppointments: true }, { findAppointments: { ok: true, data: rows } });
+
+  const ledger = happyCreateDeps({ priorIntent: mkIntent({ externalId: "ext-appt-500" }) });
+  const l = await reconcileAppointmentCreate(WS, "appt-fict-9", ledger.deps);
+  assert.deepEqual(l.data, { outcome: "adopted", externalId: "ext-appt-500" });
+  assert.deepEqual(ledger.fake.calls, [], "ledger adoption needs no probe");
+
+  const zero = happyCreateDeps({ priorIntent: mkIntent({}), fake: probe([]) });
+  const z = await reconcileAppointmentCreate(WS, "appt-fict-9", zero.deps);
+  assert.deepEqual(z.data, { outcome: "cleared" });
+  assert.equal(zero.intentUpdates.at(-1).patch.status, "failed"); // controlled retry now possible
+
+  const one = happyCreateDeps({ priorIntent: mkIntent({}), fake: probe([{ externalId: "ext-appt-777", date: "2099-01-10", time: "10:00" }, { externalId: "ext-other", date: "2099-01-10", time: "15:00" }]) });
+  const o = await reconcileAppointmentCreate(WS, "appt-fict-9", one.deps);
+  assert.deepEqual(o.data, { outcome: "adopted", externalId: "ext-appt-777" }); // time filter leaves exactly one
+  assert.equal(one.apptPersistCalls[0].input.metadata.method, "reconciliation_probe");
+
+  const many = happyCreateDeps({ priorIntent: mkIntent({}), fake: probe([{ externalId: "e1", date: "2099-01-10", time: "10:00" }, { externalId: "e2", date: "2099-01-10", time: "10:00" }]) });
+  const m = await reconcileAppointmentCreate(WS, "appt-fict-9", many.deps);
+  assert.equal(m.error.code, "ambiguous_match");
+  assert.deepEqual(many.apptPersistCalls, [], "never adopt one of several");
+
+  const already = happyCreateDeps({ mappings: { ...CREATE_FIXTURES.mappings, "appointment:appt-fict-9": "ext-appt-500" } });
+  assert.deepEqual((await reconcileAppointmentCreate(WS, "appt-fict-9", already.deps)).data, { outcome: "already_established", externalId: "ext-appt-500" });
+
+  const nothing = happyCreateDeps({ priorIntent: { id: "i", status: "failed", detail: {} } });
+  assert.equal((await reconcileAppointmentCreate(WS, "appt-fict-9", nothing.deps)).error.code, "invalid_request");
+
+  const noProbeCap = happyCreateDeps({ priorIntent: mkIntent({}), fake: fakeConnector({}) });
+  assert.equal((await reconcileAppointmentCreate(WS, "appt-fict-9", noProbeCap.deps)).error.code, "unsupported_capability");
 });
 
 // ════ M1E-C-B: patient identity — resolution + establishment ════════════════
@@ -465,10 +643,11 @@ test("no unintended mapping writes, and create stays locked even with an establi
   await connectorCancel("ws-fict-A", "appt-fict-1", d.deps);
   const create = await connectorCreateAppointment("ws-fict-A", {}, d.deps);
   assert.deepEqual(d.persistCalls, [], "only the two establishment flows may write a patient mapping");
-  // The critical lock: provider+service+patient all resolvable, create still refuses:
+  assert.deepEqual(d.apptPersistCalls, [], "no appointment mapping outside the create saga");
+  // An under-specified create fails validation without reaching the connector:
   assert.equal(create.ok, false);
-  assert.equal(create.error.code, "config_missing");
-  assert.equal(d.fake.calls.some((c) => c.name === "createAppointment"), false, "connector.createAppointment stays unreachable");
+  assert.equal(create.error.code, "invalid_request");
+  assert.equal(d.fake.calls.some((c) => c.name === "createAppointment"), false, "connector.createAppointment unreachable without full preconditions");
 });
 
 // ── 18/19. Structured errors, no secret leakage ─────────────────────────────
