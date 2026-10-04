@@ -13,6 +13,8 @@ import {
   type ResourceRow,
 } from "@/lib/knowledge-service";
 import type { KnowledgeRouteDeps } from "@/lib/knowledge-route";
+import { callOpenRouter } from "@/lib/agent-reply";
+import { openRouterTesterChat, type TesterChatFn } from "@/lib/knowledge-tester";
 
 // Central Knowledge Base — Supabase persistence (Phase A4). SERVER ONLY.
 //
@@ -200,4 +202,17 @@ export function knowledgeDeps(req: NextRequest): KnowledgeRouteDeps {
     }),
     now: () => new Date(),
   };
+}
+
+/**
+ * Knowledge Tester answer generation (A5.1): the existing OpenRouter helper
+ * (callOpenRouter — one request, no logging) with the FIXED Tester model.
+ * Deliberately NOT resilientChat: the Tester must never fall back to xAI /
+ * Grok or any other model. null when OpenRouter isn't configured — the Tester
+ * then returns retrieval results only.
+ */
+export function knowledgeTesterChat(): TesterChatFn | null {
+  const apiKey = process.env.OPENROUTER_API_KEY ?? "";
+  if (!apiKey) return null;
+  return openRouterTesterChat(apiKey, callOpenRouter);
 }

@@ -37,6 +37,8 @@ export interface KnowledgeCtx {
   extract: ExtractFn;
   importSite: ImportSiteFn;
   now: () => Date;
+  /** Metadata-only log line (never knowledge content). */
+  log: (line: string) => void;
 }
 
 const json = (status: number, body: Record<string, unknown>) => Response.json(body, { status });
@@ -65,7 +67,7 @@ export async function withKnowledge(deps: KnowledgeRouteDeps, mode: AccessMode, 
   const ws = auth.workspaceId;
   try {
     const { extract, importSite } = deps.ingest(ws);
-    const out = await run({ ws, userId: auth.userId, role: auth.role, store: deps.store, extract, importSite, now: deps.now });
+    const out = await run({ ws, userId: auth.userId, role: auth.role, store: deps.store, extract, importSite, now: deps.now, log });
     if (mode === "write" || out.status >= 500) log(`[knowledge] op=${op} ws=${ws} status=${out.status}${out.body.ok === false ? ` code=${String(out.body.code ?? "")}` : ""}`);
     return json(out.status, out.body);
   } catch (e) {
