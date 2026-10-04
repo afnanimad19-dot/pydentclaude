@@ -95,12 +95,20 @@ test("every /api/kb route is wrapped in withKbAuth and never reads a workspace f
   // retrieval-debug only uses ?ws= to REFUSE a mismatch.
   assert.match(src("src/app/api/kb/retrieval-debug/route.ts"), /requestedWs: sp\.get\("ws"\)/);
   // The website importer validates the target before any fetch / hand-off.
-  const web = src("src/app/api/kb/website/route.ts");
-  const guard = web.indexOf("await assertSafeUrl(target)");
+  // (A3: the import moved to lib/kb-website.ts; the route only wires deps.)
+  const web = src("src/lib/kb-website.ts");
+  const guard = web.indexOf("await deps.assertSafe(target)");
   assert.ok(guard > 0);
-  assert.ok(guard < web.indexOf("firecrawlCrawl(target"), "before Firecrawl");
-  assert.ok(guard < web.indexOf("fetchText(target)"), "before the direct fetch");
-  assert.doesNotMatch(web, /await fetch\(url/, "no unguarded fetch of a user URL");
+  assert.ok(guard < web.indexOf("deps.firecrawl(target"), "before Firecrawl");
+  assert.ok(guard < web.indexOf("deps.fetchPage(target)"), "before the direct fetch");
+  assert.ok(guard < web.indexOf("deps.engineFetch(target)"), "before the engine");
+  assert.match(web, /assertSafe: \(url\) => assertSafeUrl\(url\)/, "production deps use the Phase 0 SSRF check");
+  assert.match(web, /fetchPage: \(url\) => fetchPageSafely\(url\)/);
+  assert.match(web, /await safeFetchText\(url, opts, transport\) : await safeFetchText\(url, opts\)/, "pages are fetched through the Phase 0 safe fetch");
+  assert.doesNotMatch(web, /(?<![A-Za-z])fetch\(/, "no raw fetch of a user URL in the library");
+  const route = src("src/app/api/kb/website/route.ts");
+  assert.match(route, /defaultWebsiteDeps\(engineFetchForWorkspace\(ws\)\)/, "engine credentials from the session workspace");
+  assert.doesNotMatch(route, /(?<![A-Za-z])fetch\(/, "no raw fetch in the route");
 });
 
 test("every browser caller of /api/kb sends the session token (authFetch), FormData keeps its multipart header", () => {
