@@ -42,6 +42,8 @@ function placeholderConnector(type: string): BookingConnector {
     getOperatories: () => notImplemented(type, "getOperatories"),
     getAppointments: () => notImplemented(type, "getAppointments"),
     getAvailability: () => notImplemented(type, "getAvailability"),
+    findPatients: () => notImplemented(type, "findPatients"),
+    createPatient: () => notImplemented(type, "createPatient"),
     createAppointment: () => notImplemented(type, "createAppointment"),
     updateAppointment: () => notImplemented(type, "updateAppointment"),
     cancelAppointment: () => notImplemented(type, "cancelAppointment"),

@@ -8,8 +8,12 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-const { connectorAvailability, connectorCreateAppointment, connectorReschedule, connectorCancel, resolveProviderExternalId, resolveServiceForConnection, CREATE_UNAVAILABLE_REASON } =
-  await import("@/lib/booking-connectors/service");
+const {
+  connectorAvailability, connectorCreateAppointment, connectorReschedule, connectorCancel,
+  resolveProviderExternalId, resolveServiceForConnection,
+  resolvePatientForConnection, establishPatientMapping, establishPatientByCreation,
+  CREATE_UNAVAILABLE_REASON,
+} = await import("@/lib/booking-connectors/service");
 const { getPrimaryBookingConnector } = await import("@/lib/booking-connectors/registry");
 const { NO_CAPABILITIES } = await import("@/lib/booking-connectors/types");
 
@@ -39,6 +43,8 @@ function fakeConnector(caps, results = {}) {
       getOperatories: op("getOperatories", { ok: true, data: [] }),
       getAppointments: op("getAppointments", { ok: true, data: [] }),
       getAvailability: op("getAvailability", { ok: true, data: [{ date: "2099-01-10", time: "09:00", durationMin: null, provider: null, operatory: null }] }),
+      findPatients: op("findPatients", { ok: true, data: [] }),
+      createPatient: op("createPatient", { ok: true, data: { externalId: "ext-pat-new" } }),
       createAppointment: op("createAppointment", { ok: true, data: {} }),
       updateAppointment: op("updateAppointment", { ok: true, data: { externalId: "987", date: "2099-01-11", time: "11:00", durationMin: null } }),
       cancelAppointment: op("cancelAppointment", { ok: true, data: { cancelled: true } }),
@@ -51,10 +57,25 @@ function fakeConnector(caps, results = {}) {
 // connector + injectable mappings and catalog. mappings:
 // { "provider:prov-1": "12", … }; services: { "svc-1": {active, bookingEnabled, defaultDurationMin} };
 // serviceMappings: { "conn-fict-1:svc-1": "OD-ext-77" }.
-function fakeDeps({ connection = fictConnection(), fake = fakeConnector({ availability: true, createAppointment: true, updateAppointment: true, cancelAppointment: true }), mappings = {}, services = {}, serviceMappings = {} } = {}) {
+function fakeDeps({
+  connection = fictConnection(),
+  fake = fakeConnector({ availability: true, createAppointment: true, updateAppointment: true, cancelAppointment: true, findPatients: true, createPatient: true }),
+  mappings = {}, services = {}, serviceMappings = {},
+  patients = {},          // { "pat-fict-1": { workspaceId?, name, phone, email } }
+  persistResult = { ok: true, status: "created", message: "Patient mapping established." },
+} = {}) {
+  const persistCalls = [];
   return {
     fake,
+    persistCalls,
     deps: {
+      getPatient: async (ws, id) => {
+        const p = patients[id];
+        return p && ws === (p.workspaceId ?? "ws-fict-A")
+          ? { id, name: p.name ?? "Fictional Patient", phone: p.phone ?? null, email: p.email ?? null }
+          : null;
+      },
+      persistPatientMapping: async (ws, input) => { persistCalls.push({ ws, input }); return persistResult; },
       getService: async (ws, sid) => {
         const s = services[sid];
         return s && ws === (s.workspaceId ?? "ws-fict-A")
@@ -204,8 +225,10 @@ test("reschedule and cancel resolve the appointment mapping or fail closed", asy
   }
 });
 
-// ── 15/16. No mapping writes, no external_id writes, no direct DB access ────
-test("the service is read-only orchestration: no supabase, no upserts, no external_id writes", async () => {
+// ── 15/16. No direct DB access; the only write is the injected, narrowly
+// scoped patient-mapping establishment (booking-connections-server's
+// insert-not-overwrite function) — nothing generic, nothing direct. ────────
+test("the service has no direct DB access: no supabase, no generic upserts, no raw column writes", async () => {
   const src = await readFile(new URL("../src/lib/booking-connectors/service.ts", import.meta.url), "utf8");
   for (const forbidden of ["supabase", "upsertExternalMapping", ".insert(", ".update(", ".delete(", "external_id"]) {
     assert.equal(src.includes(forbidden), false, `service.ts must not contain "${forbidden}"`);
@@ -314,6 +337,138 @@ test("create stays locked even when provider AND service identities fully resolv
   assert.equal(r.ok, false);    // …and create still refuses
   assert.equal(r.error.code, "config_missing");
   assert.deepEqual(fake.calls, [], "connector.createAppointment must never be invoked by M1E-B");
+});
+
+// ════ M1E-C-B: patient identity — resolution + establishment ════════════════
+
+const PAT = { "pat-fict-1": { name: "Fictional Patient", phone: "+971 50 000 0001", email: "fict@example.test" } };
+
+test("patient resolution: mapping always wins, no PMS search, demographics never consulted", async () => {
+  const mapped = fakeDeps({ patients: PAT, mappings: { "patient:pat-fict-1": "ext-pat-77" } });
+  const r = await resolvePatientForConnection("ws-fict-A", "conn-fict-1", "pat-fict-1", mapped.deps);
+  assert.deepEqual(r, { ok: true, data: { pydentPatientId: "pat-fict-1", externalPatientId: "ext-pat-77" } });
+  assert.deepEqual(mapped.fake.calls, [], "resolution must never search the external system");
+  assert.deepEqual(mapped.persistCalls, [], "resolution must never write");
+});
+
+test("patient resolution fails closed: unmapped, unknown, cross-workspace, missing inputs", async () => {
+  const d = fakeDeps({ patients: PAT });
+  const unmapped = await resolvePatientForConnection("ws-fict-A", "conn-fict-1", "pat-fict-1", d.deps);
+  assert.equal(unmapped.error.code, "config_missing");
+  const unknown = await resolvePatientForConnection("ws-fict-A", "conn-fict-1", "pat-fict-nope", d.deps);
+  const foreign = await resolvePatientForConnection("ws-fict-B", "conn-fict-1", "pat-fict-1", d.deps);
+  assert.equal(unknown.error.code, "patient_not_found");
+  assert.deepEqual(foreign.error, unknown.error, "cross-workspace must be indistinguishable from unknown");
+  assert.equal((await resolvePatientForConnection("", "conn-fict-1", "pat-fict-1", d.deps)).error.code, "invalid_request");
+});
+
+test("establishment: exactly one coherent candidate persists a provenance-carrying patient mapping", async () => {
+  const d = fakeDeps({
+    patients: PAT,
+    fake: fakeConnector({ findPatients: true }, { findPatients: { ok: true, data: [{ externalId: "ext-pat-77", name: "Fictional Patient", phone: "0500000001", email: "fict@example.test" }] } }),
+  });
+  const r = await establishPatientMapping("ws-fict-A", "pat-fict-1", d.deps);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.data, { pydentPatientId: "pat-fict-1", externalPatientId: "ext-pat-77", established: "matched" });
+  assert.equal(d.persistCalls.length, 1);
+  const w = d.persistCalls[0];
+  assert.equal(w.ws, "ws-fict-A");
+  assert.equal(w.input.connectionId, "conn-fict-1");
+  assert.equal(w.input.pydentPatientId, "pat-fict-1");
+  assert.equal(w.input.externalId, "ext-pat-77");
+  assert.equal(w.input.metadata.method, "phone_search");
+  assert.equal(w.input.metadata.phoneEvidence, "…0001"); // provenance, not full PII
+});
+
+test("establishment distinguishes zero / many / conflicting candidates and never picks first-of-many", async () => {
+  const zero = fakeDeps({ patients: PAT, fake: fakeConnector({ findPatients: true }, { findPatients: { ok: true, data: [] } }) });
+  const z = await establishPatientMapping("ws-fict-A", "pat-fict-1", zero.deps);
+  assert.equal(z.error.code, "patient_not_found");
+  assert.match(z.error.message, /separate, explicit step/);
+
+  const many = fakeDeps({ patients: PAT, fake: fakeConnector({ findPatients: true }, { findPatients: { ok: true, data: [{ externalId: "ext-1" }, { externalId: "ext-2" }] } }) });
+  const m = await establishPatientMapping("ws-fict-A", "pat-fict-1", many.deps);
+  assert.equal(m.error.code, "ambiguous_match"); // distinguishable from conflict AND not-found
+  assert.deepEqual(many.persistCalls, [], "no candidate may be selected from several");
+
+  const conflict = fakeDeps({ patients: PAT, fake: fakeConnector({ findPatients: true }, { findPatients: { ok: true, data: [{ externalId: "ext-9", email: "other-person@example.test" }] } }) });
+  const c = await establishPatientMapping("ws-fict-A", "pat-fict-1", conflict.deps);
+  assert.equal(c.error.code, "external_conflict");
+  assert.deepEqual(conflict.persistCalls, [], "conflicting identifiers persist nothing");
+  assert.ok(new Set([z.error.code, m.error.code, c.error.code]).size === 3, "the three failure shapes stay distinguishable");
+});
+
+test("establishment: idempotent on existing mapping; needs phone evidence; name is never identity", async () => {
+  const existing = fakeDeps({ patients: PAT, mappings: { "patient:pat-fict-1": "ext-pat-77" } });
+  const e = await establishPatientMapping("ws-fict-A", "pat-fict-1", existing.deps);
+  assert.deepEqual(e.data, { pydentPatientId: "pat-fict-1", externalPatientId: "ext-pat-77", established: "existing" });
+  assert.deepEqual(existing.fake.calls, [], "an existing mapping wins without any search");
+
+  const nameOnly = fakeDeps({ patients: { "pat-fict-2": { name: "Named But Phoneless" } } });
+  const n = await establishPatientMapping("ws-fict-A", "pat-fict-2", nameOnly.deps);
+  assert.equal(n.error.code, "invalid_request");
+  assert.match(n.error.message, /name alone never establishes identity/);
+  assert.deepEqual(nameOnly.fake.calls, []);
+  // And the search request shape itself has no name field (contract-level):
+  const src = await readFile(new URL("../src/lib/booking-connectors/types.ts", import.meta.url), "utf8");
+  const block = src.slice(src.indexOf("interface ConnectorPatientSearchRequest"));
+  assert.equal(block.slice(0, block.indexOf("}")).includes("name"), false);
+});
+
+test("mapping persistence failure means NOT established; conflicting existing mapping is never overwritten", async () => {
+  const failPersist = fakeDeps({
+    patients: PAT,
+    fake: fakeConnector({ findPatients: true }, { findPatients: { ok: true, data: [{ externalId: "ext-pat-77" }] } }),
+    persistResult: { ok: false, message: "insert failed" },
+  });
+  const f = await establishPatientMapping("ws-fict-A", "pat-fict-1", failPersist.deps);
+  assert.equal(f.error.code, "external_error");
+  assert.match(f.error.message, /NOT established/);
+
+  const conflictPersist = fakeDeps({
+    patients: PAT,
+    fake: fakeConnector({ findPatients: true }, { findPatients: { ok: true, data: [{ externalId: "ext-NEW" }] } }),
+    persistResult: { ok: false, conflictingExternalId: "ext-OLD", message: "different identity" },
+  });
+  const c = await establishPatientMapping("ws-fict-A", "pat-fict-1", conflictPersist.deps);
+  assert.equal(c.error.code, "external_conflict");
+});
+
+test("establishment by creation: create then persist; persistence failure blocks establishment", async () => {
+  const d = fakeDeps({ patients: PAT });
+  const r = await establishPatientByCreation("ws-fict-A", "pat-fict-1", d.deps);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.data, { pydentPatientId: "pat-fict-1", externalPatientId: "ext-pat-new", established: "created" });
+  assert.equal(d.fake.calls[0].name, "createPatient");
+  assert.equal(d.persistCalls[0].input.metadata.method, "created");
+
+  const failing = fakeDeps({ patients: PAT, persistResult: { ok: false, message: "insert failed" } });
+  const f = await establishPatientByCreation("ws-fict-A", "pat-fict-1", failing.deps);
+  assert.equal(f.error.code, "external_error");
+  assert.match(f.error.message, /no booking is possible/);
+
+  const noCap = fakeDeps({ patients: PAT, fake: fakeConnector({}) });
+  assert.equal((await establishPatientByCreation("ws-fict-A", "pat-fict-1", noCap.deps)).error.code, "unsupported_capability");
+  assert.deepEqual(noCap.fake.calls, []);
+});
+
+test("no unintended mapping writes, and create stays locked even with an established patient", async () => {
+  const d = fakeDeps({
+    patients: PAT,
+    mappings: { "provider:prov-fict-1": "12", "patient:pat-fict-1": "ext-pat-77", "appointment:appt-fict-1": "987" },
+    services: { "svc-fict-1": {} }, serviceMappings: { "conn-fict-1:svc-fict-1": "OD-ext-77" },
+  });
+  // Non-establishment operations never touch the mapping writer:
+  await connectorAvailability("ws-fict-A", { date: "2099-01-10" }, d.deps);
+  await resolvePatientForConnection("ws-fict-A", "conn-fict-1", "pat-fict-1", d.deps);
+  await connectorReschedule("ws-fict-A", { pydentAppointmentId: "appt-fict-1", date: "2099-01-11", time: "11:00" }, d.deps);
+  await connectorCancel("ws-fict-A", "appt-fict-1", d.deps);
+  const create = await connectorCreateAppointment("ws-fict-A", {}, d.deps);
+  assert.deepEqual(d.persistCalls, [], "only the two establishment flows may write a patient mapping");
+  // The critical lock: provider+service+patient all resolvable, create still refuses:
+  assert.equal(create.ok, false);
+  assert.equal(create.error.code, "config_missing");
+  assert.equal(d.fake.calls.some((c) => c.name === "createAppointment"), false, "connector.createAppointment stays unreachable");
 });
 
 // ── 18/19. Structured errors, no secret leakage ─────────────────────────────

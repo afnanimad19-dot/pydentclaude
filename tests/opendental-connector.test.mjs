@@ -57,6 +57,7 @@ test("capability matrix matches reality: false capabilities return unsupported_c
   assert.deepEqual(OPENDENTAL_CAPABILITIES, {
     providers: true, schedules: false, operatories: false, appointments: false,
     availability: true, createAppointment: true, updateAppointment: true, cancelAppointment: true, sync: false,
+    findPatients: true, createPatient: true,
   });
   const c = createOpenDentalConnector(fakeDeps([]));
   for (const out of await Promise.all([
@@ -171,6 +172,38 @@ test("cancel goes to the gateway by external identity", async () => {
   assert.equal(gone.error.code, "appointment_not_found");
   const unmapped = await c.cancelAppointment(CTX, { pydentId: "appt-fict-3" });
   assert.equal(unmapped.error.code, "appointment_not_found");
+});
+
+// ── M1E-C-B: patient search/create translation ──────────────────────────────
+test("findPatients returns ALL candidates with opaque ids — no first-result selection, no PatNum", async () => {
+  const deps = fakeDeps([{ status: 200, data: { patients: [
+    { id: 301, name: "Fictional One", phone: "0500000001", email: "one@example.test" },
+    { id: 302, name: "Fictional Two", phone: "0500000001", email: "" },
+  ] } }]);
+  const c = createOpenDentalConnector(deps);
+  const r = await c.findPatients(CTX, { phone: "+971 50 000 0001" });
+  assert.equal(r.ok, true);
+  assert.equal(r.data.length, 2, "every candidate must be returned — selection is never the adapter's");
+  assert.deepEqual(r.data[0], { pydentPatientId: null, externalId: "301", name: "Fictional One", phone: "0500000001", email: "one@example.test" });
+  const json = JSON.stringify(r.data);
+  for (const od of ["PatNum", "FName", "LName", "WirelessPhone"]) assert.equal(json.includes(od), false, `no ${od} may cross the boundary`);
+  assert.deepEqual(deps.calls[0], { ws: "ws-fict-A", path: "/find-patients", method: "POST", body: { phone: "971500000001", email: "" } });
+  // Phone is required evidence; middleware mode (404) reports honestly:
+  const short = await c.findPatients(CTX, { phone: "123" });
+  assert.equal(short.error.code, "invalid_request");
+  const mw = createOpenDentalConnector(fakeDeps([{ status: 404, data: {} }]));
+  assert.equal((await mw.findPatients(CTX, { phone: "0500000001" })).error.code, "unsupported_capability");
+});
+
+test("createPatient translates to the gateway and returns an opaque externalId", async () => {
+  const deps = fakeDeps([{ status: 200, data: { patientId: 909 } }]);
+  const c = createOpenDentalConnector(deps);
+  const r = await c.createPatient(CTX, { name: "Fictional Patient", phone: "+971500000002", email: "f2@example.test" });
+  assert.deepEqual(r, { ok: true, data: { externalId: "909" } });
+  assert.equal(deps.calls[0].path, "/create-patient");
+  assert.equal((await c.createPatient(CTX, {})).error.code, "invalid_request");
+  const mw = createOpenDentalConnector(fakeDeps([{ status: 404, data: {} }]));
+  assert.equal((await mw.createPatient(CTX, { name: "X", phone: "0500000003" })).error.code, "unsupported_capability");
 });
 
 // ── 14. Error translation ───────────────────────────────────────────────────

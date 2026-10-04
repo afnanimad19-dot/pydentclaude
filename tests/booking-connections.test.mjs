@@ -61,6 +61,24 @@ test("external mapping input needs the full identity 4-tuple", () => {
   }
 });
 
+// ── Patient mapping establishment (M1E-C-B) ─────────────────────────────────
+test("insertPatientMapping fails closed on missing workspace or identity fields", async () => {
+  const { insertPatientMapping } = await import("@/lib/booking-connections-server");
+  assert.equal((await insertPatientMapping("", { connectionId: "c", pydentPatientId: "p", externalId: "1" })).ok, false);
+  for (const bad of [{}, { connectionId: "c", pydentPatientId: "p" }, { connectionId: "c", externalId: "1" }, { pydentPatientId: "p", externalId: "1" }]) {
+    const r = await insertPatientMapping("ws-fict-A", bad);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /required/);
+  }
+  // The function is hard-scoped to patient rows: its source writes
+  // entity_type "patient" literally and accepts no entity-type input.
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(new URL("../src/lib/booking-connections-server.ts", import.meta.url), "utf8");
+  const block = src.slice(src.indexOf("export async function insertPatientMapping"), src.indexOf("// Create or update the mapping"));
+  assert.match(block, /entity_type: "patient"/);
+  assert.equal(block.includes("entityType"), false, "no caller-supplied entity type — this is not a generic write");
+});
+
 // ── Fail-closed workspace handling ──────────────────────────────────────────
 test("every helper fails closed without an explicit workspace id", async () => {
   assert.deepEqual(await listBookingConnections(""), []);

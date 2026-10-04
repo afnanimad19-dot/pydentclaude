@@ -217,6 +217,47 @@ async function odApiCreateAppt(cfg: OdGatewayConfig, body: any): Promise<{ statu
   return { status: r.status || 502, data: { error: `Open Dental rejected the appointment (HTTP ${r.status})${detail ? `: ${String(detail).slice(0, 200)}` : ""}.` } };
 }
 
+// M1E-C-B patient identity operations (direct OD API mode only — the clinic
+// middleware has no patient-search endpoint, so in that mode these paths 404
+// and the connector layer reports the capability as unavailable).
+//
+// /find-patients returns ALL matches for the phone evidence, mapped to
+// neutral rows — the caller decides; this function never selects a result
+// (unlike the legacy odApiFindOrCreatePatient above, which remains untouched
+// for the legacy booking path).
+async function odApiFindPatients(cfg: OdGatewayConfig, body: any): Promise<{ status: number; data: unknown }> {
+  const digits = String(body?.phone ?? "").replace(/\D/g, "");
+  if (digits.length < 7) {
+    return { status: 400, data: { error: "A phone number (at least 7 digits) is required to search patients." } };
+  }
+  const r = await odApiFetch(cfg, "GET", `/patients?Phone=${encodeURIComponent(digits.slice(-10))}`);
+  if (r.status !== 200 || !Array.isArray(r.data)) {
+    return { status: r.status || 502, data: { error: `Open Dental patient search returned HTTP ${r.status}.` } };
+  }
+  const patients = (r.data as any[])
+    .filter((p) => p?.PatNum)
+    .map((p) => ({
+      id: String(p.PatNum),
+      name: [p.FName, p.LName].filter(Boolean).join(" ").trim(),
+      phone: String(p.WirelessPhone ?? p.HmPhone ?? ""),
+      email: String(p.Email ?? ""),
+    }));
+  return { status: 200, data: { patients } };
+}
+
+async function odApiCreatePatient(cfg: OdGatewayConfig, body: any): Promise<{ status: number; data: unknown }> {
+  const name = String(body?.name ?? "").trim();
+  const phone = String(body?.phone ?? "").trim();
+  if (!name && !phone) return { status: 400, data: { error: "A name or phone is required to create a patient." } };
+  const parts = name.split(/\s+/).filter(Boolean);
+  const FName = parts[0] || "Patient";
+  const LName = parts.slice(1).join(" ") || FName;
+  const r = await odApiFetch(cfg, "POST", "/patients", { FName, LName, WirelessPhone: phone, Email: String(body?.email ?? "") });
+  const pn = Number((r.data as any)?.PatNum);
+  if (r.status >= 200 && r.status < 300 && pn) return { status: 200, data: { patientId: String(pn) } };
+  return { status: r.status || 502, data: { error: `Open Dental could not create the patient (HTTP ${r.status}).` } };
+}
+
 async function odApiForward(
   cfg: OdGatewayConfig,
   path: string,
@@ -231,6 +272,10 @@ async function odApiForward(
       return odApiSlots(cfg, body);
     case "/create-appointment":
       return odApiCreateAppt(cfg, body);
+    case "/find-patients":
+      return odApiFindPatients(cfg, body);
+    case "/create-patient":
+      return odApiCreatePatient(cfg, body);
     case "/reschedule-appointment": {
       const r = await odApiFetch(cfg, "PUT", `/appointments/${encodeURIComponent(String(body?.appointmentId ?? ""))}`, { AptDateTime: odDateTime(String(body?.datetime ?? "")) });
       return r.status >= 200 && r.status < 300 ? { status: 200, data: { ok: true } } : { status: r.status || 502, data: { error: `Open Dental reschedule failed (HTTP ${r.status}).` } };

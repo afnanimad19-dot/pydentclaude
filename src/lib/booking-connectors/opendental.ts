@@ -28,6 +28,7 @@ import {
   type ConnectorAvailabilityRequest,
   type ConnectorAvailabilitySlot,
   type ConnectorEntityRef,
+  type ConnectorPatientRef,
   type CreateConnectorAppointmentInput,
   type UpdateConnectorAppointmentInput,
   type ConnectorHealthResult,
@@ -50,6 +51,8 @@ export const OPENDENTAL_CAPABILITIES: BookingConnectorCapabilities = {
   updateAppointment: true,  // /reschedule-appointment (DATE/TIME ONLY)
   cancelAppointment: true,  // /cancel-appointment (OD "Break")
   sync: false,
+  findPatients: true,       // /find-patients (direct OD API mode; middleware mode reports unavailable at runtime)
+  createPatient: true,      // /create-patient (same mode caveat)
 };
 
 // Injectable seams so tests run with fictional data and no network/database.
@@ -185,6 +188,44 @@ export function createOpenDentalConnector(deps: OpenDentalConnectorDeps = REAL_D
       const doctors = (r.data as any)?.doctors;
       if (r.status === 200 && Array.isArray(doctors)) {
         return { ok: true, data: doctors.map(odDoctorToConnectorProvider) };
+      }
+      return mapGatewayError(r.status, r.data);
+    },
+
+    async findPatients(ctx, req): Promise<ConnectorResult<ConnectorPatientRef[]>> {
+      if (badCtx(ctx)) return connectorFail("invalid_request", CTX_ERROR);
+      const phone = String(req?.phone ?? "").replace(/\D/g, "");
+      if (phone.length < 7) {
+        // Phone is the only search evidence the existing OD path supports;
+        // email-only search is not available, and NAME is never evidence.
+        return connectorFail("invalid_request", "A phone number (at least 7 digits) is required to search external patients.");
+      }
+      const r = await deps.forward(ctx.workspaceId, "/find-patients", { method: "POST", body: { phone, email: String(req?.email ?? "") } });
+      /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+      const patients = (r.data as any)?.patients;
+      if (r.status === 200 && Array.isArray(patients)) {
+        // ALL candidates, in gateway order, untouched: selection is the
+        // orchestration layer's decision — never this adapter's.
+        /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+        return { ok: true, data: patients.map((p: any) => ({ pydentPatientId: null, externalId: p?.id != null ? String(p.id) : null, name: String(p?.name ?? ""), phone: String(p?.phone ?? ""), email: String(p?.email ?? "") })) };
+      }
+      if (r.status === 404) {
+        return connectorFail("unsupported_capability", "The configured Open Dental endpoint does not support patient search (clinic middleware mode).");
+      }
+      return mapGatewayError(r.status, r.data);
+    },
+
+    async createPatient(ctx, input): Promise<ConnectorResult<{ externalId: string }>> {
+      if (badCtx(ctx)) return connectorFail("invalid_request", CTX_ERROR);
+      const name = String(input?.name ?? "").trim();
+      const phone = String(input?.phone ?? "").trim();
+      if (!name && !phone) return connectorFail("invalid_request", "A name or phone is required to create an external patient record.");
+      const r = await deps.forward(ctx.workspaceId, "/create-patient", { method: "POST", body: { name, phone, email: String(input?.email ?? "") } });
+      /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+      const extId = (r.data as any)?.patientId;
+      if (r.status === 200 && extId) return { ok: true, data: { externalId: String(extId) } };
+      if (r.status === 404) {
+        return connectorFail("unsupported_capability", "The configured Open Dental endpoint does not support patient creation (clinic middleware mode).");
       }
       return mapGatewayError(r.status, r.data);
     },

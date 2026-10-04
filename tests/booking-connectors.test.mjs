@@ -104,6 +104,8 @@ test("placeholder connectors declare zero capabilities and every operation says 
     c.getOperatories(CTX),
     c.getAppointments(CTX, { dateFrom: "2099-01-01", dateTo: "2099-01-07" }),
     c.getAvailability(CTX, { date: "2099-01-01" }),
+    c.findPatients(CTX, { phone: "0500000001" }),
+    c.createPatient(CTX, { name: "Fictional Patient", phone: "0500000001" }),
     c.createAppointment(CTX, { patient: { name: "Fictional Patient" }, service: "Cleaning", date: "2099-01-01", time: "10:00", durationMin: 30 }),
     c.updateAppointment(CTX, { appointment: { externalId: "fict-1" }, time: "11:00" }),
     c.cancelAppointment(CTX, { externalId: "fict-1" }),

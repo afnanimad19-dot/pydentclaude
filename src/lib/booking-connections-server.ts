@@ -261,6 +261,53 @@ export async function getExternalMappingByExternalId(
   }
 }
 
+// ── Patient mapping establishment (M1E-C-B) ─────────────────────────────────
+// The ONE sanctioned write path for patient identity: inserts exactly one
+// entity_type='patient' row for (workspace, connection, Pydent patient).
+// INSERT-NOT-OVERWRITE semantics: an identical existing mapping is reported
+// as already established (idempotent re-runs), a DIFFERENT existing external
+// identity is a conflict that nothing here will silently replace —
+// re-pointing a patient's external identity is a deliberate human/migration
+// action, never a side effect. metadata carries provenance only (how the
+// match was established): no secrets, no clinical data.
+export async function insertPatientMapping(
+  workspaceId: string,
+  input: { connectionId: string; pydentPatientId: string; externalId: string; metadata?: Record<string, unknown> }
+): Promise<{ ok: boolean; status?: "created" | "existing"; conflictingExternalId?: string; message: string }> {
+  if (!workspaceId) return { ok: false, message: "A workspace id is required." };
+  const connectionId = String(input?.connectionId ?? "").trim();
+  const patientId = String(input?.pydentPatientId ?? "").trim();
+  const externalId = String(input?.externalId ?? "").trim();
+  if (!connectionId || !patientId || !externalId) {
+    return { ok: false, message: "connectionId, pydentPatientId and externalId are all required." };
+  }
+  const conn = await getBookingConnection(workspaceId, connectionId);
+  if (!conn) return { ok: false, message: "Booking connection not found." };
+  try {
+    const existing = await getExternalMapping(workspaceId, connectionId, "patient", patientId);
+    if (existing) {
+      if (existing.externalId === externalId) return { ok: true, status: "existing", message: "Patient mapping already established." };
+      return { ok: false, conflictingExternalId: existing.externalId, message: "This patient already has a DIFFERENT external identity mapped for this connection — not overwritten." };
+    }
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("external_mappings").insert({
+      workspace_id: workspaceId,
+      connection_id: connectionId,
+      entity_type: "patient",
+      pydent_entity_id: patientId,
+      external_id: externalId,
+      sync_status: "established",
+      metadata: input?.metadata && typeof input.metadata === "object" ? input.metadata : {},
+      last_synced_at: now,
+      updated_at: now,
+    });
+    if (error) return { ok: false, message: error.message };
+    return { ok: true, status: "created", message: "Patient mapping established." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not persist the patient mapping (is migration 0066 applied?)." };
+  }
+}
+
 // Create or update the mapping for (connection, entity type, Pydent entity).
 // Matches on that triple — the same key as the external_mappings_pydent_uq
 // unique index — and updates in place, so re-syncs never accumulate duplicate

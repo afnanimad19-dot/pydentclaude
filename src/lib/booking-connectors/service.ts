@@ -29,6 +29,8 @@ import {
   type ExternalMapping,
 } from "@/lib/booking-connections-server";
 import { getService, getServiceExternalId, type Service } from "@/lib/services-server";
+import { insertPatientMapping } from "@/lib/booking-connections-server";
+import { getPatientById } from "@/lib/agent-tools-core";
 import { getPrimaryBookingConnector, type ResolvedConnector, type ResolveResult } from "@/lib/booking-connectors/registry";
 import {
   type BookingConnectorCapabilities,
@@ -46,6 +48,11 @@ export interface BookingConnectorServiceDeps {
   // M1E-B service-identity seams (real M1E-A helpers by default):
   getService: (workspaceId: string, serviceId: string) => Promise<Service | null>;
   getServiceExternal: (workspaceId: string, connectionId: string, serviceId: string) => Promise<string | null>;
+  // M1E-C-B patient-identity seams: a workspace-scoped Pydent patient read,
+  // and the ONE sanctioned mapping write (patient rows only, insert-not-
+  // overwrite — see booking-connections-server.insertPatientMapping).
+  getPatient: (workspaceId: string | null, patientId: string) => Promise<{ id: string; name: string | null; phone: string | null; email: string | null } | null>;
+  persistPatientMapping: typeof insertPatientMapping;
 }
 
 const REAL_DEPS: BookingConnectorServiceDeps = {
@@ -54,6 +61,8 @@ const REAL_DEPS: BookingConnectorServiceDeps = {
   getMapping: getExternalMapping,
   getService,
   getServiceExternal: (ws, connectionId, serviceId) => getServiceExternalId(ws, connectionId, serviceId),
+  getPatient: getPatientById,
+  persistPatientMapping: insertPatientMapping,
 };
 
 // ── Resolution + capability gate ────────────────────────────────────────────
@@ -177,6 +186,160 @@ export async function resolveServiceForConnection(
     return connectorFail("config_missing", "This service has no external identity mapped for the workspace's booking connection — map the service before using it externally.");
   }
   return { ok: true, data: { pydentServiceId: sid, externalServiceId: ext, defaultDurationMin: svc.defaultDurationMin } };
+}
+
+// ── Patient identity (M1E-C-B policy) ───────────────────────────────────────
+// The Pydent patient UUID is canonical; an external PMS identity exists only
+// as an entity_type='patient' mapping for one connection. Phone/email are
+// EVIDENCE during establishment, never durable identity; a name alone never
+// establishes anything. Resolution (read) and establishment (search +
+// persist) are strictly separate operations, and BOTH are separate from
+// external appointment creation, which stays locked.
+
+const PATIENT_NOT_FOUND = "No such patient exists in this workspace."; // foreign == unknown: nothing leaks
+
+// Read-only resolution: mapping or nothing. Never searches the PMS, never
+// consults demographics — an existing mapping always wins by construction
+// because it is the only source consulted.
+export async function resolvePatientForConnection(
+  workspaceId: string,
+  connectionId: string,
+  pydentPatientId: string,
+  deps: BookingConnectorServiceDeps = REAL_DEPS
+): Promise<ConnectorResult<{ pydentPatientId: string; externalPatientId: string }>> {
+  const pid = String(pydentPatientId ?? "").trim();
+  if (!workspaceId || !connectionId || !pid) {
+    return connectorFail("invalid_request", "A workspace, connection and Pydent patient id are all required.");
+  }
+  const patient = await deps.getPatient(workspaceId, pid);
+  if (!patient) return connectorFail("patient_not_found", PATIENT_NOT_FOUND);
+  const mapping = await deps.getMapping(workspaceId, connectionId, "patient", pid);
+  const ext = String(mapping?.externalId ?? "").trim();
+  if (!ext) {
+    return connectorFail("config_missing", "This patient has no external identity established for the workspace's booking connection — run establishment first.");
+  }
+  return { ok: true, data: { pydentPatientId: pid, externalPatientId: ext } };
+}
+
+export interface EstablishPatientResult {
+  pydentPatientId: string;
+  externalPatientId: string;
+  established: "existing" | "matched" | "created";
+}
+
+// Explicit establishment by SEARCH: phone evidence → ALL external candidates
+// → exactly one coherent candidate → persist the mapping → established.
+// Every other shape fails closed and distinguishably:
+//   zero candidates            → patient_not_found (creation is a separate step)
+//   several candidates         → ambiguous_match (a human disambiguates)
+//   contradicting identifiers  → external_conflict (nothing persisted)
+//   persistence failure        → external_error (NOT established; idempotent re-run)
+export async function establishPatientMapping(
+  workspaceId: string,
+  pydentPatientId: string,
+  deps: BookingConnectorServiceDeps = REAL_DEPS
+): Promise<ConnectorResult<EstablishPatientResult>> {
+  const pid = String(pydentPatientId ?? "").trim();
+  if (!workspaceId || !pid) return connectorFail("invalid_request", "A workspace and Pydent patient id are required.");
+  const r = await resolvePrimary(workspaceId, deps);
+  if (!r.ok) return r as ConnectorResult<EstablishPatientResult>;
+  const gate = capabilityGate<EstablishPatientResult>(r.resolved, "findPatients");
+  if (gate) return gate;
+  const patient = await deps.getPatient(workspaceId, pid);
+  if (!patient) return connectorFail("patient_not_found", PATIENT_NOT_FOUND);
+
+  // Idempotent: an existing mapping wins outright — no re-searching.
+  const existing = await deps.getMapping(workspaceId, r.resolved.connection.id, "patient", pid);
+  const existingExt = String(existing?.externalId ?? "").trim();
+  if (existingExt) return { ok: true, data: { pydentPatientId: pid, externalPatientId: existingExt, established: "existing" } };
+
+  // Evidence: the Pydent record's phone. Name is NEVER a search key, and
+  // without usable phone evidence establishment fails closed rather than
+  // guessing (email-only search is not supported by the OD path in C-B).
+  const phone = String(patient.phone ?? "").replace(/\D/g, "");
+  if (phone.length < 7) {
+    return connectorFail("invalid_request", "This patient record has no usable phone number — establishment needs phone evidence, and a name alone never establishes identity.");
+  }
+  const found = await r.resolved.connector.findPatients(r.resolved.context, { phone, email: patient.email ?? null });
+  if (!found.ok) return found as ConnectorResult<EstablishPatientResult>;
+  const candidates = found.data;
+
+  if (candidates.length === 0) {
+    return connectorFail("patient_not_found", "No matching patient exists in the external system. Creating one is a separate, explicit step — nothing was created.");
+  }
+  if (candidates.length > 1) {
+    return connectorFail("ambiguous_match", `The external system has ${candidates.length} plausible patients for this phone number — a person must disambiguate; no candidate was selected.`);
+  }
+  const candidate = candidates[0]; // the single candidate — not a "first of many"
+  const candExt = String(candidate.externalId ?? "").trim();
+  if (!candExt) return connectorFail("external_error", "The external system returned a patient without a usable identity.");
+  // Coherence: evidence may be incomplete, but it must not CONTRADICT. Two
+  // differing non-empty emails on the same phone = conflicting identifiers.
+  const ourEmail = String(patient.email ?? "").trim().toLowerCase();
+  const theirEmail = String(candidate.email ?? "").trim().toLowerCase();
+  if (ourEmail && theirEmail && ourEmail !== theirEmail) {
+    return connectorFail("external_conflict", "The phone number and email address point at different external patients — identity conflict; nothing was persisted.");
+  }
+
+  const persisted = await deps.persistPatientMapping(workspaceId, {
+    connectionId: r.resolved.connection.id,
+    pydentPatientId: pid,
+    externalId: candExt,
+    metadata: { method: "phone_search", phoneEvidence: `…${phone.slice(-4)}`, emailChecked: !!(ourEmail && theirEmail), establishedAt: new Date().toISOString() },
+  });
+  if (!persisted.ok) {
+    if (persisted.conflictingExternalId) {
+      return connectorFail("external_conflict", "This patient already has a different external identity mapped — not overwritten.");
+    }
+    return connectorFail("external_error", "The external patient was identified but the mapping could not be persisted — the patient is NOT established; re-run establishment. No booking is possible until the mapping exists.");
+  }
+  return { ok: true, data: { pydentPatientId: pid, externalPatientId: candExt, established: "matched" } };
+}
+
+// Explicit establishment by CREATION: only when search found zero candidates
+// and the caller deliberately chooses creation. Scheduling-contact fields
+// only cross the boundary; the mapping must persist before the patient
+// counts as established — a persistence failure blocks everything, and the
+// idempotent re-run path is establishPatientMapping (the just-created
+// external patient becomes its single candidate).
+export async function establishPatientByCreation(
+  workspaceId: string,
+  pydentPatientId: string,
+  deps: BookingConnectorServiceDeps = REAL_DEPS
+): Promise<ConnectorResult<EstablishPatientResult>> {
+  const pid = String(pydentPatientId ?? "").trim();
+  if (!workspaceId || !pid) return connectorFail("invalid_request", "A workspace and Pydent patient id are required.");
+  const r = await resolvePrimary(workspaceId, deps);
+  if (!r.ok) return r as ConnectorResult<EstablishPatientResult>;
+  const gate = capabilityGate<EstablishPatientResult>(r.resolved, "createPatient");
+  if (gate) return gate;
+  const patient = await deps.getPatient(workspaceId, pid);
+  if (!patient) return connectorFail("patient_not_found", PATIENT_NOT_FOUND);
+  const existing = await deps.getMapping(workspaceId, r.resolved.connection.id, "patient", pid);
+  if (String(existing?.externalId ?? "").trim()) {
+    return { ok: true, data: { pydentPatientId: pid, externalPatientId: String(existing?.externalId), established: "existing" } };
+  }
+  if (!String(patient.name ?? "").trim() && !String(patient.phone ?? "").trim()) {
+    return connectorFail("invalid_request", "This patient record has neither a name nor a phone — nothing safe to create externally.");
+  }
+  const created = await r.resolved.connector.createPatient(r.resolved.context, {
+    pydentPatientId: pid,
+    externalId: null,
+    name: patient.name ?? "",
+    phone: patient.phone ?? "",
+    email: patient.email ?? "",
+  });
+  if (!created.ok) return created as ConnectorResult<EstablishPatientResult>;
+  const persisted = await deps.persistPatientMapping(workspaceId, {
+    connectionId: r.resolved.connection.id,
+    pydentPatientId: pid,
+    externalId: created.data.externalId,
+    metadata: { method: "created", establishedAt: new Date().toISOString() },
+  });
+  if (!persisted.ok) {
+    return connectorFail("external_error", "The external patient record was created but the mapping could not be persisted — the patient is NOT established and no booking is possible; re-run establishment (the new record will be its single search candidate).");
+  }
+  return { ok: true, data: { pydentPatientId: pid, externalPatientId: created.data.externalId, established: "created" } };
 }
 
 // ── Create appointment: UNAVAILABLE in M1D-B, explicitly ────────────────────

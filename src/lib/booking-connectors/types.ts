@@ -42,6 +42,8 @@ export interface BookingConnectorCapabilities {
   updateAppointment: boolean;
   cancelAppointment: boolean;
   sync: boolean;               // background import/reconciliation
+  findPatients: boolean;       // search external patients by contact evidence (M1E-C-B)
+  createPatient: boolean;      // create an external patient record (M1E-C-B)
 }
 
 export const NO_CAPABILITIES: BookingConnectorCapabilities = {
@@ -54,6 +56,8 @@ export const NO_CAPABILITIES: BookingConnectorCapabilities = {
   updateAppointment: false,
   cancelAppointment: false,
   sync: false,
+  findPatients: false,
+  createPatient: false,
 };
 
 // ── Error model ─────────────────────────────────────────────────────────────
@@ -69,6 +73,7 @@ export type ConnectorErrorCode =
   | "not_implemented"         // registered but not yet wired (placeholder)
   | "invalid_request"         // bad/missing arguments or context
   | "patient_not_found"
+  | "ambiguous_match"         // several plausible external candidates — a human must disambiguate; never pick one
   | "provider_not_found"
   | "appointment_not_found"
   | "slot_unavailable"        // requested time no longer open
@@ -201,6 +206,14 @@ export interface UpdateConnectorAppointmentInput {
   operatory?: ConnectorEntityRef | null;
 }
 
+// Evidence for an external patient search. Phone/email are the only search
+// keys — a NAME is never evidence enough to establish identity, so it is
+// deliberately absent from the request shape.
+export interface ConnectorPatientSearchRequest {
+  phone?: string | null;
+  email?: string | null;
+}
+
 export interface ConnectorSyncRequest {
   syncType: string;          // app vocabulary (booking-connections-server SYNC_RUN_TYPES)
   since?: string | null;     // ISO timestamp for incremental syncs
@@ -238,6 +251,14 @@ export interface BookingConnector {
 
   getAppointments(ctx: BookingConnectorContext, req: ConnectorAppointmentsRequest): Promise<ConnectorResult<ConnectorAppointment[]>>;
   getAvailability(ctx: BookingConnectorContext, req: ConnectorAvailabilityRequest): Promise<ConnectorResult<ConnectorAvailabilitySlot[]>>;
+
+  /** ALL plausible external patients for the evidence — the caller decides;
+   *  a connector must never pre-select one (no first-result behavior). */
+  findPatients(ctx: BookingConnectorContext, req: ConnectorPatientSearchRequest): Promise<ConnectorResult<ConnectorPatientRef[]>>;
+  /** Create an external patient record (scheduling-contact fields only).
+   *  Identity establishment — persisting the mapping — is the caller's job
+   *  and must complete before the patient counts as established. */
+  createPatient(ctx: BookingConnectorContext, input: ConnectorPatientRef): Promise<ConnectorResult<{ externalId: string }>>;
 
   createAppointment(ctx: BookingConnectorContext, input: CreateConnectorAppointmentInput): Promise<ConnectorResult<ConnectorAppointment>>;
   updateAppointment(ctx: BookingConnectorContext, input: UpdateConnectorAppointmentInput): Promise<ConnectorResult<ConnectorAppointment>>;
