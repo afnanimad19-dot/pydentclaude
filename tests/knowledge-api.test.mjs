@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-const { withKnowledge } = await import("@/lib/knowledge-route");
+const { withKnowledge, withViewer, viewerCapability } = await import("@/lib/knowledge-route");
 const S = await import("@/lib/knowledge-service");
 const K = await import("@/lib/knowledge");
 const { KnowledgeMigrationMissing } = S;
@@ -789,6 +789,76 @@ test("atomic contract: each document operation makes exactly ONE persistence cal
     assert.ok(r.status === 200 || r.status === 201, `${name} ${r.status}`);
     assert.equal(mutating(w).length, 1, `${name}: one persistence call`);
   }
+});
+
+// ------------------------------------------------------------ A6.1 viewer capability
+
+test("viewer.canManage: owner/manager true, doctor/agent false on list AND detail — derived from the session role only", async () => {
+  const w = world();
+  const { fileRes } = await seed(w);
+  // Exactly what the GET routes do.
+  const list = (d, q = {}) => withKnowledge(d, "read", "list", async ({ ws, store, role }) => withViewer(await S.listResources(store, ws, q), role)).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const detail = (d, id) => withKnowledge(d, "read", "detail", async ({ ws, store, role }) => withViewer(await S.getResourceDetail(store, ws, id), role)).then(async (r) => ({ status: r.status, body: await r.json() }));
+  for (const [who, can] of [["owner", true], ["manager", true], ["doctor", false], ["agent", false]]) {
+    const l = await list(w.deps(who));
+    assert.equal(l.status, 200, who);
+    assert.deepEqual(l.body.viewer, { canManage: can }, `${who} list`);
+    assert.equal(l.body.resources.length, 2);
+    const d = await detail(w.deps(who), fileRes.id);
+    assert.deepEqual(d.body.viewer, { canManage: can }, `${who} detail`);
+  }
+  // Role names are matched case-insensitively, unknown roles get nothing.
+  assert.deepEqual(viewerCapability("Owner"), { canManage: true });
+  for (const r of ["admin", "", null, undefined, "viewer"]) assert.deepEqual(viewerCapability(r), { canManage: false }, String(r));
+  // Unauthenticated / non-member: still 401 / 403, no viewer at all.
+  for (const [who, status] of [["anon", 401], ["forged", 401], ["outsider", 403]]) {
+    const r = await list(w.deps(who));
+    assert.equal(r.status, status);
+    assert.ok(!("viewer" in r.body));
+  }
+  // Error responses carry no viewer (404 detail, 503 migration missing).
+  const nf = await detail(w.deps("owner"), "00000000-0000-4000-8000-999999999999");
+  assert.equal(nf.status, 404);
+  assert.ok(!("viewer" in nf.body));
+  w.setMissing(true);
+  const mm = await list(w.deps("doctor"));
+  assert.equal(mm.status, 503);
+  assert.ok(!("viewer" in mm.body));
+});
+
+test("viewer.canManage can't be supplied or overridden by the browser; routes take it from the session", async () => {
+  const w = world();
+  await seed(w);
+  // Whatever a client puts in the query, a doctor stays canManage:false.
+  const r = await withKnowledge(w.deps("doctor"), "read", "list", async ({ ws, store, role }) =>
+    withViewer(await S.listResources(store, ws, { q: null, type: null, status: null, canManage: true, viewer: { canManage: true }, role: "owner" }), role)
+  );
+  assert.deepEqual((await r.json()).viewer, { canManage: false });
+  // withViewer replaces any `viewer` a service might return — never trusts it.
+  assert.deepEqual(withViewer({ status: 200, body: { ok: true, viewer: { canManage: true } } }, "agent").body.viewer, { canManage: false });
+  const listRoute = src("src/app/api/knowledge/resources/route.ts");
+  assert.match(listRoute, /"read", "list", async \(\{ ws, store, role \}\) =>\s*withViewer\(await listResources\(store, ws, \{ q: sp\.get\("q"\), type: sp\.get\("type"\), status: sp\.get\("status"\) \}\), role\)/);
+  assert.deepEqual([...listRoute.matchAll(/sp\.get\("(\w+)"\)/g)].map((m) => m[1]), ["q", "type", "status"], "only the search / filter params are read");
+  assert.match(src("src/app/api/knowledge/resources/[id]/route.ts"), /"read", "detail", async \(\{ ws, store, role \}\) => withViewer\(await getResourceDetail\(store, ws, id\), role\)\)/);
+  assert.match(src("src/lib/knowledge-route.ts"), /export function viewerCapability\(role: string \| null \| undefined\): \{ canManage: boolean \} \{\s*return \{ canManage: canManageKnowledge\(role\) \};/);
+});
+
+test("defense in depth: doctor/agent mutations are still refused by the server even if a client ignores the UI", async () => {
+  const w = world();
+  const { fileRes, urlRes, docId } = await seed(w);
+  const before = JSON.stringify(w.db);
+  for (const who of ["doctor", "agent"]) {
+    const d = w.deps(who);
+    for (const r of [
+      await w.api.create(d, { name: "Sneaky", type: "file" }), await w.api.patch(d, fileRes.id, { name: "Sneaky" }), await w.api.del(d, fileRes.id),
+      await w.api.dup(d, fileRes.id), await w.api.upload(d, fileRes.id, w.file("x.pdf")), await w.api.url(d, urlRes.id, { url: "https://example.com" }),
+      await w.api.refresh(d, urlRes.id), await w.api.delDoc(d, fileRes.id, docId),
+    ]) {
+      assert.equal(r.status, 403, who);
+      assert.equal(r.body.code, "forbidden_role");
+    }
+  }
+  assert.equal(JSON.stringify(w.db), before, "nothing changed");
 });
 
 // ------------------------------------------------------------ fail closed

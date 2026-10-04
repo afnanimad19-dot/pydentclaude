@@ -47,6 +47,21 @@ export function canManageKnowledge(role: string | null | undefined): boolean {
   return !!role && KNOWLEDGE_MANAGER_ROLES.includes(String(role).toLowerCase());
 }
 
+/**
+ * The viewer's Central KB capability, derived ONLY from the session role that
+ * withKnowledge resolved (never from the request). A UI hint: every mutation
+ * route still enforces owner/manager itself.
+ */
+export function viewerCapability(role: string | null | undefined): { canManage: boolean } {
+  return { canManage: canManageKnowledge(role) };
+}
+
+/** Add `viewer` to a successful read response (list / detail); errors are returned unchanged. */
+export function withViewer(out: Outcome, role: string): Outcome {
+  if (out.status >= 400) return out;
+  return { status: out.status, body: { ...out.body, viewer: viewerCapability(role) } };
+}
+
 export async function withKnowledge(deps: KnowledgeRouteDeps, mode: AccessMode, op: string, run: (ctx: KnowledgeCtx) => Promise<Outcome>): Promise<Response> {
   const log = deps.log ?? ((line: string) => console.log(line));
   let auth: WorkspaceAuthResult;

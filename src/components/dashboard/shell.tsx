@@ -28,6 +28,7 @@ import {
   Check,
   Plus,
   Building2,
+  BookOpen,
 } from "lucide-react";
 import { Avatar } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme";
@@ -80,6 +81,7 @@ const nav: NavItem[] = [
       { href: "/dashboard/voice", label: "Call Logs" },
     ],
   },
+  { href: "/dashboard/knowledge", label: "Knowledge Base", icon: BookOpen },
   {
     href: "/dashboard/whatsapp",
     label: "WhatsApp",

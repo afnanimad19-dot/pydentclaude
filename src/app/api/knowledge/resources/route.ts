@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { knowledgeDeps } from "@/lib/knowledge-server";
-import { withKnowledge } from "@/lib/knowledge-route";
+import { withKnowledge, withViewer } from "@/lib/knowledge-route";
 import { createResource, listResources } from "@/lib/knowledge-service";
 
 // Central Knowledge Base resources. GET: any workspace member. POST: owner/manager.
@@ -9,8 +9,9 @@ export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
-  return withKnowledge(knowledgeDeps(req), "read", "list", ({ ws, store }) =>
-    listResources(store, ws, { q: sp.get("q"), type: sp.get("type"), status: sp.get("status") })
+  // `viewer.canManage` comes from the session role only (UI hint; mutations re-check).
+  return withKnowledge(knowledgeDeps(req), "read", "list", async ({ ws, store, role }) =>
+    withViewer(await listResources(store, ws, { q: sp.get("q"), type: sp.get("type"), status: sp.get("status") }), role)
   );
 }
 
