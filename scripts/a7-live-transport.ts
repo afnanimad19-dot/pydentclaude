@@ -122,6 +122,24 @@ export function createSentinelReadTransport(env: A7EnvFile, fetchImpl?: FetchLik
   };
 }
 
+export type A7ReadOnlyQueryTransport = {
+  /** One read-only query with bound parameters; read_only:true is hard-coded. */
+  readonly executeReadOnlyQuery: (sql: string, parameters: readonly string[], context: string) => Promise<unknown>;
+};
+
+/**
+ * General READ-ONLY transport for validators. Structurally incapable of
+ * mutation: the returned object has no mutation member and `read_only: true`
+ * is hard-coded into the one request shape it can produce. The `context`
+ * string only labels sanitized error messages.
+ */
+export function createReadOnlyQueryTransport(env: A7EnvFile, fetchImpl?: FetchLike): A7ReadOnlyQueryTransport {
+  const post = makeA7Poster(env, fetchImpl);
+  return {
+    executeReadOnlyQuery: (sql, parameters, context) => post({ query: sql, parameters, read_only: true }, context),
+  };
+}
+
 /** Full transport for the live mutation CLI only. Same poster, plus mutation. */
 export function createLiveTransport(env: A7EnvFile, fetchImpl?: FetchLike): A7LiveTransport {
   const post = makeA7Poster(env, fetchImpl);

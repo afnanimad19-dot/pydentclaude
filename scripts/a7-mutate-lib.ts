@@ -87,6 +87,7 @@ export type A7RunnerFailureCode =
   | "UNKNOWN_STEP"
   | "LIVE_CONFIRMATION_REQUIRED"
   | "AUTHORIZE_CONFIRMATION_REQUIRED"
+  | "VALIDATION_FAILED"
   | "TRANSPORT_HTTP_ERROR"
   | "ENV_FILE_MISSING"
   | "ENV_PARSE_ERROR"
@@ -110,6 +111,7 @@ const MESSAGES: Record<A7RunnerFailureCode, string> = {
   UNKNOWN_STEP: "unknown step id; only allowlisted steps may run",
   LIVE_CONFIRMATION_REQUIRED: "live execution requires the exact A7 live confirmation phrase; refusing",
   AUTHORIZE_CONFIRMATION_REQUIRED: "the authorization probe requires its exact confirmation phrase; refusing",
+  VALIDATION_FAILED: "a read-only database validation check did not match the expected state; failing closed",
   TRANSPORT_HTTP_ERROR: "the A7 query endpoint returned an error; the step was stopped at the failing request",
   ENV_FILE_MISSING: ".env.a7 not found at the repository root (required; no other source is consulted)",
   ENV_PARSE_ERROR: ".env.a7 has a line that is not KEY=VALUE, a comment, or blank",
