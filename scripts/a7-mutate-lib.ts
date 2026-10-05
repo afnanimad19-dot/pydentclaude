@@ -57,6 +57,16 @@ export type { A7StepId };
 export const A7_LIVE_CONFIRMATION_PHRASE =
   "I-UNDERSTAND-THIS-MUTATES-THE-A7-VALIDATION-DATABASE-etbuylimyelwoxxowtbx";
 
+/**
+ * The exact confirmation the operator must supply to the AUTHORIZATION PROBE
+ * (`npm run a7:authorize -- --confirm=<phrase>`), which contacts the A7
+ * endpoint read-only and performs no mutation. Deliberately DISTINCT from the
+ * mutation phrase above, so holding one can never satisfy the other gate.
+ * Non-secret; exact, case-sensitive match required; no interactive prompt.
+ */
+export const A7_AUTHORIZE_CONFIRMATION_PHRASE =
+  "I-UNDERSTAND-THIS-CONTACTS-THE-A7-VALIDATION-DATABASE-etbuylimyelwoxxowtbx";
+
 /** The one endpoint a live executor may ever target — pinned to the A7 ref constant. */
 export const A7_QUERY_ENDPOINT = `https://api.supabase.com/v1/projects/${A7_PROJECT_REF}/database/query`;
 
@@ -76,6 +86,7 @@ export type A7RunnerFailureCode =
   | "INVALID_ARGS"
   | "UNKNOWN_STEP"
   | "LIVE_CONFIRMATION_REQUIRED"
+  | "AUTHORIZE_CONFIRMATION_REQUIRED"
   | "TRANSPORT_HTTP_ERROR"
   | "ENV_FILE_MISSING"
   | "ENV_PARSE_ERROR"
@@ -98,6 +109,7 @@ const MESSAGES: Record<A7RunnerFailureCode, string> = {
   INVALID_ARGS: "invalid arguments: pass exactly one known step id (and optionally --dry-run)",
   UNKNOWN_STEP: "unknown step id; only allowlisted steps may run",
   LIVE_CONFIRMATION_REQUIRED: "live execution requires the exact A7 live confirmation phrase; refusing",
+  AUTHORIZE_CONFIRMATION_REQUIRED: "the authorization probe requires its exact confirmation phrase; refusing",
   TRANSPORT_HTTP_ERROR: "the A7 query endpoint returned an error; the step was stopped at the failing request",
   ENV_FILE_MISSING: ".env.a7 not found at the repository root (required; no other source is consulted)",
   ENV_PARSE_ERROR: ".env.a7 has a line that is not KEY=VALUE, a comment, or blank",
@@ -330,6 +342,41 @@ export function runDryRun(deps: DryRunDeps): DryRunReport {
 // refuses without the exact confirmation phrase, so even a programmatic
 // caller cannot mutate unconfirmed.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Authorization probe — READ-ONLY BY CONSTRUCTION. Its dependency type carries
+// no mutation executor, no step id, and no file readers: there is nothing a
+// caller could pass that would let it apply a migration or read migration SQL.
+// Future first-contact use: verify the live sentinel once, before any mutation
+// stage is attempted, without being followed by migrations.
+// ---------------------------------------------------------------------------
+
+export type AuthorizationProbeDeps = {
+  /** Must be exactly A7_AUTHORIZE_CONFIRMATION_PHRASE or everything is refused. */
+  readonly confirmation: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  /** Read-only sentinel verification transport (A7-pinned). */
+  readonly executeSentinelQuery: SentinelQueryExecutor;
+};
+
+/**
+ * Enforced order: exact probe confirmation (refused before anything else) ->
+ * checkA7Config (production blocking first; wrong ref/URL/A7_MODE refused
+ * BEFORE any network use) -> authorizeA7Mutation (one read-only sentinel
+ * query; missing/malformed token refused before the query inside the guard).
+ * Returns safe identity metadata only — never tokens, digests, or headers.
+ */
+export async function runA7AuthorizationProbe(
+  deps: AuthorizationProbeDeps,
+): Promise<{ eligible: true; ref: string }> {
+  if (deps.confirmation !== A7_AUTHORIZE_CONFIRMATION_PHRASE) {
+    throw new A7RunnerError("AUTHORIZE_CONFIRMATION_REQUIRED");
+  }
+  const identity = checkA7Config(deps.env);
+  if (!identity.ok) throw new A7GuardError(identity.code, identity.reason);
+  const auth = await authorizeA7Mutation(deps.executeSentinelQuery, deps.env);
+  return { eligible: auth.eligible, ref: auth.ref };
+}
 
 export type LiveStepDeps = {
   /** Must be exactly A7_LIVE_CONFIRMATION_PHRASE or everything is refused. */

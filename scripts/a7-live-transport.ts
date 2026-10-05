@@ -1,9 +1,11 @@
 // Pydent A7 live transport — THE ONLY NETWORK CODE IN THE A7 TOOLING.
 //
-// OPERATOR-ONLY. Imported solely by scripts/a7-mutate-live.ts (the explicit
-// live command); never by the dry-run CLI, the runner library, or any
-// application code — which keeps the dry-run path structurally incapable of
-// HTTP. Tests inject a fake fetchImpl and never touch the network.
+// OPERATOR-ONLY. Imported solely by the two explicit operator commands:
+// scripts/a7-mutate-live.ts (full transport) and scripts/a7-authorize.ts
+// (createSentinelReadTransport only — no mutation member exists on what it
+// receives); never by the dry-run CLI, the runner library, or any application
+// code — which keeps the dry-run path structurally incapable of HTTP. Tests
+// inject a fake fetchImpl and never touch the network.
 //
 // Targeting is pinned: every request goes to A7_QUERY_ENDPOINT, a constant
 // built from the A7 project ref. No ref, URL, or path ever comes from argv,
@@ -46,17 +48,18 @@ export function scrubTransportText(text: string): string {
     .slice(0, 240);
 }
 
-export type A7LiveTransport = {
+export type A7SentinelReadTransport = {
   readonly executeSentinelQuery: SentinelQueryExecutor;
+};
+
+export type A7LiveTransport = A7SentinelReadTransport & {
   readonly executeMutation: (sql: string, file: string, auth: A7MutationAuthorization) => Promise<void>;
 };
 
-/**
- * Build the two A7-pinned executors. `env` must be the parsed, already
- * guard-validated .env.a7 object; `fetchImpl` is injectable for tests only
- * (the live CLI passes nothing and gets the platform fetch).
- */
-export function createLiveTransport(env: A7EnvFile, fetchImpl?: FetchLike): A7LiveTransport {
+type A7Poster = (body: Record<string, unknown>, context: string) => Promise<unknown>;
+
+/** Shared, private: asserts target invariants and binds the credential into a closure. */
+function makeA7Poster(env: A7EnvFile, fetchImpl?: FetchLike): A7Poster {
   // Re-assert target invariants at construction (defense in depth — the
   // identity guard has already enforced all of this).
   if (!A7_QUERY_ENDPOINT.includes(`/projects/${A7_PROJECT_REF}/`)) throw new A7RunnerError("CONFIG_INVALID");
@@ -100,9 +103,29 @@ export function createLiveTransport(env: A7EnvFile, fetchImpl?: FetchLike): A7Li
     }
   };
 
+  return post;
+}
+
+/**
+ * READ-ONLY transport for the authorization probe. Structurally incapable of
+ * mutation: the returned object has no mutation member and `read_only: true`
+ * is hard-coded into the one request shape it can produce. `env` must be the
+ * parsed, guard-validated .env.a7 object; `fetchImpl` is injectable for tests
+ * only (the CLIs pass nothing and get the platform fetch).
+ */
+export function createSentinelReadTransport(env: A7EnvFile, fetchImpl?: FetchLike): A7SentinelReadTransport {
+  const post = makeA7Poster(env, fetchImpl);
   return {
     // Read-only sentinel verification (digest arrives as a bound parameter;
     // the SQL text itself is the fixed constant from a7-sentinel-guard).
+    executeSentinelQuery: (sql, parameters) => post({ query: sql, parameters, read_only: true }, "sentinel-verification"),
+  };
+}
+
+/** Full transport for the live mutation CLI only. Same poster, plus mutation. */
+export function createLiveTransport(env: A7EnvFile, fetchImpl?: FetchLike): A7LiveTransport {
+  const post = makeA7Poster(env, fetchImpl);
+  return {
     executeSentinelQuery: (sql, parameters) => post({ query: sql, parameters, read_only: true }, "sentinel-verification"),
     // One migration file per request; the endpoint applies it atomically, so a
     // failure stops the sequence with nothing from the failing file applied.
