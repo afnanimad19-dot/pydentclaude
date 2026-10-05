@@ -544,9 +544,14 @@ export async function handleBuilderToolRequest(
           fee: typeof args.fee === "number" || typeof args.fee === "string" ? args.fee : undefined,
           doctor: str(args.doctor),
           datetime,
+          // M1E-C-D: explicit Pydent UUIDs are the ONLY connector identities a
+          // caller may name — the free-text service/treatment/doctor fields
+          // above are calendar labels and never establish external identity.
+          service_id: str(args.service_id),
+          provider_id: str(args.provider_id),
         });
         if (!r.success) {
-          return { status: 200, body: { success: false, reason: r.error ?? "booking_failed", spoken: r.spoken } };
+          return { status: 200, body: { success: false, reason: r.error ?? "booking_failed", spoken: r.spoken, ...(r.external_sync ? { external_sync: r.external_sync } : {}) } };
         }
         return {
           status: 200,
@@ -562,6 +567,7 @@ export async function handleBuilderToolRequest(
               service: r.treatment ?? "",
               status: "Scheduled",
             },
+            external_sync: r.external_sync ?? "not_applicable",
             spoken: r.spoken,
           },
         };

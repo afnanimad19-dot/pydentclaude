@@ -6,6 +6,9 @@
 
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { getOdConfig, odForward } from "@/lib/opendental-gateway";
+import { getPrimaryBookingConnection, latestAppointmentIntent, type BookingConnection } from "@/lib/booking-connections-server";
+import { connectorCreateAppointment } from "@/lib/booking-connectors/service";
+import type { ConnectorResult, ConnectorAppointment } from "@/lib/booking-connectors/types";
 import { triggerWorkflows } from "@/lib/workflow-runner";
 import { pushToGoogleCalendar, updateGoogleCalendarEvent, deleteGoogleCalendarEvent } from "@/lib/google-api";
 import { getHfxCreds, hfxCall, hfxConfigured, hfxListTools, type HfxCreds } from "@/lib/hyperfx";
@@ -33,11 +36,13 @@ export interface BookingArgs {
   name?: string;
   email?: string;
   phone?: string;
-  service?: string;
-  treatment?: string;
+  service?: string;    // free-text label for the calendar card — NEVER a connector identity
+  treatment?: string;  // free-text label for the calendar card — NEVER a connector identity
   fee?: number | string;
-  doctor?: string;
+  doctor?: string;     // free-text display name — NEVER a connector identity
   datetime?: string;
+  service_id?: string;  // Pydent service UUID (M1E-C-D): the ONLY way a caller names the service for connector sync
+  provider_id?: string; // Pydent provider UUID (M1E-C-D): the ONLY way a caller names the provider for connector sync
 }
 
 // The clinic's timezone for calendar events (defaults to Dubai).
@@ -438,6 +443,12 @@ export interface BookingResult {
   treatment?: string;
   provider?: string;
   fee?: number | null;
+  // M1E-C-D connector synchronization outcome. "not_applicable" = the
+  // workspace is not adopted (legacy behavior ran). "unknown" means the
+  // external outcome could not be proven either way — it is NEVER success
+  // and NEVER reported to the patient as a confirmed external booking.
+  external_sync?: ExternalSyncState;
+  external_sync_code?: string;       // machine detail (connector error code), never raw PMS text
 }
 
 export interface UpcomingAppointment {
@@ -516,10 +527,108 @@ export async function getSlots(ws: string | null, args: any): Promise<string> {
   return (await getSlotsStructured(ws, args)).spoken;
 }
 
+// ── M1E-C-D: first caller adoption of the booking-connector architecture ────
+// bookAppointmentStructured is the ONE adoption point — Builder, LiveKit, SMS,
+// WhatsApp and Vapi all converge here, so gating here gates every agent
+// channel at once. Local-first is preserved: the Pydent calendar row is the
+// clinic booking; connector synchronization runs AFTER it exists, through the
+// M1E-C-C saga, and a sync failure never un-books the local appointment.
+
+export type ExternalSyncState = "synced" | "failed" | "unknown" | "not_applicable";
+
+// Injectable seam so the adoption logic is testable with deterministic fakes
+// (same discipline as the connector service's own deps).
+export interface ConnectorSyncDeps {
+  getPrimaryConnection: (ws: string) => Promise<BookingConnection | null>;
+  syncCreate: (
+    ws: string,
+    req: { pydentAppointmentId: string; pydentPatientId: string; pydentServiceId: string; pydentProviderId?: string; date: string; time: string; durationMin: number }
+  ) => Promise<ConnectorResult<ConnectorAppointment>>;
+  latestIntent: (ws: string, connectionId: string, pydentAppointmentId: string) => Promise<{ status: string } | null>;
+}
+
+export const REAL_CONNECTOR_SYNC_DEPS: ConnectorSyncDeps = {
+  getPrimaryConnection: getPrimaryBookingConnection,
+  syncCreate: (ws, req) => connectorCreateAppointment(ws, req),
+  latestIntent: latestAppointmentIntent,
+};
+
+// The adoption gate: an enabled primary booking connection ALONE never flips
+// a clinic onto the connector path — the connection's own (non-secret) config
+// must explicitly opt in. No connection, a disabled connection, a missing
+// 0066 schema (getPrimaryBookingConnection fails closed to null) or an
+// absent opt-in all resolve to legacy behavior, never to a booking failure.
+export function connectorAdoptionEnabled(conn: BookingConnection | null): boolean {
+  if (!conn || !conn.enabled || !conn.isPrimary) return false;
+  return (conn.config as Record<string, unknown> | null | undefined)?.["bookingAdoption"] === "connector";
+}
+
+// Service identity for connector sync. An explicitly supplied service_id
+// ALWAYS wins — if it is invalid the sync fails closed downstream; it is
+// never replaced by the configured default. Only a wholly absent service_id
+// may fall back to the connection's pilot defaultServiceId, which passes the
+// exact same downstream validation (workspace-scoped, active, booking-
+// enabled, mapped) inside the connector service. Free-text fields are never
+// consulted: this function sees no names at all.
+export function chooseServiceIdentity(serviceIdArg: unknown, conn: BookingConnection | null): string {
+  const explicit = String(serviceIdArg ?? "").trim();
+  if (explicit) return explicit;
+  return String((conn?.config as Record<string, unknown> | null | undefined)?.["defaultServiceId"] ?? "").trim();
+}
+
+// Connector error codes that PROVE no external write was dispatched — these
+// classify as a definite "failed" without consulting the intent ledger.
+const DEFINITE_NO_WRITE_CODES = new Set([
+  "invalid_request", "config_missing", "unsupported_capability", "unsupported_connector",
+  "not_implemented", "patient_not_found", "provider_not_found", "appointment_not_found",
+  "slot_unavailable", "ambiguous_match",
+]);
+
+// Run the M1E-C-C create saga for ONE existing Pydent appointment and map the
+// outcome onto the caller-facing tri-state. Identity rules: the patient UUID
+// is passed exactly as resolved, the service UUID comes only from
+// chooseServiceIdentity, the provider UUID only from provider_id (free-text
+// `doctor` never feeds it; absent → omitted, letting the strict slot-derived
+// provider behavior apply). "unknown" is decided by the intent ledger — the
+// single source of truth — never by parsing error messages.
+export async function runConnectorSync(
+  ws: string,
+  conn: BookingConnection,
+  req: {
+    pydentAppointmentId: string;
+    pydentPatientId: string | null;
+    serviceIdArg?: unknown;
+    providerIdArg?: unknown;
+    date: string;
+    time: string;
+    durationMin: number;
+  },
+  deps: ConnectorSyncDeps = REAL_CONNECTOR_SYNC_DEPS
+): Promise<{ external_sync: ExternalSyncState; code?: string }> {
+  const providerId = String(req.providerIdArg ?? "").trim();
+  const r = await deps.syncCreate(ws, {
+    pydentAppointmentId: req.pydentAppointmentId,
+    pydentPatientId: String(req.pydentPatientId ?? ""),
+    pydentServiceId: chooseServiceIdentity(req.serviceIdArg, conn),
+    pydentProviderId: providerId || undefined,
+    date: req.date,
+    time: req.time,
+    durationMin: req.durationMin,
+  });
+  if (r.ok) return { external_sync: "synced" };
+  if (DEFINITE_NO_WRITE_CODES.has(r.error.code)) return { external_sync: "failed", code: r.error.code };
+  // The write may have been dispatched: let the ledger adjudicate. A
+  // running/unknown intent (including one holding a recoverable externalId)
+  // must surface as "unknown" — conservatively NOT success, NOT failure.
+  const intent = await deps.latestIntent(ws, conn.id, req.pydentAppointmentId);
+  const indeterminate = intent?.status === "running" || intent?.status === "unknown";
+  return { external_sync: indeterminate ? "unknown" : "failed", code: r.error.code };
+}
+
 // Book an appointment onto the Calendar (always) + Open Dental (if connected),
 // recording the fee, the channel/source, and which agent booked it. Stores the
 // Open Dental appointment id so reschedule/cancel can target it later.
-export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingArgs): Promise<BookingResult> {
+export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingArgs, syncDeps: ConnectorSyncDeps = REAL_CONNECTOR_SYNC_DEPS): Promise<BookingResult> {
   const ws = ctx.ws;
   const dt = String(args.datetime || "");
   const date = dt.slice(0, 10);
@@ -542,12 +651,35 @@ export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingAr
 
   const patientId = await resolvePatient(ctx, args);
 
+  // M1E-C-D adoption gate — computed exactly ONCE per request. The same
+  // boolean selects the connector arm AND disables the legacy Open Dental
+  // forwarding arm below, so one booking request can execute exactly one
+  // external path, never both, and a connector failure never falls back to
+  // the legacy forward.
+  const primaryConn = ws ? await syncDeps.getPrimaryConnection(ws) : null;
+  const adoptConnector = connectorAdoptionEnabled(primaryConn);
+
   // Exact-duplicate guard: the SAME patient already holds an appointment at
-  // this exact date and time (any doctor) — never book it twice.
+  // this exact date and time (any doctor) — never book it twice. Under
+  // connector adoption, a retry of an already-booked slot instead DRIVES the
+  // existing appointment's synchronization through the C-C saga, whose
+  // idempotency/intent-ledger semantics guarantee no blind second PMS create
+  // — and the early return guarantees no second local appointment row.
   if (patientId) {
     const { data: dup } = await supabase.from("appointments").select("id").eq("workspace_id", ws).eq("patient_id", patientId).eq("date", date).eq("time", time).neq("status", "Broken").limit(1);
     if (dup?.length) {
-      return { success: false, error: "duplicate_booking", date, time, spoken: "This patient already has an appointment at that exact time — no duplicate was booked." };
+      const dupSpoken = "This patient already has an appointment at that exact time — no duplicate was booked.";
+      if (adoptConnector && primaryConn && ws) {
+        const sync = await runConnectorSync(ws, primaryConn, {
+          pydentAppointmentId: String(dup[0].id),
+          pydentPatientId: patientId,
+          serviceIdArg: args.service_id,
+          providerIdArg: args.provider_id,
+          date, time, durationMin,
+        }, syncDeps);
+        return { success: false, error: "duplicate_booking", appointmentId: String(dup[0].id), date, time, spoken: dupSpoken, external_sync: sync.external_sync, external_sync_code: sync.code };
+      }
+      return { success: false, error: "duplicate_booking", date, time, spoken: dupSpoken, external_sync: "not_applicable" };
     }
   }
 
@@ -597,16 +729,45 @@ export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingAr
   // responds immediately and the agent doesn't keep saying "one moment" while a
   // slow HTTP push to Open Dental / Google completes.
   const apptId = appt.id;
+
+  // M1E-C-D connector arm: SYNCHRONOUS, so the structured result carries the
+  // true synchronization outcome and an interrupted serverless background
+  // task can never silently drop it. The local booking above stands whatever
+  // happens here; the patient-facing spoken line stays the clinic-calendar
+  // confirmation and never claims (or denies) the external PMS booking.
+  let externalSync: ExternalSyncState = "not_applicable";
+  let externalSyncCode: string | undefined;
+  if (adoptConnector && primaryConn && ws) {
+    const sync = await runConnectorSync(ws, primaryConn, {
+      pydentAppointmentId: apptId,
+      pydentPatientId: patientId,
+      serviceIdArg: args.service_id,
+      providerIdArg: args.provider_id,
+      date, time, durationMin,
+    }, syncDeps);
+    externalSync = sync.external_sync;
+    externalSyncCode = sync.code;
+    if (externalSync === "synced") await ctx.log?.(`🔗 External PMS sync: appointment mapped via the booking connector.`);
+    else if (externalSync === "unknown") await ctx.log?.(`⚠️ External PMS sync outcome UNKNOWN (${externalSyncCode ?? "external_error"}) — reconciliation required; the clinic-calendar booking stands.`);
+    else await ctx.log?.(`⚠️ External PMS sync failed (${externalSyncCode ?? "error"}) — the clinic-calendar booking stands; staff follow-up needed.`);
+  }
+
   void (async () => {
     try {
-      const od = await getOdConfig(ws);
-      if (od?.enabled) {
-        const r = await odForward(ws, "/create-appointment", {
-          method: "POST",
-          body: { name: fullName || ctx.name, phone: args.phone || ctx.phone || "", email: args.email || "", doctorId: args.doctor || "", serviceId: treatment, fee, datetime: dt, consent: true },
-        });
-        const extId = (r.data as any)?.appointmentId;
-        if (r.status === 200 && extId && apptId) await supabase.from("appointments").update({ external_id: String(extId) }).eq("id", apptId);
+      if (!adoptConnector) {
+        // LEGACY ARM (gate off only): background Open Dental mirror,
+        // byte-identical behavior for non-adopted workspaces. Structurally
+        // exclusive with the connector arm above — the same single
+        // `adoptConnector` decision guards both, so no request runs both.
+        const od = await getOdConfig(ws);
+        if (od?.enabled) {
+          const r = await odForward(ws, "/create-appointment", {
+            method: "POST",
+            body: { name: fullName || ctx.name, phone: args.phone || ctx.phone || "", email: args.email || "", doctorId: args.doctor || "", serviceId: treatment, fee, datetime: dt, consent: true },
+          });
+          const extId = (r.data as any)?.appointmentId;
+          if (r.status === 200 && extId && apptId) await supabase.from("appointments").update({ external_id: String(extId) }).eq("id", apptId);
+        }
       }
     } catch { /* keep the Calendar booking even if Open Dental is unreachable */ }
     try {
@@ -666,6 +827,8 @@ export async function bookAppointmentStructured(ctx: BookingCtx, args: BookingAr
     treatment,
     provider: args.doctor || "",
     fee,
+    external_sync: externalSync,
+    external_sync_code: externalSyncCode,
     spoken: `Appointment booked: ${treatment}${args.doctor ? ` with ${args.doctor}` : ""} on ${date} at ${time}${feeNote}.`,
   };
 }

@@ -265,8 +265,8 @@ test("the service has no direct DB access: no supabase, no generic upserts, no r
   }
 });
 
-// ── 17. No production caller imports the service ────────────────────────────
-test("no production code outside booking-connectors imports the service (or the layer at all)", async () => {
+// ── 17. Exactly ONE sanctioned production caller imports the service ────────
+test("booking-server.ts is the ONLY production code outside booking-connectors touching the layer (M1E-C-D)", async () => {
   const offenders = [];
   async function walk(dir) {
     for (const e of await readdir(dir, { withFileTypes: true })) {
@@ -281,7 +281,11 @@ test("no production code outside booking-connectors imports the service (or the 
     }
   }
   await walk(new URL("../src", import.meta.url).pathname);
-  assert.deepEqual(offenders, [], "the connector service must have no production callers in M1D-B");
+  assert.deepEqual(
+    offenders.map((p) => p.split("/src/").pop()),
+    ["lib/booking-server.ts"],
+    "M1E-C-D sanctions bookAppointmentStructured's module as the single adoption point — no other channel may wire the layer independently"
+  );
 });
 
 // ════ M1E-B: appointment ↔ service identity ═════════════════════════════════
@@ -310,10 +314,23 @@ test("0068: nullable service_id, workspace-consistent composite FK, ON DELETE RE
   assert.equal(sql68.includes("procedure ="), false);
 });
 
-test("legacy appointment writers never supply service_id", async () => {
-  for (const f of ["../src/lib/db.ts", "../src/lib/booking-server.ts"]) {
-    const src = await readFile(new URL(f, import.meta.url), "utf8");
-    assert.equal(src.includes("service_id"), false, `${f} must not set service_id (caller adoption is a later milestone)`);
+test("appointment writers never set the service_id COLUMN", async () => {
+  // Manual writers stay fully service_id-free. booking-server.ts (M1E-C-D)
+  // carries service_id only as the caller-supplied connector identity
+  // ARGUMENT — the appointments INSERT/UPDATE payloads still never set the
+  // 0068 column (unapplied elsewhere), so pre-migration databases keep
+  // accepting every booking.
+  const db = await readFile(new URL("../src/lib/db.ts", import.meta.url), "utf8");
+  assert.equal(db.includes("service_id"), false, "db.ts must not set service_id (manual adoption is a later milestone)");
+  const bs = await readFile(new URL("../src/lib/booking-server.ts", import.meta.url), "utf8");
+  const insertRow = bs.slice(bs.indexOf("const baseRow"), bs.indexOf(".insert(baseRow)"));
+  assert.equal(insertRow.includes("service_id"), false, "the appointments insert payload must not carry the 0068 column");
+  assert.doesNotMatch(bs, /\.update\(\{[^}]*service_id/s, "no appointments update sets service_id either");
+  // Every service_id occurrence in CODE (comments aside) is the identity
+  // argument or its optional-field declaration, never a column write:
+  const code = bs.replace(/\/\/[^\n]*/g, "");
+  for (const m of code.matchAll(/[\w.]*service_id\??(:|\b)/g)) {
+    assert.match(m[0], /^(args\.service_id|service_id\?:)/, `unexpected service_id use: ${m[0]}`);
   }
 });
 

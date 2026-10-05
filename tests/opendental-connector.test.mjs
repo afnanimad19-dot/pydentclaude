@@ -322,5 +322,9 @@ test("no production code outside booking-connectors imports the adapter or regis
     }
   }
   await walk(new URL("../src", import.meta.url).pathname);
-  assert.deepEqual(offenders, [], "no production file may import booking-connectors yet (M1D-B wires adoption)");
+  assert.deepEqual(
+    offenders.map((p) => p.split("/src/").pop()),
+    ["lib/booking-server.ts"],
+    "M1E-C-D sanctions booking-server.ts as the ONE production consumer of the layer"
+  );
 });
