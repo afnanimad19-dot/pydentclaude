@@ -5,15 +5,17 @@
 // consumed only by the a7-mutate CLI (run explicitly by the operator) and by
 // the test suite (with mocks).
 //
-// *** LIVE EXECUTION IS DISABLED IN THIS BUILD. ***
-// createLiveExecutor() throws unconditionally and the CLI accepts no flag that
-// could select live mode, so this committed version is INCAPABLE of performing
-// HTTP or mutating any database — not merely configured not to. Enabling live
-// execution requires a reviewed code change in a future approved stage.
+// *** THIS MODULE IS NETWORK-FREE. ***
+// The dry-run CLI (scripts/a7-mutate.ts) uses only this module and can never
+// perform HTTP. The real transport lives solely in scripts/a7-live-transport.ts
+// and is wired in only by the separate operator live CLI
+// (scripts/a7-mutate-live.ts), which additionally requires the exact
+// A7_LIVE_CONFIRMATION_PHRASE — runLiveStep refuses without it.
 //
-// Structural execution order for the (future) live path, enforced by
-// runLiveStep and covered by tests:
-//   validate manifest + hashes + sentinel protection + local config
+// Structural execution order for the live path, enforced by runLiveStep and
+// covered by tests:
+//   exact live confirmation phrase (refused otherwise)
+//   -> validate manifest + hashes + order + closed world + sentinel protection
 //   -> checkA7Config (production blocking first; identity must pass)
 //   -> authorizeA7Mutation (live sentinel check, immediately before mutation)
 //   -> execute exactly ONE approved step's migrations, in manifest order
@@ -44,8 +46,16 @@ import { A7_STEPS, type A7StepId, type A7ManifestEntry } from "./a7-manifest";
 export { A7_STEPS };
 export type { A7StepId };
 
-/** Hard build-level switch. This stage ships with live execution impossible. */
-export const LIVE_EXECUTION_ENABLED = false;
+/**
+ * The exact confirmation the operator must supply to the SEPARATE live command
+ * (`npm run a7:live -- <step> --confirm=<phrase>`) before any mutation can run.
+ * Deliberately long, target-naming, and impossible to produce by accident from
+ * normal arguments. It is NOT a secret — the gate is deliberateness, not
+ * secrecy (secrecy lives in .env.a7). runLiveStep refuses without it, so even
+ * programmatic callers cannot mutate unconfirmed.
+ */
+export const A7_LIVE_CONFIRMATION_PHRASE =
+  "I-UNDERSTAND-THIS-MUTATES-THE-A7-VALIDATION-DATABASE-etbuylimyelwoxxowtbx";
 
 /** The one endpoint a live executor may ever target — pinned to the A7 ref constant. */
 export const A7_QUERY_ENDPOINT = `https://api.supabase.com/v1/projects/${A7_PROJECT_REF}/database/query`;
@@ -65,7 +75,8 @@ export const ENV_A7_ALLOWED_KEYS = [
 export type A7RunnerFailureCode =
   | "INVALID_ARGS"
   | "UNKNOWN_STEP"
-  | "LIVE_EXECUTION_DISABLED"
+  | "LIVE_CONFIRMATION_REQUIRED"
+  | "TRANSPORT_HTTP_ERROR"
   | "ENV_FILE_MISSING"
   | "ENV_PARSE_ERROR"
   | "ENV_UNKNOWN_KEY"
@@ -86,7 +97,8 @@ export type A7RunnerFailureCode =
 const MESSAGES: Record<A7RunnerFailureCode, string> = {
   INVALID_ARGS: "invalid arguments: pass exactly one known step id (and optionally --dry-run)",
   UNKNOWN_STEP: "unknown step id; only allowlisted steps may run",
-  LIVE_EXECUTION_DISABLED: "live execution is disabled in this build; only --dry-run exists",
+  LIVE_CONFIRMATION_REQUIRED: "live execution requires the exact A7 live confirmation phrase; refusing",
+  TRANSPORT_HTTP_ERROR: "the A7 query endpoint returned an error; the step was stopped at the failing request",
   ENV_FILE_MISSING: ".env.a7 not found at the repository root (required; no other source is consulted)",
   ENV_PARSE_ERROR: ".env.a7 has a line that is not KEY=VALUE, a comment, or blank",
   ENV_UNKNOWN_KEY: ".env.a7 contains a key outside the allowed set",
@@ -307,33 +319,21 @@ export function runDryRun(deps: DryRunDeps): DryRunReport {
       validateA7EnvConfig(parseEnvA7(raw));
     }),
   );
-  checks.push(
-    asCheck("live execution disabled in this build", () => {
-      if (LIVE_EXECUTION_ENABLED !== false) throw new A7RunnerError("INVALID_ARGS");
-    }),
-  );
   return { ok: checks.every((c) => c.ok), checks };
 }
 
 // ---------------------------------------------------------------------------
-// Live path — STRUCTURE ONLY in this stage. createLiveExecutor() throws, so no
-// committed code path can reach the network. runLiveStep exists so the
-// ordering (guards -> authorize -> mutate -> exit) is testable with mocks and
-// fixed before live execution is ever enabled.
+// Live path. This module stays NETWORK-FREE: the real transport lives in
+// scripts/a7-live-transport.ts and is wired in only by the separate operator
+// live CLI (scripts/a7-mutate-live.ts). runLiveStep enforces the sequence
+// (confirmation -> validation -> guards -> authorize -> mutate -> exit) and
+// refuses without the exact confirmation phrase, so even a programmatic
+// caller cannot mutate unconfirmed.
 // ---------------------------------------------------------------------------
 
-/**
- * FUTURE live transport factory. In this build it refuses unconditionally.
- * The future reviewed implementation will POST to A7_QUERY_ENDPOINT only,
- * constructing `Authorization: Bearer <A7_SUPABASE_MGMT_TOKEN>` internally
- * from the .env.a7 value, and must never log the header, the body, or any
- * response object; errors must be reduced to safe HTTP status codes.
- */
-export function createLiveExecutor(): never {
-  throw new A7RunnerError("LIVE_EXECUTION_DISABLED");
-}
-
 export type LiveStepDeps = {
+  /** Must be exactly A7_LIVE_CONFIRMATION_PHRASE or everything is refused. */
+  readonly confirmation: string;
   readonly stepId: A7StepId;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly readDisk: () => readonly DiskMigration[];
@@ -350,6 +350,11 @@ export type LiveStepDeps = {
  * this one step in this one process invocation.
  */
 export async function runLiveStep(deps: LiveStepDeps): Promise<{ applied: readonly string[] }> {
+  // 0. Deliberate-confirmation gate, before any other work. Exact match only.
+  if (deps.confirmation !== A7_LIVE_CONFIRMATION_PHRASE) {
+    throw new A7RunnerError("LIVE_CONFIRMATION_REQUIRED");
+  }
+
   // 1. Manifest, hashes, order, closed world, sentinel protection — all first.
   const manifest = validateStepManifest(deps.stepId, deps.readDisk());
   const sqlByFile = new Map<string, string>();

@@ -12,7 +12,7 @@ const lib = await import("../scripts/a7-mutate-lib.ts");
 const {
   A7_STEPS,
   A7_QUERY_ENDPOINT,
-  LIVE_EXECUTION_ENABLED,
+  A7_LIVE_CONFIRMATION_PHRASE,
   ENV_A7_ALLOWED_KEYS,
   parseCliArgs,
   parseEnvA7,
@@ -21,9 +21,9 @@ const {
   checkSentinelProtection,
   runDryRun,
   runLiveStep,
-  createLiveExecutor,
   A7RunnerError,
 } = lib;
+const CONFIRM = A7_LIVE_CONFIRMATION_PHRASE;
 
 const root = path.resolve(import.meta.dirname, "..");
 const migrationsDir = path.join(root, "supabase", "migrations");
@@ -107,6 +107,7 @@ test("production ref cannot be selected or targeted", async () => {
   let mutations = 0;
   await assert.rejects(
     runLiveStep({
+      confirmation: CONFIRM,
       stepId: "apply-0065",
       env: {
         A7_MODE: "1",
@@ -237,6 +238,7 @@ test(".env.a7 is the only secret source: no fallback, strict keys, shape-checked
 test("guard failure prevents any executor call; sentinel failure prevents mutation", async () => {
   const calls = { sentinel: 0, mutate: 0 };
   const deps = (env, sentinelRow) => ({
+    confirmation: CONFIRM,
     stepId: "apply-0065",
     env,
     readDisk: realDisk,
@@ -260,6 +262,7 @@ test("mocked future-live flow: authorization immediately precedes mutation, one 
   const events = [];
   const env = { A7_MODE: "1", A7_EXPECTED_REF: A7_PROJECT_REF, NEXT_PUBLIC_SUPABASE_URL: A7_SUPABASE_URL, A7_SENTINEL_TOKEN: FAKE_SENTINEL };
   const result = await runLiveStep({
+    confirmation: CONFIRM,
     stepId: "baseline-0001-0064",
     env,
     readDisk: realDisk,
@@ -279,13 +282,29 @@ test("mocked future-live flow: authorization immediately precedes mutation, one 
   assert.deepEqual(result.applied, A7_STEPS["baseline-0001-0064"].migrations.map((m) => m.file));
 });
 
-test("live execution is impossible in this build", () => {
-  assert.equal(LIVE_EXECUTION_ENABLED, false);
-  expectRunnerError(() => createLiveExecutor(), "LIVE_EXECUTION_DISABLED");
-  // The CLI parser has no live flag at all; --live is refused above. The CLI
-  // module wires runDryRun only — it never calls runLiveStep.
+test("live execution requires the exact confirmation phrase — refused without it, before any work", async () => {
+  const env = { A7_MODE: "1", A7_EXPECTED_REF: A7_PROJECT_REF, NEXT_PUBLIC_SUPABASE_URL: A7_SUPABASE_URL, A7_SENTINEL_TOKEN: FAKE_SENTINEL };
+  for (const confirmation of [undefined, "", "yes", "--confirm", CONFIRM.toLowerCase(), CONFIRM + " ", CONFIRM.slice(0, -1)]) {
+    let touched = 0;
+    await assert.rejects(
+      runLiveStep({
+        confirmation,
+        stepId: "apply-0065",
+        env,
+        readDisk: () => { touched++; return realDisk(); },
+        readSql: () => { touched++; return "-- sql"; },
+        executeSentinelQuery: async () => { touched++; return []; },
+        executeMutation: async () => { touched++; },
+      }),
+      (e) => e instanceof A7RunnerError && e.code === "LIVE_CONFIRMATION_REQUIRED",
+      String(confirmation),
+    );
+    assert.equal(touched, 0, "nothing runs without the exact phrase");
+  }
+  // The phrase itself is non-secret and fixed; the dry-run CLI never grants it.
   const cliSrc = fs.readFileSync(path.join(root, "scripts", "a7-mutate.ts"), "utf8");
-  assert.ok(!cliSrc.includes("runLiveStep"), "CLI must not reference the live path");
+  assert.ok(!cliSrc.includes("runLiveStep"), "dry-run CLI must not reference the live path");
+  assert.ok(!cliSrc.includes("A7_LIVE_CONFIRMATION_PHRASE"), "dry-run CLI must not carry the confirmation");
   assert.doesNotMatch(cliSrc, /fetch\s*\(|node:https?|Authorization/);
 });
 
@@ -303,6 +322,7 @@ test("no secret value ever appears in reports, logs, or errors", async () => {
   // Live-path refusals:
   try {
     await runLiveStep({
+      confirmation: CONFIRM,
       stepId: "apply-0065",
       env: { A7_MODE: "1", A7_EXPECTED_REF: A7_PROJECT_REF, NEXT_PUBLIC_SUPABASE_URL: A7_SUPABASE_URL, A7_SENTINEL_TOKEN: FAKE_SENTINEL, A7_SUPABASE_MGMT_TOKEN: FAKE_MGMT },
       readDisk: realDisk,

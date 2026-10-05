@@ -4,11 +4,13 @@
 //   npm run a7:dry-run -- <step-id>
 //   step-id: baseline-0001-0064 | apply-0065 | apply-0066
 //
-// This build performs VALIDATION ONLY: manifest + pinned SHA-256 hashes +
+// This command performs VALIDATION ONLY: manifest + pinned SHA-256 hashes +
 // ordering + closed-world directory check + sentinel-protection scan + local
 // .env.a7 configuration. It performs ZERO HTTP requests and cannot mutate any
-// database: there is no flag that selects live mode and the live transport
-// factory throws unconditionally (see scripts/a7-mutate-lib.ts).
+// database: it has no flag that selects live mode, it never references the
+// live path, and the only module it uses (scripts/a7-mutate-lib.ts) is
+// network-free. Live execution is a SEPARATE operator command (a7:live)
+// requiring an exact confirmation phrase — see scripts/a7-mutate-live.ts.
 //
 // Output is restricted to: step id, migration filenames, approved hashes,
 // PASS/FAIL per check, and failure codes. Secrets and env values are never
@@ -60,7 +62,7 @@ function main(): number {
     return 1;
   }
 
-  console.log(`A7 mutation runner — DRY RUN (live execution disabled in this build)`);
+  console.log(`A7 mutation runner — DRY RUN (this command never performs HTTP; live execution requires the separate a7:live command with its confirmation phrase)`);
   console.log(`step: ${stepId} — ${A7_STEPS[stepId].description}`);
   console.log(`migrations in step: ${A7_STEPS[stepId].migrations.length}`);
 
