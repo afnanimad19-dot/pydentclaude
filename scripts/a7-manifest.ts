@@ -9,10 +9,13 @@
 // reviewed manifest, never a silent re-pin.
 //
 // Step boundaries (operator-approved):
-//   baseline-0001-0064 - the A7 baseline. EXCLUDES 0065 and 0066.
+//   baseline-0001-0064 - the A7 baseline. EXCLUDES 0065, 0066 and 0067.
 //   apply-0065         - Central Knowledge Base schema, alone.
 //   apply-0066         - clinic scheduling (renumbered from duplicate 0061), alone,
 //                        sequenced after 0065 by operator decision.
+//   apply-0067         - service_role CRUD grants on the three Central KB tables,
+//                        alone. Depends only on 0065's tables, so it is appliable
+//                        while 0066 remains absent; steps never chain.
 
 export type A7ManifestEntry = { readonly file: string; readonly sha256: string };
 
@@ -90,6 +93,12 @@ export const A7_STEPS = {
     description: "Apply 0065_central_knowledge.sql (Central KB Phase A schema)",
     migrations: [
     { file: "0065_central_knowledge.sql", sha256: "7976604d40146bd3dbf1b0db0a645ff3c06e3e9209b9651a92b2411a11196263" },
+    ],
+  },
+  "apply-0067": {
+    description: "Apply 0067_central_knowledge_grants.sql (service_role CRUD on the three Central KB tables; depends only on 0065)",
+    migrations: [
+      { file: "0067_central_knowledge_grants.sql", sha256: "7151787dc4578eae7699d57b46297d799401eb21cc9d6678d2ff42ef80dec3e8" },
     ],
   },
   "apply-0066": {
