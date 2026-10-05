@@ -49,7 +49,9 @@ function tableBody(name) {
 test("0065 is the next migration and the only one touching Central KB tables", () => {
   const files = fs.readdirSync(dir).filter((f) => f.endsWith(".sql"));
   const max = Math.max(...files.map((f) => parseInt(f, 10)).filter(Number.isFinite));
-  assert.equal(max, 65);
+  // 0066_clinic_scheduling (renumbered from a duplicate 0061) is deliberately
+  // OUTSIDE the A7 baseline (0001–0064) and applied after 0065.
+  assert.equal(max, 66);
   assert.deepEqual(files.filter((f) => f.startsWith("0065")), [FILE]);
   for (const f of files.filter((x) => x !== FILE)) {
     const s = fs.readFileSync(path.join(dir, f), "utf8");

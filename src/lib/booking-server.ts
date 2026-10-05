@@ -59,7 +59,7 @@ export async function clinicToday(ws: string | null): Promise<string> {
 }
 
 // Per-workspace scheduling settings (clinic hours, slot grid, default
-// duration, closed days). The columns arrive with migration 0061; every
+// duration, closed days). The columns arrive with migration 0066; every
 // deployment without them — and every workspace that never configured them —
 // gets the historical defaults, so behaviour only changes when a clinic
 // explicitly opts in.
@@ -488,7 +488,7 @@ export async function getSlotsStructured(ws: string | null, args: any): Promise<
   // when it would OVERLAP one of their booked appointments (respecting each
   // row's duration_min) — other doctors' bookings don't block it. Clinic
   // hours / slot grid / closed days come from clinic_settings when configured
-  // (migration 0061), else the historical 09:00–17:00 / 30-minute defaults.
+  // (migration 0066), else the historical 09:00–17:00 / 30-minute defaults.
   const settings = await clinicScheduling(ws);
   const tz = await clinicTimezone(ws);
   if (settings.closedDays.includes(weekdayInTz(date, tz))) {
