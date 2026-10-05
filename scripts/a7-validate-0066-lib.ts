@@ -4,10 +4,14 @@
 // 0066_clinic_scheduling.sql produced exactly its intended effect and nothing
 // else, measured against the PRE-0066 security model established by the
 // committed migration history (not guessed):
-//   * 0025_clinic_settings.sql: table created, RLS ENABLED, exactly one
-//     policy "demo open access" (FOR ALL, using(true), with check(true));
-//     no later migration (0027/0042/0046 add columns only; 0050 does not
-//     touch clinic_settings) changes policies.
+//   * 0025_clinic_settings.sql: table created WITH workspace_id (its PK),
+//     RLS ENABLED, one open policy "demo open access".
+//   * 0050_workspace_rls.sql: its dynamic loop replaces every qual='true'
+//     policy on tables having a workspace_id column — clinic_settings
+//     qualifies — with "workspace isolation" (FOR ALL,
+//     using/with check (workspace_id = current_workspace())). So the table
+//     enters 0066 with exactly that one policy (0027/0042/0046 add columns
+//     only and change no policies).
 //   * In A7, the API roles (anon/authenticated/service_role) hold NO DML on
 //     clinic_settings (the known, deliberately DEFERRED baseline ACL posture).
 //     0066 adds columns only, so that posture must be UNCHANGED — this
@@ -74,13 +78,15 @@ export function evaluatePost0066Row(rows: unknown): ValidationCheck[] {
   add("RLS enabled (unchanged from 0025)", row.rls_enabled === true);
 
   const policies = Array.isArray(row.policies) ? (row.policies as Array<Record<string, unknown>>) : [];
+  // Exact pg_policies rendering of the policy 0050 created (0025's "demo open
+  // access" was replaced by 0050's dynamic loop — see header).
   add(
-    'policies: exactly the pre-0066 "demo open access" (ALL, true, true)',
+    'policies: exactly the pre-0066 "workspace isolation" (ALL, workspace-scoped qual and check)',
     policies.length === 1 &&
-      policies[0].name === "demo open access" &&
+      policies[0].name === "workspace isolation" &&
       policies[0].cmd === "ALL" &&
-      policies[0].qual === "true" &&
-      policies[0].check === "true",
+      policies[0].qual === "(workspace_id = current_workspace())" &&
+      policies[0].check === "(workspace_id = current_workspace())",
   );
 
   add("owner is postgres (unchanged)", row.owner === "postgres");

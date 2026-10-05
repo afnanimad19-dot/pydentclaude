@@ -42,7 +42,17 @@ const goodRow = () => ({
     { name: "slot_minutes", type: "integer", default: "30" },
   ],
   rls_enabled: true,
-  policies: [{ name: "demo open access", cmd: "ALL", qual: "true", check: "true" }],
+  // Post-0050 historical state: 0050's dynamic loop replaced 0025's open
+  // "demo open access" with "workspace isolation" (clinic_settings has a
+  // workspace_id column, so it qualified).
+  policies: [
+    {
+      name: "workspace isolation",
+      cmd: "ALL",
+      qual: "(workspace_id = current_workspace())",
+      check: "(workspace_id = current_workspace())",
+    },
+  ],
   owner: "postgres",
   anon_any_dml: false,
   auth_any_dml: false,
@@ -144,7 +154,10 @@ test("schema / default / RLS / policy / ACL mismatches each fail closed with the
     ["wrong default", (r) => { r.cols_0066[3].default = "'08:00'::text"; }, "open_time: default"],
     ["RLS disabled", (r) => { r.rls_enabled = false; }, "RLS enabled"],
     ["extra policy", (r) => { r.policies.push({ name: "sneaky", cmd: "ALL", qual: "true", check: "true" }); }, "policies:"],
-    ["policy renamed", (r) => { r.policies[0].name = "other"; }, "policies:"],
+    ["policy renamed", (r) => { r.policies[0].name = "demo open access"; }, "policies:"],
+    ["policy cmd differs", (r) => { r.policies[0].cmd = "SELECT"; }, "policies:"],
+    ["policy qual differs", (r) => { r.policies[0].qual = "true"; }, "policies:"],
+    ["policy check differs", (r) => { r.policies[0].check = "true"; }, "policies:"],
     ["service_role gained DML", (r) => { r.service_role_any_dml = true; }, "service_role DML posture"],
     ["anon gained DML", (r) => { r.anon_any_dml = true; }, "anon has no DML"],
     ["owner changed", (r) => { r.owner = "someone_else"; }, "owner is postgres"],
