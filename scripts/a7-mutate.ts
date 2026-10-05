@@ -74,4 +74,6 @@ function main(): number {
   return report.ok ? 0 : 1;
 }
 
-process.exit(main());
+// process.exitCode (not process.exit): forced exits race libuv handle teardown
+// of the --import loader thread and assert on Windows (src\win\async.c:94).
+process.exitCode = main();

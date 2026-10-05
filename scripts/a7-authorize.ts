@@ -83,6 +83,15 @@ async function main(): Promise<number> {
 
 // Run only when invoked as the entry script — importing this module (tests do,
 // to reach parseAuthorizeCliArgs) must never execute the probe.
+//
+// Set process.exitCode and let the event loop drain instead of calling
+// process.exit(): a forced exit tears down libuv while undici's keep-alive
+// socket and the --import loader thread's handles are still closing, which
+// trips "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)"
+// (src\win\async.c:94) on Windows. Idle sockets are unref'd, so the process
+// still exits promptly, with the same exit code.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().then((code) => process.exit(code));
+  main().then((code) => {
+    process.exitCode = code;
+  });
 }

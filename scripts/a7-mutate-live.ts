@@ -132,6 +132,12 @@ async function main(): Promise<number> {
 
 // Run only when invoked as the entry script — importing this module (tests do,
 // to reach parseLiveCliArgs) must never execute the live flow.
+//
+// process.exitCode (not process.exit): a forced exit races libuv handle
+// teardown (undici keep-alive socket + --import loader thread) and asserts on
+// Windows (src\win\async.c:94). Draining exits promptly with the same code.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().then((code) => process.exit(code));
+  main().then((code) => {
+    process.exitCode = code;
+  });
 }

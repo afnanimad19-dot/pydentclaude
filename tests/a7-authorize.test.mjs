@@ -200,6 +200,22 @@ test("no secrets in probe success or failure output (token, digest, mgmt token, 
   }
 });
 
+test("A7 CLIs never force process.exit (Windows libuv shutdown-race regression guard)", () => {
+  // Forced process.exit() during libuv handle teardown (undici keep-alive
+  // socket + the --import loader thread) trips the Windows assertion
+  // !(handle->flags & UV_HANDLE_CLOSING) in src\win\async.c:94. The CLIs must
+  // set process.exitCode and let the loop drain instead.
+  for (const file of ["scripts/a7-authorize.ts", "scripts/a7-mutate-live.ts", "scripts/a7-mutate.ts"]) {
+    const code = fs
+      .readFileSync(path.join(root, file), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "")
+      .replace(/(["'`])(?:\\.|(?!\1).)*\1/g, '""');
+    assert.ok(!code.includes("process.exit("), `${file} must not call process.exit()`);
+    assert.ok(code.includes("process.exitCode"), `${file} must set process.exitCode`);
+  }
+});
+
 test("dry-run stays zero-network and the app runtime imports none of the probe", () => {
   for (const file of ["scripts/a7-mutate-lib.ts", "scripts/a7-mutate.ts", "scripts/a7-manifest.ts"]) {
     const src = fs.readFileSync(path.join(root, file), "utf8");
