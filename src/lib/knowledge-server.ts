@@ -11,6 +11,7 @@ import {
   type DocumentRow,
   type KnowledgeStore,
   type ResourceRow,
+  type WorkspaceAgentRow,
 } from "@/lib/knowledge-service";
 import type { KnowledgeRouteDeps } from "@/lib/knowledge-route";
 import { callOpenRouter } from "@/lib/agent-reply";
@@ -174,6 +175,37 @@ export const knowledgeStore: KnowledgeStore = {
     return (data ?? []).map(
       (r: any): AssignmentRow => ({ resource_id: String(r.resource_id), agent_id: String(r.agent_id), agent_name: String((Array.isArray(r.agents) ? r.agents[0]?.name : r.agents?.name) ?? "") })
     );
+  },
+  async listWorkspaceAgents(ws) {
+    const { data, error } = await supabase.from("agents").select("id, name, kind").eq("workspace_id", ws);
+    check(error);
+    return (data ?? []).map((a: any): WorkspaceAgentRow => ({ id: String(a.id), name: String(a.name ?? ""), kind: a.kind == null ? null : String(a.kind) }));
+  },
+  async getWorkspaceAgent(ws, agentId) {
+    const { data, error } = await supabase.from("agents").select("id, name, kind").eq("workspace_id", ws).eq("id", agentId).maybeSingle();
+    if (error?.code === "22P02") return null; // malformed id
+    check(error);
+    return data ? { id: String(data.id), name: String((data as any).name ?? ""), kind: (data as any).kind == null ? null : String((data as any).kind) } : null;
+  },
+  async insertAssignment(ws, agentId, resourceId) {
+    // position: append after the agent's existing links (the 0065 ordering column).
+    const { data: last, error: posError } = await supabase
+      .from(ASSIGN).select("position").eq("workspace_id", ws).eq("agent_id", agentId)
+      .order("position", { ascending: false }).limit(1).maybeSingle();
+    check(posError);
+    const position = Number(last?.position ?? -1) + 1;
+    const { error } = await supabase.from(ASSIGN).insert({ workspace_id: ws, agent_id: agentId, resource_id: resourceId, position });
+    if (error?.code === "23505") return "exists"; // PK (agent_id, resource_id) — idempotent
+    if (error?.code === "23503" || error?.code === "23514") return "refused"; // composite FK / workspace trigger
+    check(error);
+    return "inserted";
+  },
+  async deleteAssignment(ws, agentId, resourceId) {
+    const { data, error } = await supabase
+      .from(ASSIGN).delete().eq("workspace_id", ws).eq("agent_id", agentId).eq("resource_id", resourceId).select("agent_id");
+    if (error?.code === "22P02") return "not_found";
+    check(error);
+    return Array.isArray(data) && data.length === 1 ? "deleted" : "not_found";
   },
 };
 

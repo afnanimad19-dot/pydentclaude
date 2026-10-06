@@ -93,6 +93,13 @@ export interface AssignmentRow {
   agent_name: string;
 }
 
+/** One agent of the session workspace (the assignment picker's rows). */
+export interface WorkspaceAgentRow {
+  id: string;
+  name: string;
+  kind: string | null;
+}
+
 export type ResourceInsert = Pick<ResourceRow, "name" | "description" | "type" | "status" | "refresh_enabled" | "refresh_interval_hours" | "created_by" | "updated_by">;
 /** Metadata edits only — status and content_version are owned by the database functions. */
 export type ResourcePatchRow = Partial<Pick<ResourceRow, "name" | "description" | "refresh_enabled" | "refresh_interval_hours" | "updated_by">>;
@@ -139,6 +146,17 @@ export interface KnowledgeStore {
   duplicateResource(ws: string, sourceId: string, name: string, userId: string): Promise<DuplicateResult>;
   /** Assignments (with agent names) for the given resources, or the whole workspace. */
   listAssignments(ws: string, resourceIds?: string[]): Promise<AssignmentRow[]>;
+  /** The workspace's agents, for the assignment picker. */
+  listWorkspaceAgents(ws: string): Promise<WorkspaceAgentRow[]>;
+  /** One agent of the workspace, or null — another workspace's agent is indistinguishable from a missing one. */
+  getWorkspaceAgent(ws: string, agentId: string): Promise<WorkspaceAgentRow | null>;
+  /**
+   * Link an agent to a resource (agent_knowledge_resources, position appended
+   * per agent). "exists" = already linked (idempotent); "refused" = the
+   * database vetoed it (workspace trigger / composite foreign key).
+   */
+  insertAssignment(ws: string, agentId: string, resourceId: string): Promise<"inserted" | "exists" | "refused">;
+  deleteAssignment(ws: string, agentId: string, resourceId: string): Promise<"deleted" | "not_found">;
 }
 
 /** Thrown by the store when migration 0065 isn't installed. */
@@ -583,6 +601,59 @@ export async function deleteDocument(store: KnowledgeStore, ws: string, userId: 
   const refused = applyFailure(res);
   if (refused || !("row" in res)) return refused ?? notFound();
   return ok({ deleted: true, documentId: docId, resource: resourceSummary(res.row) });
+}
+
+// ------------------------------------------------------------------ agent assignment (Phase 1A)
+//
+// Activates the 0065 link table (agent_knowledge_resources) for operators.
+// Assignment changes NEVER touch the resource row: content_version and status
+// describe the knowledge itself, which an assignment does not change. Nothing
+// in the agent runtime reads these links yet (that is Phase 1B).
+
+const workspaceAgentView = (a: WorkspaceAgentRow) => ({ id: a.id, name: a.name || "Unnamed agent", kind: a.kind });
+
+/** The resource's assigned agents plus the workspace's other agents (the picker). */
+export async function listResourceAgents(store: KnowledgeStore, ws: string, id: string): Promise<Outcome> {
+  const r = await loadResource(store, ws, id);
+  if (!r) return notFound();
+  const [assignments, agents] = await Promise.all([store.listAssignments(ws, [r.id]), store.listWorkspaceAgents(ws)]);
+  const assigned = agentsByResource(assignments).get(r.id) ?? [];
+  const assignedIds = new Set(assigned.map((a) => a.id));
+  const available = agents
+    .filter((a) => !assignedIds.has(a.id))
+    .map(workspaceAgentView)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return ok({ resourceId: r.id, assignedAgents: assigned, availableAgents: available });
+}
+
+export async function assignAgent(store: KnowledgeStore, ws: string, id: string, raw: unknown): Promise<Outcome> {
+  const body = asBody(raw);
+  if (!body) return fail(400, "invalid_body", "Send a JSON object.");
+  const owned = serverOwnedField(body);
+  if (owned) return fail(400, "field_not_allowed", `"${owned}" is set by the server and can't be supplied.`);
+  const r = await loadResource(store, ws, id);
+  if (!r) return notFound();
+  const agentId = String(body.agentId ?? "").trim();
+  // A malformed id, a missing agent and another workspace's agent all read the same.
+  const agent = UUID_RE.test(agentId) ? await store.getWorkspaceAgent(ws, agentId) : null;
+  if (!agent) return fail(404, "agent_not_found", "No such agent in this workspace.");
+  const res = await store.insertAssignment(ws, agent.id, r.id);
+  // The database's workspace trigger / composite FK is the final word.
+  if (res === "refused") return fail(409, "assignment_refused", "The assignment was refused. Reload and try again.");
+  return ok(
+    { assigned: true, resourceId: r.id, agent: { id: agent.id, name: agent.name || "Unnamed agent" }, alreadyAssigned: res === "exists" },
+    res === "inserted" ? 201 : 200
+  );
+}
+
+export async function unassignAgent(store: KnowledgeStore, ws: string, id: string, agentId: string): Promise<Outcome> {
+  const r = await loadResource(store, ws, id);
+  if (!r) return notFound();
+  const aid = String(agentId ?? "").trim();
+  if (!UUID_RE.test(aid)) return fail(404, "assignment_not_found", "That agent isn't assigned to this resource.");
+  const res = await store.deleteAssignment(ws, aid, r.id);
+  if (res === "not_found") return fail(404, "assignment_not_found", "That agent isn't assigned to this resource.");
+  return ok({ unassigned: true, resourceId: r.id, agentId: aid });
 }
 
 export { copyName };

@@ -18,6 +18,18 @@ export interface AssignedAgent {
   name: string;
 }
 
+export interface WorkspaceAgent {
+  id: string;
+  name: string;
+  kind: string | null;
+}
+
+export interface ResourceAgents {
+  resourceId: string;
+  assignedAgents: AssignedAgent[];
+  availableAgents: WorkspaceAgent[];
+}
+
 export interface KnowledgeResource {
   id: string;
   name: string;
@@ -206,6 +218,13 @@ export function createKnowledgeClient(fetcher: FetchLike = defaultFetch) {
     refresh: (id: string) => call<RefreshResult>(fetcher, `${BASE}/resources/${seg(id)}/refresh`, json("POST")),
     removeDocument: (id: string, docId: string) =>
       call<{ deleted: true; documentId: string; resource: ResourceSummary }>(fetcher, `${BASE}/resources/${seg(id)}/documents/${seg(docId)}`, json("DELETE")),
+    /** Assigned + available agents for one resource (the server lists only the session workspace's agents). */
+    listAgents: (id: string) => call<ResourceAgents>(fetcher, `${BASE}/resources/${seg(id)}/agents`),
+    /** Assign an agent of the same workspace (idempotent; only the agent id is sent). */
+    assignAgent: (id: string, agentId: string) =>
+      call<{ assigned: true; resourceId: string; agent: AssignedAgent; alreadyAssigned: boolean }>(fetcher, `${BASE}/resources/${seg(id)}/agents`, json("POST", { agentId })),
+    unassignAgent: (id: string, agentId: string) =>
+      call<{ unassigned: true; resourceId: string; agentId: string }>(fetcher, `${BASE}/resources/${seg(id)}/agents/${seg(agentId)}`, json("DELETE")),
     /** Tester: only the selection and the question — the model and prompt are server-controlled. */
     test: (resourceIds: string[], question: string) => call<TesterResult>(fetcher, `${BASE}/test`, json("POST", { resourceIds, question })),
   };
