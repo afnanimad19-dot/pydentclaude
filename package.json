@@ -12,7 +12,8 @@
     "a7:live": "node --experimental-strip-types --import ./tests/alias-loader-register.mjs scripts/a7-mutate-live.ts",
     "a7:authorize": "node --experimental-strip-types --import ./tests/alias-loader-register.mjs scripts/a7-authorize.ts",
     "a7:validate-0066": "node --experimental-strip-types --import ./tests/alias-loader-register.mjs scripts/a7-validate-0066.ts",
-    "a7:validate-0068": "node --experimental-strip-types --import ./tests/alias-loader-register.mjs scripts/a7-validate-0068.ts"
+    "a7:validate-0068": "node --experimental-strip-types --import ./tests/alias-loader-register.mjs scripts/a7-validate-0068.ts",
+    "a7:validate-2b": "node --experimental-strip-types --import ./tests/alias-loader-register.mjs scripts/a7-validate-2b.ts"
   },
   "dependencies": {
     "@azure/storage-blob": "^12.34.0",

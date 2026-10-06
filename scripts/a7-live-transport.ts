@@ -140,6 +140,46 @@ export function createReadOnlyQueryTransport(env: A7EnvFile, fetchImpl?: FetchLi
   };
 }
 
+export type A7FunctionalValidationTransport = A7SentinelReadTransport & {
+  /** One read-only query with bound parameters; read_only:true is hard-coded. */
+  readonly executeReadOnlyQuery: (sql: string, parameters: readonly string[], context: string) => Promise<unknown>;
+  /**
+   * One PARAMETERIZED mutation statement (Phase 2B functional validation only):
+   * the SQL text is a fixed constant from the validator library, and every
+   * runtime value — UUIDs, validation content, hashes, chunk JSON, marker
+   * names — travels in the bound `parameters` array, never inside the SQL.
+   * Refused without a live A7MutationAuthorization (sentinel-verified), same
+   * gate as executeMutation. Returns the endpoint's result rows so the
+   * validator can read back RPC results (e.g. knowledge_reindex_document's
+   * jsonb) from the same request.
+   */
+  readonly executeParameterizedMutation: (
+    sql: string,
+    parameters: readonly string[],
+    context: string,
+    auth: A7MutationAuthorization,
+  ) => Promise<unknown>;
+};
+
+/**
+ * Transport for the Phase 2B functional validator. Built on the same pinned,
+ * credential-closed poster as every other transport (A7 ref re-asserted and
+ * production ref rejected at construction; errors scrubbed), with reads
+ * hard-coded read_only:true and mutations gated on the sentinel authorization
+ * value exactly like createLiveTransport.executeMutation.
+ */
+export function createFunctionalValidationTransport(env: A7EnvFile, fetchImpl?: FetchLike): A7FunctionalValidationTransport {
+  const post = makeA7Poster(env, fetchImpl);
+  return {
+    executeSentinelQuery: (sql, parameters) => post({ query: sql, parameters, read_only: true }, "sentinel-verification"),
+    executeReadOnlyQuery: (sql, parameters, context) => post({ query: sql, parameters, read_only: true }, context),
+    executeParameterizedMutation: async (sql, parameters, context, auth) => {
+      if (auth?.eligible !== true) throw new A7RunnerError("LIVE_CONFIRMATION_REQUIRED");
+      return post({ query: sql, parameters, read_only: false }, context);
+    },
+  };
+}
+
 /** Full transport for the live mutation CLI only. Same poster, plus mutation. */
 export function createLiveTransport(env: A7EnvFile, fetchImpl?: FetchLike): A7LiveTransport {
   const post = makeA7Poster(env, fetchImpl);

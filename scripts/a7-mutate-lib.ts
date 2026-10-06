@@ -67,6 +67,18 @@ export const A7_LIVE_CONFIRMATION_PHRASE =
 export const A7_AUTHORIZE_CONFIRMATION_PHRASE =
   "I-UNDERSTAND-THIS-CONTACTS-THE-A7-VALIDATION-DATABASE-etbuylimyelwoxxowtbx";
 
+/**
+ * The exact confirmation the operator must supply to the Phase 2B FUNCTIONAL
+ * validation (`npm run a7:validate-2b -- --confirm=<phrase>`), which CREATES
+ * AND DELETES temporary validation-owned rows in the A7 project (never
+ * production, never unrelated rows). Deliberately DISTINCT from both phrases
+ * above: the read-only probe phrase and the migration-apply phrase are each
+ * refused by this gate, so holding one confirmation can never satisfy another.
+ * Non-secret; exact, case-sensitive match required; no interactive prompt.
+ */
+export const A7_2B_VALIDATION_CONFIRMATION_PHRASE =
+  "I-UNDERSTAND-THIS-CREATES-AND-DELETES-TEMPORARY-DATA-IN-THE-A7-VALIDATION-DATABASE-etbuylimyelwoxxowtbx";
+
 /** The one endpoint a live executor may ever target — pinned to the A7 ref constant. */
 export const A7_QUERY_ENDPOINT = `https://api.supabase.com/v1/projects/${A7_PROJECT_REF}/database/query`;
 
@@ -87,6 +99,8 @@ export type A7RunnerFailureCode =
   | "UNKNOWN_STEP"
   | "LIVE_CONFIRMATION_REQUIRED"
   | "AUTHORIZE_CONFIRMATION_REQUIRED"
+  | "VALIDATION_2B_CONFIRMATION_REQUIRED"
+  | "VALIDATION_RESIDUE"
   | "VALIDATION_FAILED"
   | "TRANSPORT_HTTP_ERROR"
   | "ENV_FILE_MISSING"
@@ -111,6 +125,10 @@ const MESSAGES: Record<A7RunnerFailureCode, string> = {
   UNKNOWN_STEP: "unknown step id; only allowlisted steps may run",
   LIVE_CONFIRMATION_REQUIRED: "live execution requires the exact A7 live confirmation phrase; refusing",
   AUTHORIZE_CONFIRMATION_REQUIRED: "the authorization probe requires its exact confirmation phrase; refusing",
+  VALIDATION_2B_CONFIRMATION_REQUIRED:
+    "the Phase 2B functional validation requires its exact create-and-delete confirmation phrase; refusing",
+  VALIDATION_RESIDUE:
+    "a previous Phase 2B validation left marker workspaces behind; refusing to start (recovery needs its own operator gate — nothing was deleted)",
   VALIDATION_FAILED: "a read-only database validation check did not match the expected state; failing closed",
   TRANSPORT_HTTP_ERROR: "the A7 query endpoint returned an error; the step was stopped at the failing request",
   ENV_FILE_MISSING: ".env.a7 not found at the repository root (required; no other source is consulted)",
