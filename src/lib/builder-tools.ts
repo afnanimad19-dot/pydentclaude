@@ -69,7 +69,10 @@ export interface BuilderToolDeps {
   cancelRow(ctx: BookingCtx, appt: UpcomingAppointment): Promise<ApptActionResult>;
   lookupPatient(ws: string | null, q: { phone?: unknown; name?: unknown; email?: unknown }): Promise<LookupPatientResult>;
   createPatient(ws: string | null, agentName: string, q: { name?: unknown; phone?: unknown; email?: unknown }): Promise<CreatePatientResult>;
-  searchKnowledge(agent: { name?: string | null; knowledge_base?: string | null }, a: { query?: unknown; context?: unknown }): Promise<KnowledgeResult>;
+  searchKnowledge(
+    agent: { id?: string | null; workspace_id?: string | null; name?: string | null; knowledge_base?: string | null },
+    a: { query?: unknown; context?: unknown }
+  ): Promise<KnowledgeResult>;
   sendEmail(input: { to: string; subject: string; body: string; ws?: string; fromName?: string }): Promise<EmailSendResult>;
 }
 

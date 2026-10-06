@@ -331,9 +331,10 @@ test("the assignment routes use withKnowledge with the right modes and service c
   assert.ok(!/bodyWs|body\.ws|workspace_id|workspaceId/.test(list + del), "no workspace from the request");
 });
 
-test("PHASE 1A INVARIANT: no agent runtime reads Central Knowledge (assignment is management only)", () => {
-  // Same runtime files the knowledge suites guard — re-asserted here so this
-  // suite fails on its own if Phase 1B leaks in early.
+test("PHASE 1B INVARIANT: Central Knowledge reaches the runtime ONLY through the knowledge-runtime reader", () => {
+  // Since Phase 1B, searchKnowledgeCore consumes Central Knowledge — but only
+  // via lib/knowledge-runtime.ts. No runtime file may name the 0065 tables or
+  // the Phase 1A management functions directly.
   for (const f of [
     "src/lib/livekit.ts", "src/app/api/livekit/agent-config/route.ts", "src/lib/agent-tools-core.ts", "src/app/api/agents/tool-exec/route.ts",
     "livekit-agent/agent.py", "src/lib/builder-tools.ts", "src/app/api/vapi/assistants/route.ts", "src/lib/agent-reply.ts", "src/app/api/chat/route.ts",
@@ -341,4 +342,8 @@ test("PHASE 1A INVARIANT: no agent runtime reads Central Knowledge (assignment i
   ]) {
     assert.doesNotMatch(src(f), /knowledge_resources|knowledge_documents|agent_knowledge_resources|listResourceAgents|assignAgent|unassignAgent/, f);
   }
+  // The sanctioned reader is the only runtime module naming the tables, and the
+  // tool core reaches Central Knowledge only through it.
+  assert.match(src("src/lib/knowledge-runtime.ts"), /agent_knowledge_resources/);
+  assert.match(src("src/lib/agent-tools-core.ts"), /@\/lib\/knowledge-runtime/);
 });

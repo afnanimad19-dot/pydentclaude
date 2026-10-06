@@ -454,7 +454,10 @@ test("security: UI never touches Supabase / server modules; all Central KB acces
   // No other browser code reads the Central KB tables.
   const browserFiles = fs.readdirSync(path.join(root, "src"), { recursive: true }).map(String).filter((p) => /\.(tsx?)$/.test(p) && !p.startsWith("app/api") && !p.startsWith("app\\api"));
   for (const p of browserFiles) {
-    if (p.endsWith("knowledge-server.ts")) continue;
+    // The two SERVER-ONLY Central KB modules: the store (knowledge-server) and
+    // the Phase 1B runtime reader (knowledge-runtime). Nothing else may name
+    // the tables.
+    if (p.endsWith("knowledge-server.ts") || p.endsWith("knowledge-runtime.ts")) continue;
     assert.doesNotMatch(src(path.join("src", p)), /from\(["']knowledge_(resources|documents)["']\)|from\(["']agent_knowledge_resources["']\)/, p);
   }
 });

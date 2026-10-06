@@ -7,6 +7,7 @@
 
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { retrieveKnowledge } from "@/lib/kb-retrieval";
+import { loadAgentCentralKnowledge, type AgentCentralKnowledge, type CentralKnowledgeLoader } from "@/lib/knowledge-runtime";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -125,35 +126,54 @@ export interface KnowledgeResult {
   found: boolean;
   text: string;
   sources: { source: string; id: number; score: number }[];
+  /** Which store answered this turn (Phase 1B): assigned Central Knowledge, or the legacy per-agent blob. */
+  sourceMode?: "central" | "legacy";
 }
 
-// The per-turn knowledge retrieval both channels share: the SAME retrieval
-// code the chat agents use (lib/kb-retrieval.ts) over the agent's stored
-// knowledge base. Returns top chunks with their source names.
+// The per-turn knowledge retrieval both channels share: the SAME lexical
+// retrieval code the chat agents use (lib/kb-retrieval.ts).
+//
+// SOURCE MODE (Phase 1B, deterministic — the two stores are never merged):
+//   the agent has assigned Central Knowledge with at least one usable (ready,
+//   non-blank) document → that text is searched; otherwise — no assignments,
+//   nothing usable yet, or the loader failed — the legacy agents.knowledge_base
+//   blob is searched exactly as before. The ranking, budgets, top-K and the
+//   spoken wrapper are identical in both modes, so the tool contract (and the
+//   worker) see no difference.
 export async function searchKnowledgeCore(
-  agent: { name?: string | null; knowledge_base?: string | null },
+  agent: { id?: string | null; workspace_id?: string | null; name?: string | null; knowledge_base?: string | null },
   a: { query?: unknown; context?: unknown },
-  channel = "voice"
+  channel = "voice",
+  loadCentral: CentralKnowledgeLoader = loadAgentCentralKnowledge
 ): Promise<KnowledgeResult> {
   const query = String(a.query ?? "").trim();
   if (!query) return { success: false, error: "missing_query", found: false, text: "", sources: [] };
   const started = Date.now();
-  const r = retrieveKnowledge(String(agent.knowledge_base ?? ""), [query, String(a.context ?? "")], {
+  let central: AgentCentralKnowledge | null = null;
+  try {
+    central = await loadCentral(String(agent.workspace_id ?? ""), String(agent.id ?? ""));
+  } catch {
+    central = null; // fail safe: the live call keeps its legacy knowledge
+  }
+  const sourceMode: "central" | "legacy" = central ? "central" : "legacy";
+  const kb = central ? central.text : String(agent.knowledge_base ?? "");
+  const r = retrieveKnowledge(kb, [query, String(a.context ?? "")], {
     budget: 6000,
     relevantBudget: 6000,
     topK: 4,
   });
   // Small KBs come back whole ("full" mode) — trim to the budget for a voice turn.
   const text = r.mode === "full" ? r.text.slice(0, 6000) : r.text;
-  // Observability: sources + scores + latency, never the knowledge text itself.
+  // Observability: source mode, counts, sources + scores + latency — never the knowledge text itself.
   console.log(
-    `[kb-retrieval] agent=${agent.name} channel=${channel} mode=${r.mode} kb_chars=${r.totalKbChars} latency_ms=${Date.now() - started} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 4).join(", ") || "(full)"}`
+    `[kb-retrieval] agent=${agent.name} channel=${channel} source=${sourceMode}${central ? ` resources=${central.resources} documents=${central.documents}` : ""} mode=${r.mode} kb_chars=${r.totalKbChars} latency_ms=${Date.now() - started} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 4).join(", ") || "(full)"}`
   );
   return {
     success: true,
     found: !!text.trim(),
     text,
     sources: r.chunks.slice(0, 4).map((c) => ({ source: c.source, id: c.id, score: c.score })),
+    sourceMode,
   };
 }
 
