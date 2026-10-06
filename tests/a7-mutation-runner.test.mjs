@@ -162,7 +162,8 @@ test("missing migration is refused", () => {
 });
 
 test("extra/unexpected migration is refused — even for a step that does not include it", () => {
-  const disk = [...realDisk(), { file: "0068_unknown.sql", sha256: "0".repeat(64) }];
+  // 0069: the first prefix no approved step covers (0068 became real in Phase 2A).
+  const disk = [...realDisk(), { file: "0069_unknown.sql", sha256: "0".repeat(64) }];
   expectRunnerError(() => validateStepManifest("baseline-0001-0064", disk), "EXTRA_MIGRATION");
   expectRunnerError(() => validateStepManifest("apply-0065", disk), "EXTRA_MIGRATION");
   const weird = [...realDisk(), { file: "notes.sql", sha256: "0".repeat(64) }];

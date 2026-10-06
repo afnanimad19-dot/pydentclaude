@@ -16,6 +16,11 @@
 //   apply-0067         - service_role CRUD grants on the three Central KB tables,
 //                        alone. Depends only on 0065's tables, so it is appliable
 //                        while 0066 remains absent; steps never chain.
+//   apply-0068         - persisted knowledge chunks + FTS (Phase 2A), alone.
+//                        Depends on 0065's tables and 0067's grants. Pinned here
+//                        so the closed-world validation accounts for the file;
+//                        it NEVER executes without the explicit operator-run
+//                        live command naming this step.
 
 export type A7ManifestEntry = { readonly file: string; readonly sha256: string };
 
@@ -105,6 +110,12 @@ export const A7_STEPS = {
     description: "Apply 0066_clinic_scheduling.sql (after 0065, by separate approval)",
     migrations: [
     { file: "0066_clinic_scheduling.sql", sha256: "b230f3e13b50813059b43f433964d93c48282fcf8f62ef022f1a01b956341609" },
+    ],
+  },
+  "apply-0068": {
+    description: "Apply 0068_knowledge_chunks.sql (persisted Central KB chunks + FTS, Phase 2A; after 0065+0067, by separate approval)",
+    migrations: [
+      { file: "0068_knowledge_chunks.sql", sha256: "0cad0457a53946482d9b94e57752b1bf79c69132cd119478842c21ed7173b183" },
     ],
   },
 } as const;

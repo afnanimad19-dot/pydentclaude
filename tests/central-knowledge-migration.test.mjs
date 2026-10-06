@@ -51,12 +51,14 @@ test("0065 is the next migration and the only one touching Central KB tables", (
   const max = Math.max(...files.map((f) => parseInt(f, 10)).filter(Number.isFinite));
   // 0066_clinic_scheduling (renumbered from a duplicate 0061) is deliberately
   // OUTSIDE the A7 baseline (0001–0064) and applied after 0065.
-  // 0067_central_knowledge_grants is the grants-only repair for 0065's
-  // service_role access and is the ONE other file allowed to name the Central
-  // KB tables (it must contain no DDL — enforced by tests/a7-grants-0067).
-  assert.equal(max, 67);
+  // 0067_central_knowledge_grants (grants-only repair for 0065's service_role
+  // access) and 0068_knowledge_chunks (Phase 2A chunk layer, additive) are the
+  // ONLY other files allowed to name the Central KB tables — each enforced by
+  // its own static suite (tests/a7-grants-0067, tests/knowledge-chunks-migration).
+  assert.equal(max, 68);
   assert.deepEqual(files.filter((f) => f.startsWith("0065")), [FILE]);
-  for (const f of files.filter((x) => x !== FILE && x !== "0067_central_knowledge_grants.sql")) {
+  const MAY_NAME_KB = [FILE, "0067_central_knowledge_grants.sql", "0068_knowledge_chunks.sql"];
+  for (const f of files.filter((x) => !MAY_NAME_KB.includes(x))) {
     const s = fs.readFileSync(path.join(dir, f), "utf8");
     assert.doesNotMatch(s, /knowledge_resources|knowledge_documents|agent_knowledge_resources/, f);
   }

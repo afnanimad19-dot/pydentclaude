@@ -213,6 +213,7 @@ const STEP_RANGES: Record<A7StepId, { min: number; max: number }> = {
   "apply-0065": { min: 65, max: 65 },
   "apply-0066": { min: 66, max: 66 },
   "apply-0067": { min: 67, max: 67 },
+  "apply-0068": { min: 68, max: 68 },
 };
 
 /**
