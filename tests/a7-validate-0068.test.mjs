@@ -24,13 +24,22 @@ const FAKE_MGMT = "sbp_FAKE_fixture_management_token_000";
 const CONFIRM = A7_AUTHORIZE_CONFIRMATION_PHRASE;
 
 // Stored-definition fixtures come from the REAL migration text, so the
-// fixtures can never drift from what A7 actually stores structurally.
+// fixtures can never drift from what A7 actually stores structurally — BUT
+// with the header adjusted to PostgreSQL's REAL pg_get_functiondef rendering:
+// pg_get_functiondef never prints a "SECURITY INVOKER" clause (invoker is the
+// unprinted default; only SECURITY DEFINER is ever emitted). The validator's
+// first live run on A7 failed exactly because an earlier fixture kept the
+// migration's literal "security invoker" line; stripping it here reproduces
+// the real representation the transport returns.
 const MIGRATION = fs.readFileSync(path.join(root, "supabase", "migrations", "0068_knowledge_chunks.sql"), "utf8");
 function fnDef(name) {
   const start = MIGRATION.indexOf(`create or replace function public.${name}(`);
   const end = MIGRATION.indexOf("end $$;", start);
   assert.ok(start >= 0 && end > start, name);
-  return MIGRATION.slice(start, end + "end $$;".length);
+  const text = MIGRATION.slice(start, end + "end $$;".length);
+  assert.ok(text.includes("security invoker"), `${name}: the migration itself declares SECURITY INVOKER`);
+  // pg_get_functiondef omits the clause for invoker functions.
+  return text.replace(/^security invoker\s*$/m, "");
 }
 const REINDEX_DEF = fnDef("knowledge_reindex_document");
 const MATCH_DEF = fnDef("knowledge_match_chunks");
@@ -208,7 +217,12 @@ test("every architecture mismatch fails closed with the check named", async () =
     ["browser/PUBLIC acl entry", (r) => { r.browser_or_public_acl = true; }, "no ACL entry"],
     ["anon can call reindex", (r) => { r.reindex_anon_exec = true; }, "reindex RPC: anon"],
     ["authenticated can call match", (r) => { r.match_auth_exec = true; }, "match RPC: authenticated"],
-    ["reindex SECURITY DEFINER", (r) => { r.reindex_fn.secdef = true; }, "reindex: SECURITY INVOKER"],
+    ["reindex SECURITY DEFINER (secdef=true)", (r) => { r.reindex_fn.secdef = true; }, "reindex: SECURITY INVOKER"],
+    ["match SECURITY DEFINER (secdef=true)", (r) => { r.match_fn.secdef = true; }, "match: SECURITY INVOKER"],
+    ["reindex definer text despite secdef=false", (r) => { r.reindex_fn.def = `CREATE OR REPLACE FUNCTION public.knowledge_reindex_document(uuid, uuid, text, jsonb)\n SECURITY DEFINER\n${REINDEX_DEF}`; }, "reindex: SECURITY INVOKER"],
+    ["match definer text despite secdef=false", (r) => { r.match_fn.def = `CREATE OR REPLACE FUNCTION public.knowledge_match_chunks(uuid, uuid, text, integer)\n SECURITY DEFINER\n${MATCH_DEF}`; }, "match: SECURITY INVOKER"],
+    ["reindex secdef as the STRING \"false\"", (r) => { r.reindex_fn.secdef = "false"; }, "reindex: SECURITY INVOKER"],
+    ["match secdef as the STRING \"false\"", (r) => { r.match_fn.secdef = "false"; }, "match: SECURITY INVOKER"],
     ["reindex search_path unset", (r) => { r.reindex_fn.config = null; }, "reindex: fixed empty search_path"],
     ["reindex hash check lost", (r) => { r.reindex_fn.def = REINDEX_DEF.replace("doc.content_hash is distinct from p_content_hash", "false"); }, "hash check"],
     ["match hash authority lost", (r) => { r.match_fn.def = MATCH_DEF.replaceAll("c.content_hash = d.content_hash", "true"); }, "content_hash authority"],
@@ -230,6 +244,23 @@ test("every architecture mismatch fails closed with the check named", async () =
   }
   // malformed result also fails closed
   assert.throws(() => evaluatePost0068Row("garbage"), (e) => e instanceof A7RunnerError && e.code === "VALIDATION_FAILED");
+});
+
+test("REGRESSION (live A7 false-failure): real pg_get_functiondef rendering — NO 'SECURITY INVOKER' clause, secdef=false — PASSES for both functions", async () => {
+  // Exactly what the Windows run received from A7: prosecdef=false and a
+  // definition WITHOUT the literal invoker clause. This must validate.
+  const row = goodRow();
+  assert.ok(!/security\s+invoker/i.test(String(row.reindex_fn.def)), "fixture models the real rendering (reindex)");
+  assert.ok(!/security\s+invoker/i.test(String(row.match_fn.def)), "fixture models the real rendering (match)");
+  assert.equal(row.reindex_fn.secdef, false);
+  assert.equal(row.match_fn.secdef, false);
+  const checks = evaluatePost0068Row([row]);
+  for (const name of ["reindex: SECURITY INVOKER (not definer)", "match: SECURITY INVOKER (not definer)"]) {
+    const c = checks.find((x) => x.name === name);
+    assert.ok(c && c.ok, name);
+  }
+  const result = await runA7Post0068Validation(wireDeps(makeFakeEndpoint({ row })));
+  assert.equal(result.ok, true);
 });
 
 test("read-only by construction: fixed SELECT, no DML/DDL, no inputs, functions inspected but never invoked", () => {

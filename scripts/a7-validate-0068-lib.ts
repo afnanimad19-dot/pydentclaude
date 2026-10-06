@@ -177,7 +177,12 @@ export function evaluatePost0068Row(rows: unknown): ValidationCheck[] {
   const cfgHas = (v: unknown) => Array.isArray(v) && v.some((s) => String(s).replace(/\s/g, "") === 'search_path=""');
   const reindex = fnOf(row.reindex_fn);
   const rdef = norm(reindex.def);
-  add("reindex: SECURITY INVOKER (not definer)", reindex.secdef === false && rdef.includes("security invoker") && !rdef.includes("security definer"));
+  // prosecdef is the authority: false = SECURITY INVOKER, true = SECURITY
+  // DEFINER. pg_get_functiondef NEVER prints a "SECURITY INVOKER" clause (it
+  // prints SECURITY DEFINER only when prosecdef is true), so the definition
+  // text is checked only for the forbidden clause — strictly boolean false
+  // (never true/null/"false") plus no definer text.
+  add("reindex: SECURITY INVOKER (not definer)", reindex.secdef === false && !rdef.includes("security definer"));
   add("reindex: fixed empty search_path", cfgHas(reindex.config));
   const lockAt = rdef.indexOf("for update");
   const hashAt = rdef.indexOf("doc.content_hash is distinct from p_content_hash");
@@ -192,7 +197,8 @@ export function evaluatePost0068Row(rows: unknown): ValidationCheck[] {
 
   const match = fnOf(row.match_fn);
   const mdef = norm(match.def);
-  add("match: SECURITY INVOKER (not definer)", match.secdef === false && mdef.includes("security invoker") && !mdef.includes("security definer"));
+  // Same prosecdef-authority rule as the reindex check above.
+  add("match: SECURITY INVOKER (not definer)", match.secdef === false && !mdef.includes("security definer"));
   add("match: fixed empty search_path", cfgHas(match.config));
   add("match: candidate set rooted at workspace+agent assignments",
     mdef.includes("from public.agent_knowledge_resources a") && mdef.includes("a.workspace_id = p_workspace_id and a.agent_id = p_agent_id"));
