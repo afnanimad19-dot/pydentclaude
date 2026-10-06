@@ -3,6 +3,7 @@ import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { livekitAgentConfig, resolveWorkerToken, requestOrigin, workspaceHasOwnWorkerToken } from "@/lib/livekit";
 import { clinicTimezone } from "@/lib/booking-server";
 import { resolveWorkerAgent, enforceWorkerWorkspacePin } from "@/lib/worker-agent-lookup";
+import { knowledgePromptMode } from "@/lib/knowledge-runtime";
 
 // Called by the deployed LiveKit worker at the start of every call: given the
 // dispatch metadata { pydentAgentId, ws } (both required) it returns the agent's LIVE config
@@ -55,5 +56,10 @@ export async function POST(req: NextRequest) {
       }
     } catch { /* default goodbye falls back to the generic wording */ }
   }
-  return NextResponse.json({ ok: true, config: livekitAgentConfig(agent, agentWs, requestOrigin(req), tz, clinicName) });
+  // Phase 1C: an agent with Central Knowledge assignments gets NO legacy blob
+  // in its compiled prompt — search_knowledge is its knowledge source.
+  const knowledgeMode = await knowledgePromptMode(agentWs, String(agent.id));
+  // Observability: mode only — never knowledge content.
+  console.log(`[agent-config] ws=${agentWs} agent=${agent.id} knowledge_prompt_mode=${knowledgeMode}`);
+  return NextResponse.json({ ok: true, config: livekitAgentConfig(agent, agentWs, requestOrigin(req), tz, clinicName, knowledgeMode) });
 }

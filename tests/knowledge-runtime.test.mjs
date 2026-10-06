@@ -37,13 +37,13 @@ function makeDb() {
     documents: [],   // { workspace_id, id, resource_id, filename, source_url, content, position, status }
   };
   const loader = async (ws, agentId) => {
-    if (!ws || !agentId) return null;
+    if (!ws || !agentId) return { assigned: false, knowledge: null };
     const assignments = db.assignments.filter((a) => a.workspace_id === ws && a.agent_id === agentId);
-    if (!assignments.length) return null;
+    if (!assignments.length) return { assigned: false, knowledge: null };
     const ids = assignments.map((a) => a.resource_id);
     const resources = db.resources.filter((r) => r.workspace_id === ws && ids.includes(r.id));
     const documents = db.documents.filter((d) => d.workspace_id === ws && ids.includes(d.resource_id) && d.status === "ready");
-    return buildAgentCentralKnowledge(assignments, resources, documents);
+    return { assigned: true, knowledge: buildAgentCentralKnowledge(assignments, resources, documents) };
   };
   return { db, loader };
 }
@@ -105,7 +105,11 @@ test("(3, cross-tenant proof) even with KNOWN foreign UUIDs, another workspace's
   w.db.assignments.push({ workspace_id: WS_A, agent_id: AGENT_LAURA, resource_id: RES_FOREIGN, position: 0 });
   const r = await searchKnowledgeCore(laura(), { query: "implant price secret" }, "test", w.loader);
   assert.ok(!r.text.includes(FOREIGN_SECRET), "foreign content never appears");
-  assert.equal(r.sourceMode, "legacy", "nothing usable in A → deterministic legacy fallback");
+  // Phase 1C: assigned (even if only to an unreadable id) = migrated — the
+  // tool stays central with nothing usable rather than serving any blob.
+  assert.equal(r.sourceMode, "central");
+  assert.equal(r.found, false, "truthfully no information — nothing foreign, nothing legacy");
+  assert.ok(!r.text.includes(LEGACY_MARKER));
   // An agent of B likewise cannot be driven from A's context.
   w.db.assignments.push({ workspace_id: WS_B, agent_id: AGENT_NOVA, resource_id: RES_FOREIGN, position: 0 });
   const viaA = await searchKnowledgeCore(laura({ id: AGENT_NOVA, workspace_id: WS_A }), { query: "implant price secret" }, "test", w.loader);
@@ -174,17 +178,21 @@ test("(9,10) no assignments → legacy mode with byte-identical legacy retrieval
   assert.equal(r.text, direct.mode === "full" ? direct.text.slice(0, 6000) : direct.text);
 });
 
-test("(9b) assignments with nothing usable, and loader failures, fall back to legacy deterministically", async () => {
+test("(9b) assigned-but-unusable stays CENTRAL with no information (Phase 1C — never the stale blob); only an unknowable migration state falls back to legacy", async () => {
   const w = makeDb();
   seed(w.db);
   w.db.assignments.push({ workspace_id: WS_A, agent_id: AGENT_LAURA, resource_id: RES_PRICES, position: 0 });
   w.db.documents.forEach((d) => { if (d.resource_id === RES_PRICES) d.status = "processing"; });
   const r = await searchKnowledgeCore(laura(), { query: "osmium crowns" }, "test", w.loader);
-  assert.equal(r.sourceMode, "legacy");
-  assert.ok(r.text.includes(LEGACY_MARKER));
+  assert.equal(r.sourceMode, "central", "assignments exist → migrated, whatever the documents are doing");
+  assert.equal(r.found, false, "nothing usable → truthfully no information");
+  assert.ok(!r.text.includes(LEGACY_MARKER), "the legacy blob is never served to a migrated agent");
+  // Only when the assignment lookup itself fails (migration state unknowable)
+  // does the tool keep the legacy path, so a live call never dies.
   const thrown = await searchKnowledgeCore(laura(), { query: "osmium crowns" }, "test", async () => { throw new Error("db down"); });
   assert.equal(thrown.sourceMode, "legacy");
   assert.equal(thrown.success, true, "a loader failure never kills the tool");
+  assert.ok(thrown.text.includes(LEGACY_MARKER));
 });
 
 test("(11) central mode NEVER silently includes the legacy blob", async () => {
@@ -244,8 +252,10 @@ test("centralSourceLabel is one line, id-free and falls back sensibly", () => {
 
 test("the real loader scopes EVERY query by workspace (and the assignment query by agent)", () => {
   const code = src("src/lib/knowledge-runtime.ts");
-  assert.equal((code.match(/\.eq\("workspace_id", ws\)/g) ?? []).length, 3, "all three queries are workspace-filtered");
-  assert.ok(code.includes('.eq("agent_id", agentId)'), "assignments are agent-filtered");
+  // Loader: assignments + resources + documents; Phase 1C adds the prompt-mode
+  // probe — four queries, every one workspace-filtered.
+  assert.equal((code.match(/\.eq\("workspace_id", ws\)/g) ?? []).length, 4, "every query is workspace-filtered");
+  assert.equal((code.match(/\.eq\("agent_id", agentId\)/g) ?? []).length, 2, "assignments and the probe are agent-filtered");
   assert.ok(code.includes('.eq("status", "ready")'), "only ready documents are loaded");
   assert.ok(code.includes('.in("resource_id", ids)') && code.includes('.in("id", ids)'), "resource ids come only from the agent's assignments");
   // Server-only: uses the service-role client; never imported by browser code
@@ -259,11 +269,12 @@ test("(14,15,18) Phase 0 posture holds: tool-exec auth precedes data, worker pin
   const readAt = toolExec.indexOf('.from("agents")');
   assert.ok(authAt > 0 && readAt > 0 && authAt < readAt, "401 before any read");
   assert.ok(toolExec.includes("enforceWorkerWorkspacePin("));
-  // The session route (whose token reaches the browser) gained no Central KB path.
+  // The session route / livekit.ts may consult the MODE (Phase 1C) but never
+  // load Central KB content or name the 0065 tables.
   const session = src("src/app/api/livekit/session/route.ts");
   const livekit = src("src/lib/livekit.ts");
   for (const [name, code] of [["session route", session], ["livekit.ts", livekit]]) {
-    assert.doesNotMatch(code, /knowledge-runtime|knowledge_documents|knowledge_resources|agent_knowledge_resources/, name);
+    assert.doesNotMatch(code, /loadAgentCentralKnowledge|knowledge_documents|knowledge_resources|agent_knowledge_resources/, name);
   }
   assert.match(session, /:\s*dispatchMetadata\(/, "worker join tokens stay id-only");
 });

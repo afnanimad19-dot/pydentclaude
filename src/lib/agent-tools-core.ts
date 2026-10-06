@@ -7,7 +7,7 @@
 
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { retrieveKnowledge } from "@/lib/kb-retrieval";
-import { loadAgentCentralKnowledge, type AgentCentralKnowledge, type CentralKnowledgeLoader } from "@/lib/knowledge-runtime";
+import { loadAgentCentralKnowledge, type CentralKnowledgeState, type CentralKnowledgeLoader } from "@/lib/knowledge-runtime";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -133,13 +133,15 @@ export interface KnowledgeResult {
 // The per-turn knowledge retrieval both channels share: the SAME lexical
 // retrieval code the chat agents use (lib/kb-retrieval.ts).
 //
-// SOURCE MODE (Phase 1B, deterministic — the two stores are never merged):
-//   the agent has assigned Central Knowledge with at least one usable (ready,
-//   non-blank) document → that text is searched; otherwise — no assignments,
-//   nothing usable yet, or the loader failed — the legacy agents.knowledge_base
-//   blob is searched exactly as before. The ranking, budgets, top-K and the
-//   spoken wrapper are identical in both modes, so the tool contract (and the
-//   worker) see no difference.
+// SOURCE MODE (Phase 1B/1C, deterministic — the two stores are never merged):
+//   the agent HAS Central Knowledge assignments (the Phase 1C migration
+//   signal) → central mode: its usable (ready, non-blank) documents are
+//   searched, and when nothing is usable yet the tool truthfully reports no
+//   information — never the stale legacy blob. No assignments (or the
+//   assignment lookup itself failed) → the legacy agents.knowledge_base blob
+//   is searched exactly as before. The ranking, budgets, top-K and the spoken
+//   wrapper are identical in both modes, so the tool contract (and the worker)
+//   see no difference.
 export async function searchKnowledgeCore(
   agent: { id?: string | null; workspace_id?: string | null; name?: string | null; knowledge_base?: string | null },
   a: { query?: unknown; context?: unknown },
@@ -149,14 +151,14 @@ export async function searchKnowledgeCore(
   const query = String(a.query ?? "").trim();
   if (!query) return { success: false, error: "missing_query", found: false, text: "", sources: [] };
   const started = Date.now();
-  let central: AgentCentralKnowledge | null = null;
+  let central: CentralKnowledgeState = { assigned: false, knowledge: null };
   try {
     central = await loadCentral(String(agent.workspace_id ?? ""), String(agent.id ?? ""));
   } catch {
-    central = null; // fail safe: the live call keeps its legacy knowledge
+    central = { assigned: false, knowledge: null }; // migration state unknowable → legacy keeps the call alive
   }
-  const sourceMode: "central" | "legacy" = central ? "central" : "legacy";
-  const kb = central ? central.text : String(agent.knowledge_base ?? "");
+  const sourceMode: "central" | "legacy" = central.assigned ? "central" : "legacy";
+  const kb = central.assigned ? central.knowledge?.text ?? "" : String(agent.knowledge_base ?? "");
   const r = retrieveKnowledge(kb, [query, String(a.context ?? "")], {
     budget: 6000,
     relevantBudget: 6000,
@@ -166,7 +168,7 @@ export async function searchKnowledgeCore(
   const text = r.mode === "full" ? r.text.slice(0, 6000) : r.text;
   // Observability: source mode, counts, sources + scores + latency — never the knowledge text itself.
   console.log(
-    `[kb-retrieval] agent=${agent.name} channel=${channel} source=${sourceMode}${central ? ` resources=${central.resources} documents=${central.documents}` : ""} mode=${r.mode} kb_chars=${r.totalKbChars} latency_ms=${Date.now() - started} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 4).join(", ") || "(full)"}`
+    `[kb-retrieval] agent=${agent.name} channel=${channel} source=${sourceMode}${central.assigned ? ` resources=${central.knowledge?.resources ?? 0} documents=${central.knowledge?.documents ?? 0}` : ""} mode=${r.mode} kb_chars=${r.totalKbChars} latency_ms=${Date.now() - started} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 4).join(", ") || "(full)"}`
   );
   return {
     success: true,

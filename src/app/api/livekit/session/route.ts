@@ -5,6 +5,7 @@ import { recordingEligible } from "@/lib/call-recording";
 import { recordingEnv, startCallRecording } from "@/lib/call-recording-server";
 import { normalizeVoiceSettings } from "@/lib/agent-config";
 import { authorizeRequest } from "@/lib/server-auth-deps";
+import { knowledgePromptMode } from "@/lib/knowledge-runtime";
 
 // Starts an in-browser LiveKit test call for an agent: creates a room name that
 // carries the workspace, mints a join token whose room config auto-dispatches
@@ -45,8 +46,10 @@ export async function POST(req: NextRequest) {
   const room = lkRoomName(ws, "test");
   const identity = `web-${Math.random().toString(36).slice(2, 10)}`;
   try {
+    // Phase 1C: a Central-migrated Builder agent's compiled instructions carry
+    // no legacy blob either (the worker path was already id-only metadata).
     const metadata = bound.external
-      ? builderMetadata(agent, ws, requestOrigin(req), { source: "web-test" })
+      ? builderMetadata(agent, ws, requestOrigin(req), { source: "web-test" }, await knowledgePromptMode(ws, String(agent.id)))
       : dispatchMetadata(String(agent.id), ws, { source: "web-test" });
 
     // Call recording (Stage C2): strictly opt-in per agent, enforced HERE on

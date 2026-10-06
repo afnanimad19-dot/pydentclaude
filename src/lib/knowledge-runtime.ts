@@ -57,7 +57,21 @@ export interface AgentCentralKnowledge {
   chars: number;
 }
 
-export type CentralKnowledgeLoader = (ws: string, agentId: string) => Promise<AgentCentralKnowledge | null>;
+/**
+ * What the runtime knows about an agent's Central Knowledge (Phase 1C).
+ * `assigned` is the MIGRATION SIGNAL: at least one assignment exists, however
+ * its documents are doing. An assigned agent whose documents are all
+ * processing/error/blank gets `knowledge: null` — it stays in central mode
+ * with nothing to answer from (never a silent fall back to the legacy blob).
+ */
+export interface CentralKnowledgeState {
+  assigned: boolean;
+  knowledge: AgentCentralKnowledge | null;
+}
+
+export type CentralKnowledgeLoader = (ws: string, agentId: string) => Promise<CentralKnowledgeState>;
+
+const NOT_ASSIGNED: CentralKnowledgeState = { assigned: false, knowledge: null };
 
 /** One-line source label: "Resource name / file-or-url" (no ids, no newlines). */
 export function centralSourceLabel(resourceName: string, doc: Pick<CentralDocumentRow, "filename" | "source_url">): string {
@@ -105,19 +119,26 @@ export function buildAgentCentralKnowledge(
 }
 
 /**
- * Load the Central Knowledge assigned to ONE agent of ONE workspace (service
+ * Load the Central Knowledge state of ONE agent of ONE workspace (service
  * role; both ids come from the server's own authenticated context, never from
- * tool arguments). null = nothing usable (or not loadable) → legacy fallback.
+ * tool arguments).
+ *
+ * Failure split (Phase 1C): when the ASSIGNMENT lookup itself fails — the 0065
+ * tables aren't installed, or the query errors — the agent's migration state is
+ * unknown and the result is `assigned: false` (the tool keeps its legacy path,
+ * so a live call never dies). But once assignments are KNOWN to exist, a
+ * failing or empty document load yields `assigned: true, knowledge: null`: a
+ * migrated agent is never silently handed the stale legacy blob.
  */
-export async function loadAgentCentralKnowledge(ws: string, agentId: string): Promise<AgentCentralKnowledge | null> {
-  if (!ws || !agentId) return null;
+export async function loadAgentCentralKnowledge(ws: string, agentId: string): Promise<CentralKnowledgeState> {
+  if (!ws || !agentId) return NOT_ASSIGNED;
   try {
     const { data: assignments, error: aErr } = await supabase
       .from("agent_knowledge_resources")
       .select("resource_id, position")
       .eq("workspace_id", ws)
       .eq("agent_id", agentId);
-    if (aErr || !assignments?.length) return null;
+    if (aErr || !assignments?.length) return NOT_ASSIGNED;
     const ids = assignments.map((a) => String(a.resource_id));
     const [resQ, docQ] = await Promise.all([
       supabase.from("knowledge_resources").select("id, name").eq("workspace_id", ws).in("id", ids),
@@ -128,13 +149,67 @@ export async function loadAgentCentralKnowledge(ws: string, agentId: string): Pr
         .in("resource_id", ids)
         .eq("status", "ready"),
     ]);
-    if (resQ.error || docQ.error) return null;
-    return buildAgentCentralKnowledge(
-      assignments as CentralAssignmentRow[],
-      (resQ.data ?? []) as CentralResourceRow[],
-      (docQ.data ?? []) as CentralDocumentRow[]
-    );
+    if (resQ.error || docQ.error) return { assigned: true, knowledge: null };
+    return {
+      assigned: true,
+      knowledge: buildAgentCentralKnowledge(
+        assignments as CentralAssignmentRow[],
+        (resQ.data ?? []) as CentralResourceRow[],
+        (docQ.data ?? []) as CentralDocumentRow[]
+      ),
+    };
   } catch {
-    return null; // fail safe: the live call keeps its legacy knowledge path
+    return NOT_ASSIGNED; // migration state unknowable: the live call keeps its legacy path
   }
+}
+
+// ------------------------------------------------------------------ prompt mode (Phase 1C)
+
+export type KnowledgePromptMode = "central" | "legacy";
+
+type PgErrorLike = { code?: string; message?: string } | null | undefined;
+
+/** 42P01 / PGRST205: the 0065 tables aren't installed — nobody can be migrated. */
+function centralTablesMissing(e: PgErrorLike): boolean {
+  return e?.code === "42P01" || e?.code === "PGRST205" || /relation .* does not exist|could not find the table/i.test(e?.message ?? "");
+}
+
+/** Does at least one assignment exist? (Injectable for tests; never reads documents.) */
+export type AssignmentProbe = (ws: string, agentId: string) => Promise<{ assigned: boolean } | { error: PgErrorLike }>;
+
+const defaultAssignmentProbe: AssignmentProbe = async (ws, agentId) => {
+  const { data, error } = await supabase
+    .from("agent_knowledge_resources")
+    .select("resource_id")
+    .eq("workspace_id", ws)
+    .eq("agent_id", agentId)
+    .limit(1);
+  if (error) return { error };
+  return { assigned: (data ?? []).length > 0 };
+};
+
+/**
+ * The LiveKit prompt's knowledge mode for one agent (Phase 1C migration state).
+ *
+ * "central" ⇔ the agent has at least ONE Central Knowledge assignment — the
+ * stable operator decision. Document readiness NEVER enters this decision: an
+ * assigned agent whose documents are processing/error/blank stays central, so
+ * the stale legacy blob is never re-injected into its prompt.
+ *
+ * Failure policy: the 0065 tables missing → "legacy" (nobody can be migrated).
+ * Any OTHER lookup failure → "central": the prompt does WITHOUT the blob, which
+ * is safe because search_knowledge still serves the correct store either way
+ * (its own loader falls back to legacy for a truly-legacy agent) — preferring a
+ * missing blob over a possibly-stale cross-source prompt.
+ */
+export async function knowledgePromptMode(ws: string, agentId: string, probe: AssignmentProbe = defaultAssignmentProbe): Promise<KnowledgePromptMode> {
+  if (!ws || !agentId) return "legacy";
+  let r: Awaited<ReturnType<AssignmentProbe>>;
+  try {
+    r = await probe(ws, agentId);
+  } catch {
+    r = { error: {} };
+  }
+  if ("assigned" in r) return r.assigned ? "central" : "legacy";
+  return centralTablesMissing(r.error) ? "legacy" : "central";
 }
