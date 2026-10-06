@@ -15,6 +15,7 @@
 
 import { Room, RoomEvent, Track, type RemoteTrack, type Participant, type TranscriptionSegment } from "livekit-client";
 import { WebCallState } from "@/lib/web-call-state";
+import { authFetch } from "@/lib/auth-fetch";
 
 export interface LivekitCallHandlers {
   onState: (s: "live" | "ended" | "error") => void;
@@ -35,9 +36,10 @@ export class LivekitWebCall {
   private seen = new Set<string>();
 
   async start(agentId: string, handlers: LivekitCallHandlers): Promise<void> {
-    const res = await fetch("/api/livekit/session", {
+    // The server authorizes the signed-in session and only serves agents of
+    // the caller's own workspace (authFetch carries the Supabase bearer token).
+    const res = await authFetch("/api/livekit/session", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ agentId }),
     });
     const cfg = await res.json().catch(() => ({}));

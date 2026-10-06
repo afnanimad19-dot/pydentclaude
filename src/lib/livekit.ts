@@ -367,6 +367,12 @@ export async function resolveWorkerToken(token: unknown): Promise<{ ok: boolean;
   });
 }
 
+/** True when this workspace has provisioned its OWN worker token (env ignored). */
+export async function workspaceHasOwnWorkerToken(ws: string): Promise<boolean> {
+  const { data } = await supabase.from("livekit_config").select("worker_token").eq("workspace_id", ws).maybeSingle();
+  return !!String(data?.worker_token ?? "").trim();
+}
+
 export async function workerTokenConfigured(ws: string | null | undefined): Promise<boolean> {
   if ((process.env.LIVEKIT_WORKER_TOKEN || "").trim()) return true;
   if (!ws) return false;

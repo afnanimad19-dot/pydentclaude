@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { livekitAgentConfig, resolveWorkerToken, requestOrigin } from "@/lib/livekit";
+import { livekitAgentConfig, resolveWorkerToken, requestOrigin, workspaceHasOwnWorkerToken } from "@/lib/livekit";
 import { clinicTimezone } from "@/lib/booking-server";
-import { resolveWorkerAgent } from "@/lib/worker-agent-lookup";
+import { resolveWorkerAgent, enforceWorkerWorkspacePin } from "@/lib/worker-agent-lookup";
 
 // Called by the deployed LiveKit worker at the start of every call: given the
 // dispatch metadata { pydentAgentId, ws } (both required) it returns the agent's LIVE config
@@ -29,6 +29,15 @@ export async function POST(req: NextRequest) {
     { tokenWorkspace: auth.ws ?? null, bodyWorkspace: bodyWs, pydentAgentId }
   );
   if (!found.ok) return NextResponse.json({ error: found.error }, { status: found.status });
+  // Workspace pinning: the global env token is a fallback only for workspaces
+  // without their own worker token — it cannot read a provisioned clinic's
+  // agent config (whose instructions include the knowledge base).
+  const pin = await enforceWorkerWorkspacePin(
+    { workspaceHasOwnToken: workspaceHasOwnWorkerToken },
+    auth.ws ?? null,
+    found.workspaceId
+  );
+  if (!pin.ok) return NextResponse.json({ error: pin.error }, { status: pin.status });
   const agent = found.agent;
   // Compile the prompt against the CLINIC's timezone, not the server's UTC,
   // and resolve the clinic's display name for the default closing message

@@ -34,3 +34,41 @@ export async function resolveWorkerAgent<A extends { id: string; workspace_id: s
   if (String(agent.workspace_id ?? "") !== ws) return { ok: false, status: 403, error: "Agent does not belong to this workspace." };
   return { ok: true, agent, workspaceId: ws };
 }
+
+export interface WorkerPinDeps {
+  /** True when livekit_config stores a worker_token for this workspace. */
+  workspaceHasOwnToken(ws: string): Promise<boolean>;
+}
+
+export type WorkerPinResult = { ok: true } | { ok: false; status: 403; error: string };
+
+/**
+ * Workspace pinning for worker-token authentication, applied AFTER the agent
+ * row is resolved. A workspace-bound token may only touch agents of its own
+ * workspace. The global env token (which resolves UNBOUND) remains a fallback
+ * only for workspaces that never provisioned their own token: the moment a
+ * workspace stores a worker_token, the global token stops working for that
+ * workspace's agents — so one shared secret can no longer read every clinic.
+ */
+export async function enforceWorkerWorkspacePin(
+  deps: WorkerPinDeps,
+  tokenWorkspace: string | null | undefined,
+  agentWorkspace: string
+): Promise<WorkerPinResult> {
+  const tokenWs = String(tokenWorkspace ?? "").trim();
+  if (tokenWs) {
+    return tokenWs === agentWorkspace
+      ? { ok: true }
+      : { ok: false, status: 403, error: "Agent does not belong to this workspace." };
+  }
+  let pinned = false;
+  try {
+    pinned = await deps.workspaceHasOwnToken(agentWorkspace);
+  } catch {
+    // livekit_config may not be migrated yet — no workspace token can exist then.
+    pinned = false;
+  }
+  return pinned
+    ? { ok: false, status: 403, error: "This workspace requires its own worker token." }
+    : { ok: true };
+}

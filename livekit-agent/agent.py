@@ -143,7 +143,8 @@ async def run_tool(agent_id: str, name: str, args: dict[str, Any]) -> str:
     started = time.monotonic()
     ok = True
     try:
-        data = await pydent_post("/api/agents/tool-exec", {"agentId": agent_id, "name": name, "args": args})
+        # tool-exec requires the worker token (same credential agent-config takes).
+        data = await pydent_post("/api/agents/tool-exec", {"token": WORKER_TOKEN, "agentId": agent_id, "name": name, "args": args})
         return str(data.get("result") or data.get("error") or "Tool failed.")
     except Exception as e:  # never crash the call over a tool
         ok = False
