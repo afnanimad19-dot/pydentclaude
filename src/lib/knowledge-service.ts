@@ -21,6 +21,17 @@
 // computed by the database (content_version + 1 under the resource row lock),
 // never by this module.
 //
+// Chunk indexing (Phase 2B): AFTER a successful changed ready-document write
+// (upload insert/replace, URL add, refresh replace) the document is chunked
+// (lib/knowledge-chunker.ts, pure) and handed to the store's reindexDocument
+// (knowledge_reindex_document, migration 0068). Indexing is ADDITIVE and sits
+// OUTSIDE the A4.1 atomicity contract: the database function does its own
+// locking + stale-hash rejection, retrieval only ever joins chunks on
+// chunk.content_hash = document.content_hash, and an indexing failure NEVER
+// fails the ingestion response. Unchanged/kept/error writes, deletes (FK
+// cascade removes chunks), duplicates and historical documents are not indexed
+// here — backfill is Phase 2C.
+//
 // Logging: none here. Nothing in this module logs knowledge content.
 
 import {
@@ -46,6 +57,7 @@ import {
   type DocumentStatus,
   type RefreshIntervalHours,
 } from "@/lib/knowledge";
+import { chunkDocumentContent, chunkSourceLabel, type KnowledgeChunk } from "@/lib/knowledge-chunker";
 
 // ------------------------------------------------------------------ store contract
 
@@ -123,6 +135,20 @@ export type ApplyResult =
   | { limit: true }
   | { conflict: true };
 export type DuplicateResult = { row: ResourceRow; documents: number } | { notFound: true } | { conflict: "name" };
+/**
+ * knowledge_reindex_document outcome (Phase 2B). "replaced" = the chunk set was
+ * swapped; "stale_input" = the document's content changed since the chunks were
+ * built — the database wrote NOTHING (the newer content's own write indexes
+ * itself); "not_found" = no such document in this workspace; "unavailable" =
+ * migration 0068 isn't installed (ingestion proceeds without chunks);
+ * "error" = any other failure (logged by the store, never thrown to ingestion).
+ */
+export type ReindexResult =
+  | { outcome: "replaced"; chunks: number }
+  | { outcome: "stale_input" }
+  | { outcome: "not_found" }
+  | { outcome: "unavailable" }
+  | { outcome: "error" };
 
 /** Every method is scoped by `ws`; rows of another workspace are never returned or touched. */
 export interface KnowledgeStore {
@@ -157,6 +183,14 @@ export interface KnowledgeStore {
    */
   insertAssignment(ws: string, agentId: string, resourceId: string): Promise<"inserted" | "exists" | "refused">;
   deleteAssignment(ws: string, agentId: string, resourceId: string): Promise<"deleted" | "not_found">;
+  /**
+   * Replace one document's chunk set via knowledge_reindex_document (0068).
+   * The database derives ownership/hash/version from the LOCKED document row
+   * and rejects stale input itself — callers add no locking and no retries.
+   * Implementations map failures to an outcome where possible; the service
+   * treats a throw as "error" too (indexing never fails ingestion).
+   */
+  reindexDocument(ws: string, documentId: string, contentHash: string, chunks: readonly KnowledgeChunk[]): Promise<ReindexResult>;
 }
 
 /** Thrown by the store when migration 0065 isn't installed. */
@@ -433,6 +467,28 @@ function planToChange(plan: IngestPlan, nowIso: string, fetched: boolean, option
   }
 }
 
+/**
+ * Phase 2B: chunk the content a successful apply just persisted and hand the
+ * set to knowledge_reindex_document. The content/hash pair comes from the
+ * ingestion PLAN — the exact bytes the atomic write stored — so the database's
+ * hash check can only reject it when a NEWER write raced in (correct: that
+ * write indexes its own content). Additive by contract: any outcome or throw
+ * is absorbed — the committed document write is never failed by indexing, and
+ * stale/absent chunks are excluded from retrieval by the hash join anyway.
+ */
+async function indexDocumentChunks(store: KnowledgeStore, ws: string, resourceName: string, documentId: string, write: DocumentWrite): Promise<void> {
+  try {
+    const chunks = chunkDocumentContent({
+      content: write.content,
+      sourceLabel: chunkSourceLabel(resourceName, { filename: write.filename, sourceUrl: write.sourceUrl }),
+    });
+    await store.reindexDocument(ws, documentId, write.contentHash, chunks);
+  } catch {
+    // Outcome logging is the store's job; the next content write or the
+    // Phase 2C backfill re-indexes this document.
+  }
+}
+
 /** HTTP outcome for an atomic write the database refused (nothing was written). */
 function applyFailure(res: ApplyResult): Outcome | null {
   if ("row" in res) return null;
@@ -474,6 +530,7 @@ export async function uploadFile(
   if (step.outcome === "kept") {
     return fail(x.ok ? 422 : x.status >= 400 && x.status < 600 ? x.status : 422, "extraction_failed", `${x.ok ? "No readable text was found in that file." : x.error} The existing version was kept.`, { kept: true, documentId });
   }
+  if ((plan.action === "insert" || plan.action === "replace") && documentId) await indexDocumentChunks(store, ws, r.name, documentId, plan.write);
   return ok({ action: step.outcome, documentId, truncated: step.truncated, resource: resourceSummary(res.row) }, step.outcome === "inserted" ? 201 : 200);
 }
 
@@ -510,6 +567,7 @@ export async function addUrl(store: KnowledgeStore, ws: string, userId: string, 
   if (step.outcome === "kept") {
     return fail(site.ok ? 422 : site.status >= 400 && site.status < 600 ? site.status : 502, site.ok ? "empty_content" : site.code ?? "fetch_failed", `${failure} The previous content was kept.`, { kept: true, documentId });
   }
+  if ((plan.action === "insert" || plan.action === "replace") && documentId) await indexDocumentChunks(store, ws, r.name, documentId, plan.write);
   return ok({ action: step.outcome, documentId, truncated: step.truncated, resource: resourceSummary(res.row) }, step.outcome === "inserted" ? 201 : 200);
 }
 
@@ -538,6 +596,7 @@ export async function refreshResource(
   const results: { documentId: string; sourceUrl: string | null; outcome: string; error?: string }[] = [];
   const changes: DocumentChange[] = [];
   const changeIndex: number[] = []; // results[i] ↔ changes[changeIndex[i]] (or -1)
+  const changeWrites: (DocumentWrite | null)[] = []; // per change: the ready content a replace persisted (Phase 2B indexing input)
   for (const d of docs) {
     if (now().getTime() - started > budget) {
       results.push({ documentId: d.id, sourceUrl: d.source_url, outcome: "skipped", error: "Not refreshed: time limit reached. Refresh again to continue." });
@@ -557,6 +616,7 @@ export async function refreshResource(
     if (!("error" in step) && step.change) {
       changeIndex.push(changes.length);
       changes.push(step.change);
+      changeWrites.push(plan.action === "replace" ? plan.write : null);
     } else changeIndex.push(-1);
   }
   const failedCount = () => results.filter((x) => x.outcome === "kept_previous" || x.outcome === "skipped").length;
@@ -583,6 +643,16 @@ export async function refreshResource(
       x.error = "This address was removed while the refresh was running.";
     }
   });
+  // Phase 2B: index exactly the documents this refresh REPLACED (unchanged,
+  // kept and removed-meanwhile entries are skipped) with each plan's own
+  // content/hash pair — the bytes the single atomic apply just persisted.
+  for (let ci = 0; ci < changes.length; ci++) {
+    const write = changeWrites[ci];
+    const c = changes[ci];
+    if (write && c.op === "replace" && res.results[ci]?.applied) {
+      await indexDocumentChunks(store, ws, r.name, c.id, write);
+    }
+  }
   return ok({
     refreshed: succeeded(),
     failed: failedCount(),

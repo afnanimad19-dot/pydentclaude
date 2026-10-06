@@ -36,6 +36,12 @@ import { openRouterTesterChat, type TesterChatFn } from "@/lib/knowledge-tester"
 // trigger → limit, the assignment foreign key → "assigned", P0002 → not found);
 // anything else throws a generic error carrying only the Postgres error code —
 // never SQL text or knowledge content.
+//
+// Exception (Phase 2B): reindexDocument maps EVERY failure to an outcome —
+// including a missing 0068 table/function ("unavailable", NOT
+// KnowledgeMigrationMissing) — because chunk indexing is additive and must
+// never fail or 503 an ingestion that already committed. Outcomes are logged
+// as one [kb-index] line (ids and outcome only, never content).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -206,6 +212,36 @@ export const knowledgeStore: KnowledgeStore = {
     if (error?.code === "22P02") return "not_found";
     check(error);
     return Array.isArray(data) && data.length === 1 ? "deleted" : "not_found";
+  },
+  // Phase 2B: knowledge_reindex_document (0068) — the database locks the
+  // document, rejects stale input by hash, and swaps the chunk set in one
+  // transaction. This method NEVER throws: indexing is additive, so every
+  // failure becomes an outcome and one [kb-index] log line (ids + outcome
+  // only — chunk content and SQL text are never logged).
+  async reindexDocument(ws, documentId, contentHash, chunks) {
+    const log = (outcome: string, detail = "") =>
+      console.log(`[kb-index] ws=${ws} document=${documentId} outcome=${outcome} chunks=${chunks.length}${detail}`);
+    try {
+      const { data, error } = await supabase.rpc("knowledge_reindex_document", {
+        p_workspace_id: ws,
+        p_document_id: documentId,
+        p_content_hash: contentHash,
+        p_chunks: chunks.map((c) => ({ chunk_index: c.chunk_index, content: c.content, source_label: c.source_label, heading: c.heading })),
+      });
+      if (error) {
+        if (error.code === "P0002") { log("not_found"); return { outcome: "not_found" }; }
+        if (isMissingTable(error)) { log("unavailable"); return { outcome: "unavailable" }; }
+        log("error", ` code=${error.code ?? "unknown"}`);
+        return { outcome: "error" };
+      }
+      const out = data as { stale_input?: boolean; replaced?: boolean; chunks?: number } | null;
+      if (out?.stale_input) { log("stale_input"); return { outcome: "stale_input" }; }
+      log("replaced");
+      return { outcome: "replaced", chunks: Number(out?.chunks ?? 0) };
+    } catch {
+      log("error");
+      return { outcome: "error" };
+    }
   },
 };
 
