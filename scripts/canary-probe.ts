@@ -1,7 +1,9 @@
-// Pydent Phase 2B CANARY write-capability probe CLI — W1/W2 ONLY.
+// Pydent Phase 2B CANARY write-capability probe CLI — W1/W2, and W3 behind
+// its own phrase (a live W3 run is a separate operator approval).
 //
 //   NODE_USE_ENV_PROXY=1 node --experimental-strip-types --import ./tests/alias-loader-register.mjs \
-//     scripts/canary-probe.ts --confirm=<CANARY_PROBE_CONFIRMATION_PHRASE>
+//     scripts/canary-probe.ts --confirm=<CANARY_PROBE_CONFIRMATION_PHRASE>      # W1/W2
+//     scripts/canary-probe.ts --confirm-w3=<CANARY_W3_CONFIRMATION_PHRASE>      # W3
 //
 // Order (each step refuses before the next):
 //   1. exact confirmation phrase for the two approved write-capable requests;
@@ -14,28 +16,71 @@
 import { pathToFileURL } from "node:url";
 import { CANARY_PROJECT_REF, CanaryError } from "./canary-guard";
 import { createCanaryReadOnlyTransport } from "./canary-transport";
-import { CanaryProbeError, createCanaryWriteProbeTransport, runCanaryWriteProbe } from "./canary-probe-lib";
+import {
+  CanaryProbeError,
+  PROPOSED_W3_CLEANUP_SQL,
+  createCanaryWriteProbeTransport,
+  runCanaryW3Probe,
+  runCanaryWriteProbe,
+} from "./canary-probe-lib";
 
 export const CANARY_PROBE_CONFIRMATION_PHRASE =
   "I-AUTHORIZE-THE-TWO-APPROVED-W1-W2-WRITE-CAPABLE-PROBES-AGAINST-THE-CANARY-thqjtoxzkujnljsmkwkp";
 
-export function parseProbeCliArgs(argv: readonly string[]): void {
-  if (argv.length !== 1 || !argv[0].startsWith("--confirm=")) throw new CanaryError("INVALID_ARGS");
-  if (argv[0].slice("--confirm=".length) !== CANARY_PROBE_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
+/** W3 has its own phrase: a live W3 run is a separate operator approval. */
+export const CANARY_W3_CONFIRMATION_PHRASE =
+  "I-AUTHORIZE-THE-W3-FAILURE-ATOMICITY-PROBE-AGAINST-THE-CANARY-thqjtoxzkujnljsmkwkp";
+
+export type ProbeCliMode = "w1w2" | "w3";
+
+export function parseProbeCliArgs(argv: readonly string[]): ProbeCliMode {
+  if (argv.length !== 1) throw new CanaryError("INVALID_ARGS");
+  if (argv[0].startsWith("--confirm=")) {
+    if (argv[0].slice("--confirm=".length) !== CANARY_PROBE_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
+    return "w1w2";
+  }
+  if (argv[0].startsWith("--confirm-w3=")) {
+    if (argv[0].slice("--confirm-w3=".length) !== CANARY_W3_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
+    return "w3";
+  }
+  throw new CanaryError("INVALID_ARGS");
 }
 
 async function main(): Promise<number> {
+  let mode: ProbeCliMode;
   try {
-    parseProbeCliArgs(process.argv.slice(2));
+    mode = parseProbeCliArgs(process.argv.slice(2));
   } catch (e) {
     console.error(e instanceof CanaryError ? e.message : "CANARY REFUSED [INVALID_ARGS]");
-    console.error("usage: canary-probe --confirm=<exact phrase from scripts/canary-probe.ts>");
+    console.error("usage: canary-probe --confirm=<W1/W2 phrase> | --confirm-w3=<W3 phrase> (see scripts/canary-probe.ts)");
     return 1;
   }
 
   try {
     const readOnlyTransport = createCanaryReadOnlyTransport(process.env);
     const probeTransport = createCanaryWriteProbeTransport(process.env);
+
+    if (mode === "w3") {
+      console.log(`CANARY W3 FAILURE-ATOMICITY PROBE — target ${CANARY_PROJECT_REF} (one deliberately failing request; frozen SQL)`);
+      const report = await runCanaryW3Probe({
+        env: process.env,
+        readOnly: readOnlyTransport.executeReadOnlyQuery,
+        probe: probeTransport,
+      });
+      for (const c of report.checks) console.log(` ${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.detail ? ` [${c.detail}]` : ""}`);
+      console.log(`outcome=${report.outcome} atomicRollback=${String(report.atomicRollback)} cleanupRequired=${report.cleanupRequired}`);
+      if (report.cleanupRequired) {
+        console.log("W3 CLEANUP IS NOT EXECUTED BY THIS TOOL. Proposed cleanup for separate review/approval:");
+        console.log(`  ${PROPOSED_W3_CLEANUP_SQL}`);
+      }
+      if (report.outcome === "atomic_rollback_confirmed") {
+        console.log("CANARY W3: COMPLETE — failed request rolled back atomically; canary unchanged.");
+        return 0;
+      }
+      console.error(`CANARY W3: STOPPED with outcome ${report.outcome}. No further request was sent.`);
+      return 1;
+    }
+
     console.log(
       `CANARY WRITE-CAPABILITY PROBE — target ${CANARY_PROJECT_REF} (W1/W2 only; frozen SQL; temp-and-rollback only)`,
     );

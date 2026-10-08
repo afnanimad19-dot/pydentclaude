@@ -5,6 +5,11 @@
 //   W1 — SELECT-only identity and transaction-state introspection.
 //   W2 — temporary table inside an explicit transaction, one test row,
 //        ROLLBACK, in-session verification that the temp table is gone.
+//   W3 — failure-atomicity probe (IMPLEMENTED OFFLINE ONLY; live execution
+//        requires its own separate approval): a deliberately failing
+//        multi-statement request in the dedicated canary_probe_w3_atomicity
+//        schema, judged solely by read-only absence checks afterwards. Its
+//        cleanup is a reviewed PROPOSAL that no code path can execute.
 // NOTHING ELSE. This module is NOT a general-purpose SQL interface: the only
 // exported network surface is runW1/runW2, each of which sends one frozen SQL
 // constant. An internal allowlist refuses any other text as defense in depth.
@@ -44,7 +49,9 @@ export type CanaryProbeFailureCode =
   | "W1_ROLE_UNEXPECTED" // executing role is not the expected write-path role
   | "W1_TX_STATE_UNEXPECTED" // transaction state is not writable in the expected way
   | "W2_ROLLBACK_NOT_CONFIRMED" // the in-session rollback evidence did not come back all-true
-  | "STATE_CHANGED_AFTER_PROBE"; // the post-probe read-only verification differs from the baseline
+  | "STATE_CHANGED_AFTER_PROBE" // the post-probe read-only verification differs from the baseline
+  | "W3_SCHEMA_PRESENT" // the W3 probe schema already exists; W3 refuses to send anything
+  | "W3_CLEANUP_NOT_AUTHORIZED"; // the W3 cleanup is a reviewed proposal; executing it is a separate approval
 
 const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   PROBE_SQL_NOT_ALLOWLISTED: "probe transport only sends the frozen W1/W2 SQL; refusing other text",
@@ -55,6 +62,8 @@ const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   W1_TX_STATE_UNEXPECTED: "W1 returned an unexpected transaction state; stopping before W2",
   W2_ROLLBACK_NOT_CONFIRMED: "W2 could not confirm the rollback from inside the session; stopping",
   STATE_CHANGED_AFTER_PROBE: "read-only verification after the probe differs from the baseline; investigate",
+  W3_SCHEMA_PRESENT: "the W3 probe schema already exists on the canary; W3 refuses to run until it is investigated",
+  W3_CLEANUP_NOT_AUTHORIZED: "the W3 cleanup SQL is a reviewed proposal only; no code path in this build may execute it",
 };
 
 export class CanaryProbeError extends Error {
@@ -98,6 +107,45 @@ export const CANARY_PROBE_W2_SQL = [
 /** The expected executing role on the write path (the plan's hardening assumes it). */
 export const EXPECTED_WRITE_PATH_ROLE = "postgres";
 
+/**
+ * W3 — failure atomicity. The dedicated schema name is unique to this probe:
+ * no migration, application code path or guard schema references it (the 68
+ * migrations touch only public/supabase_migrations; the guards use a7_guard
+ * and canary_guard). The request mirrors exactly how the execution plan sends
+ * a migration file — one request, explicit begin ... commit — with a
+ * guaranteed division-by-zero error BEFORE the commit, so the request MUST
+ * fail. The SQL error is the expected outcome, not evidence of atomicity:
+ * only the read-only absence checks afterwards decide the result.
+ */
+export const CANARY_W3_PROBE_SCHEMA = "canary_probe_w3_atomicity";
+
+export const CANARY_PROBE_W3_SQL = [
+  "begin;",
+  `create schema ${CANARY_W3_PROBE_SCHEMA};`,
+  `create table ${CANARY_W3_PROBE_SCHEMA}.probe_object (id int primary key);`,
+  `insert into ${CANARY_W3_PROBE_SCHEMA}.probe_object values (1);`,
+  "select 1/0 as deliberate_failure;",
+  "commit;",
+].join("\n");
+
+/** Read-only absence check, run BEFORE (must be absent) and AFTER (absence = atomic rollback). */
+export const SQL_W3_ABSENCE_CHECK =
+  `select to_regnamespace('${CANARY_W3_PROBE_SCHEMA}') is null as schema_absent,` +
+  ` to_regclass('${CANARY_W3_PROBE_SCHEMA}.probe_object') is null as table_absent`;
+
+/**
+ * PROPOSED (NOT EXECUTABLE) cleanup, needed only if W3 ever finds partial
+ * persistence. It is deliberately NOT in the transport allowlist, so no code
+ * path in this build can send it; runW3Cleanup below refuses unconditionally.
+ * Executing it is its own future approval, followed by SQL_W3_ABSENCE_CHECK.
+ */
+export const PROPOSED_W3_CLEANUP_SQL = `drop schema if exists ${CANARY_W3_PROBE_SCHEMA} cascade;`;
+
+/** The W3 cleanup gate for this build: always refuses. See PROPOSED_W3_CLEANUP_SQL. */
+export function runW3Cleanup(): never {
+  throw new CanaryProbeError("W3_CLEANUP_NOT_AUTHORIZED");
+}
+
 // ------------------------------------------------------------ probe transport (W1/W2 only)
 
 type ProbeRow = Record<string, unknown>;
@@ -106,9 +154,11 @@ export type CanaryWriteProbeTransport = {
   /** HTTP 401/403 resolves authorized:false; any other failure throws. */
   readonly runW1: () => Promise<{ authorized: boolean; row?: ProbeRow; httpStatus?: number }>;
   readonly runW2: () => Promise<ProbeRow>;
+  /** W3 EXPECTS the request to fail; every HTTP outcome resolves (never throws on status). */
+  readonly runW3: () => Promise<{ requestFailed: boolean; httpStatus: number; errorDetail?: string }>;
 };
 
-const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([CANARY_PROBE_W1_SQL, CANARY_PROBE_W2_SQL]);
+const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([CANARY_PROBE_W1_SQL, CANARY_PROBE_W2_SQL, CANARY_PROBE_W3_SQL]);
 
 export function createCanaryWriteProbeTransport(
   env: Readonly<Record<string, string | undefined>>,
@@ -183,7 +233,19 @@ export function createCanaryWriteProbeTransport(
     return oneRow(response, "w2");
   };
 
-  return Object.freeze({ runW1, runW2 });
+  const runW3: CanaryWriteProbeTransport["runW3"] = async () => {
+    const response = await send(CANARY_PROBE_W3_SQL, "w3");
+    if (response.ok) return { requestFailed: false, httpStatus: response.status };
+    let detail = "";
+    try {
+      detail = scrubCanaryText(await response.text());
+    } catch {
+      detail = "";
+    }
+    return { requestFailed: true, httpStatus: response.status, errorDetail: detail || undefined };
+  };
+
+  return Object.freeze({ runW1, runW2, runW3 });
 }
 
 // ------------------------------------------------------------ blank-state fingerprint (read-only)
@@ -329,4 +391,128 @@ export async function runCanaryWriteProbe(deps: {
   if (!unchanged) throw new CanaryProbeError("STATE_CHANGED_AFTER_PROBE", fingerprintDetail(after));
 
   return { target: CANARY_PROJECT_REF, w1: w1Report, w2: w2Report, checks, completed: true };
+}
+
+// ------------------------------------------------------------ W3 orchestration (live run needs separate approval)
+
+export type W3Outcome =
+  | "atomic_rollback_confirmed" // request failed AND both probe objects absent afterwards
+  | "partial_persistence" // request failed but a probe object survived — NOT atomic; cleanup proposal applies
+  | "not_authorized" // HTTP 401/403 — nothing was executed; no atomicity conclusion
+  | "unexpected_success"; // the deliberately failing request reported success — investigate; cleanup proposal applies
+
+export type CanaryW3ProbeReport = {
+  readonly target: typeof CANARY_PROJECT_REF;
+  readonly outcome: W3Outcome;
+  readonly requestFailed: boolean;
+  readonly httpStatus: number;
+  readonly errorDetail?: string;
+  /** True only for atomic_rollback_confirmed. null when no conclusion is possible (not_authorized). */
+  readonly atomicRollback: boolean | null;
+  /** True when PROPOSED_W3_CLEANUP_SQL must be reviewed and separately approved. */
+  readonly cleanupRequired: boolean;
+  readonly checks: readonly ProbeCheck[];
+};
+
+async function readW3Absence(
+  readOnly: CanaryReadOnlyExecutor,
+  context: string,
+): Promise<{ schemaAbsent: boolean; tableAbsent: boolean }> {
+  const rows = await readOnly(SQL_W3_ABSENCE_CHECK, [], context);
+  if (rows.length !== 1 || typeof rows[0] !== "object" || rows[0] === null) {
+    throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+  }
+  const r = rows[0] as ProbeRow;
+  return { schemaAbsent: r.schema_absent === true, tableAbsent: r.table_absent === true };
+}
+
+export async function runCanaryW3Probe(deps: {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly readOnly: CanaryReadOnlyExecutor;
+  readonly probe: CanaryWriteProbeTransport;
+}): Promise<CanaryW3ProbeReport> {
+  assertCanaryEnvironment(deps.env);
+  const checks: ProbeCheck[] = [];
+  const add = (name: string, ok: boolean, detail?: string) => checks.push({ name, ok, detail });
+
+  // Preconditions: blank canary AND no probe schema — refuse to send otherwise.
+  const baseline = await readBlankFingerprint(deps.readOnly, "w3-baseline");
+  add("baseline (read-only): canary is blank", isBlank(baseline), fingerprintDetail(baseline));
+  if (!isBlank(baseline)) throw new CanaryProbeError("BASELINE_NOT_BLANK", fingerprintDetail(baseline));
+  const before = await readW3Absence(deps.readOnly, "w3-before");
+  add("before (read-only): W3 probe schema absent", before.schemaAbsent && before.tableAbsent);
+  if (!before.schemaAbsent || !before.tableAbsent) {
+    throw new CanaryProbeError("W3_SCHEMA_PRESENT", `schema_absent=${before.schemaAbsent} table_absent=${before.tableAbsent}`);
+  }
+
+  // The deliberately failing request. Failure is the EXPECTED outcome.
+  const r = await deps.probe.runW3();
+
+  if (r.requestFailed && (r.httpStatus === 401 || r.httpStatus === 403)) {
+    const after = await readW3Absence(deps.readOnly, "w3-after-auth");
+    add("W3: request authorized", false, `HTTP ${r.httpStatus}: nothing was executed; no atomicity conclusion`);
+    add("after (read-only): W3 probe schema absent", after.schemaAbsent && after.tableAbsent);
+    return {
+      target: CANARY_PROJECT_REF,
+      outcome: "not_authorized",
+      requestFailed: true,
+      httpStatus: r.httpStatus,
+      errorDetail: r.errorDetail,
+      atomicRollback: null,
+      cleanupRequired: !(after.schemaAbsent && after.tableAbsent),
+      checks,
+    };
+  }
+
+  add(
+    "W3: deliberately failing request did fail (expected outcome, not yet evidence of atomicity)",
+    r.requestFailed,
+    `HTTP ${r.httpStatus}${r.errorDetail ? ` ${r.errorDetail}` : ""}`,
+  );
+
+  // Only the read-only absence checks decide the result.
+  const after = await readW3Absence(deps.readOnly, "w3-after");
+  const absent = after.schemaAbsent && after.tableAbsent;
+  add("after (read-only): all W3 probe objects absent", absent, `schema_absent=${after.schemaAbsent} table_absent=${after.tableAbsent}`);
+
+  if (!r.requestFailed) {
+    return {
+      target: CANARY_PROJECT_REF,
+      outcome: "unexpected_success",
+      requestFailed: false,
+      httpStatus: r.httpStatus,
+      atomicRollback: false,
+      cleanupRequired: !absent,
+      checks,
+    };
+  }
+
+  if (!absent) {
+    return {
+      target: CANARY_PROJECT_REF,
+      outcome: "partial_persistence",
+      requestFailed: true,
+      httpStatus: r.httpStatus,
+      errorDetail: r.errorDetail,
+      atomicRollback: false,
+      cleanupRequired: true,
+      checks,
+    };
+  }
+
+  // Atomic: additionally re-verify the full blank fingerprint.
+  const afterBlank = await readBlankFingerprint(deps.readOnly, "w3-verification");
+  add("verification (read-only): canary still blank after W3", isBlank(afterBlank), fingerprintDetail(afterBlank));
+  if (!isBlank(afterBlank)) throw new CanaryProbeError("STATE_CHANGED_AFTER_PROBE", fingerprintDetail(afterBlank));
+
+  return {
+    target: CANARY_PROJECT_REF,
+    outcome: "atomic_rollback_confirmed",
+    requestFailed: true,
+    httpStatus: r.httpStatus,
+    errorDetail: r.errorDetail,
+    atomicRollback: true,
+    cleanupRequired: false,
+    checks,
+  };
 }
