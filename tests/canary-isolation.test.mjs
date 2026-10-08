@@ -61,6 +61,8 @@ test("the canary tooling is exactly the expected set of files", () => {
     "scripts/canary-plan.ts",
     "scripts/canary-preflight-lib.ts",
     "scripts/canary-preflight.ts",
+    "scripts/canary-probe-lib.ts",
+    "scripts/canary-probe.ts",
     "scripts/canary-sentinel.ts",
     "scripts/canary-transport.ts",
   ]);
@@ -88,12 +90,13 @@ test("forbidden refs appear only as the guard's literal constants", () => {
   }
 });
 
-test("only the transport performs network I/O; plan and libraries are network-free", () => {
+test("only the two transports perform network I/O; plan and libraries are network-free", () => {
+  const networkFiles = ["scripts/canary-transport.ts", "scripts/canary-probe-lib.ts"];
   for (const f of canaryScripts) {
     const src = read(f);
     const network = /\bfetch\s*\(|globalThis\.fetch|node:https?|node:net|node:tls/.test(src);
-    if (f === "scripts/canary-transport.ts") assert.ok(network);
-    else assert.ok(!network, `${f}: network code outside the transport`);
+    if (networkFiles.includes(f)) assert.ok(network);
+    else assert.ok(!network, `${f}: network code outside the transports`);
   }
   for (const f of ["scripts/canary-plan.ts", "scripts/canary-plan-lib.ts", "scripts/canary-manifest-check.ts"]) {
     assert.doesNotMatch(read(f), /^import (?!type\b)[^;]*from\s+["']\.\/canary-transport["']/m, `${f} must not import the transport`);
@@ -105,6 +108,20 @@ test("the transport hard-codes read_only:true and has no write path", () => {
   assert.match(src, /read_only: true/);
   assert.doesNotMatch(src, /read_only:\s*false/);
   assert.doesNotMatch(src, /execute(Parameterized)?Mutation/);
+});
+
+test("the W1/W2 probe lib is the only canary file with read_only:false, allowlist-bound", () => {
+  for (const f of canaryScripts) {
+    const src = read(f);
+    if (f === "scripts/canary-probe-lib.ts") {
+      assert.match(src, /read_only: false/);
+      assert.match(src, /ALLOWLISTED_PROBE_SQL/, "probe sends only the frozen W1/W2 SQL");
+      assert.doesNotMatch(src, /\bparameters\b\s*:/, "probe requests never carry bound parameters");
+    } else {
+      // Exact code form; canary-plan-lib's header mentions "read_only:false" in prose.
+      assert.doesNotMatch(src, /read_only: false/, `${f}: write-capable request outside the probe lib`);
+    }
+  }
 });
 
 test("no canary file lives in supabase/migrations (the closed world stays 68 files)", () => {
