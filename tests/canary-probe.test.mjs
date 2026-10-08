@@ -73,13 +73,14 @@ test("the probe SQL is frozen: W1 is SELECT-only, W2 is temp-and-rollback only",
   }
 });
 
-test("the transport exposes exactly the six frozen operations — no generic SQL interface", () => {
+test("the transport surface is closed: six frozen operations plus the manifest-hash-gated migration sender", () => {
   const { fetchImpl } = probeFetch();
   const t = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
-  assert.deepEqual(Object.keys(t).sort(), ["runP1Ddl", "runP1Insert", "runP2Hardening", "runW1", "runW2", "runW3"]);
+  assert.deepEqual(Object.keys(t).sort(), ["runManifestMigration", "runP1Ddl", "runP1Insert", "runP2Hardening", "runW1", "runW2", "runW3"]);
   assert.ok(Object.isFrozen(t));
   for (const member of [t.runW1, t.runW2, t.runW3, t.runP1Ddl, t.runP2Hardening]) assert.equal(member.length, 0, "no argument accepted");
-  assert.equal(t.runP1Insert.length, 1, "runP1Insert takes exactly the digest — the only argument on the whole surface");
+  assert.equal(t.runP1Insert.length, 1, "runP1Insert takes exactly the validated digest");
+  assert.equal(t.runManifestMigration.length, 3, "runManifestMigration takes (rawSql, file, pinned hash), all hash-verified");
 });
 
 // ------------------------------------------------------------ guard at construction
@@ -666,6 +667,45 @@ test("P2 fails closed when the committed readiness query still shows API grantee
   const dirty = [...READINESS_CLEAN, { objtype: "r", owner: "postgres", api_role_grantees: "service_role" }];
   const { report } = runP2({ readOnlyParts: { readiness: [dirty] } });
   await assert.rejects(report, probeStops("P2_HARDENING_INCOMPLETE"));
+});
+
+// ------------------------------------------------------------ P3 migration transport (offline)
+
+const fs = await import("node:fs");
+const path = await import("node:path");
+const manifest = await import("../scripts/a7-manifest.ts");
+
+const MIG_DIR = path.join(import.meta.dirname, "..", "supabase", "migrations");
+const FIRST_MIG = manifest.A7_STEPS["baseline-0001-0064"].migrations[0];
+const FIRST_MIG_RAW = fs.readFileSync(path.join(MIG_DIR, FIRST_MIG.file), "utf8");
+
+test("runManifestMigration sends one pinned file wrapped in begin/commit, read_only:false, no parameters", async () => {
+  const { fetchImpl, calls } = makeFakeFetch(async () => ({ json: [] }));
+  const t = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
+  const r = await t.runManifestMigration(FIRST_MIG_RAW, FIRST_MIG.file, FIRST_MIG.sha256);
+  assert.deepEqual(r, { authorized: true, httpStatus: 200 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.query, plan.wrapInTransaction(FIRST_MIG_RAW));
+  assert.equal(calls[0].body.read_only, false);
+  assert.ok(!("parameters" in calls[0].body));
+  assert.deepEqual(Object.keys(calls[0].init.headers), ["Content-Type"]);
+});
+
+test("runManifestMigration refuses tampered SQL, unknown files, unpinned hashes and cleanup text", async () => {
+  const { fetchImpl, calls } = makeFakeFetch(async () => ({ json: [] }));
+  const t = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
+  await assert.rejects(t.runManifestMigration(`${FIRST_MIG_RAW}\n-- tampered`, FIRST_MIG.file, FIRST_MIG.sha256), probeStops("P3_FILE_HASH_MISMATCH"));
+  await assert.rejects(t.runManifestMigration(FIRST_MIG_RAW, "9999_not_real.sql", FIRST_MIG.sha256), probeStops("P3_FILE_NOT_IN_MANIFEST"));
+  await assert.rejects(t.runManifestMigration(FIRST_MIG_RAW, FIRST_MIG.file, FAKE_DIGEST), probeStops("P3_FILE_NOT_IN_MANIFEST"));
+  await assert.rejects(t.runManifestMigration(PROPOSED_W3_CLEANUP_SQL, FIRST_MIG.file, FIRST_MIG.sha256), probeStops("P3_FILE_HASH_MISMATCH"));
+  assert.equal(calls.length, 0, "nothing reached the endpoint");
+});
+
+test("runManifestMigration resolves authorized:false on 401/403 and throws scrubbed on other HTTP failures", async () => {
+  const denied = createCanaryWriteProbeTransport(okEnv(), makeFakeFetch(async () => ({ status: 403, text: "denied" })).fetchImpl);
+  assert.deepEqual(await denied.runManifestMigration(FIRST_MIG_RAW, FIRST_MIG.file, FIRST_MIG.sha256), { authorized: false, httpStatus: 403 });
+  const broken = createCanaryWriteProbeTransport(okEnv(), makeFakeFetch(async () => ({ status: 500, text: "boom" })).fetchImpl);
+  await assert.rejects(broken.runManifestMigration(FIRST_MIG_RAW, FIRST_MIG.file, FIRST_MIG.sha256), probeStops("PROBE_HTTP_ERROR"));
 });
 
 // ------------------------------------------------------------ CLI confirmation

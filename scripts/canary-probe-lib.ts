@@ -26,6 +26,16 @@
 //        request and re-verified after it: API-role table/sequence defaults
 //        gone, global defaults still absent, postgres function defaults and
 //        supabase_admin defaults byte-identical to the baseline.
+//   P3 — migration transport (IMPLEMENTED OFFLINE ONLY; each live step is a
+//        separate operator approval, orchestrated by canary-migrate-lib.ts):
+//        runManifestMigration sends one hash-pinned migration file wrapped in
+//        begin/commit. The allowlist for this path is the 68 reviewed SHA-256
+//        hashes of the pinned manifest (itself source-hash-pinned by
+//        canary-manifest-check): SQL that does not hash to a pinned entry is
+//        refused, so this is still not a generic SQL interface. The canary's
+//        supabase_migrations history is NEVER written (the preflight requires
+//        0 rows); step markers are the migrations' own objects, committed
+//        atomically within the same transaction as the migration itself.
 // NOTHING ELSE. This module is NOT a general-purpose SQL interface: the only
 // exported network surface is runW1/runW2, each of which sends one frozen SQL
 // constant. An internal allowlist refuses any other text as defense in depth.
@@ -63,7 +73,14 @@ import {
   authorizeCanaryMutation,
   canarySentinelDigest,
 } from "./canary-sentinel";
-import { PROPOSED_PRIVILEGE_HARDENING_SQL, SQL_DEFAULT_ACL_API_ROLE_GRANTS } from "./canary-plan-lib";
+import {
+  PROPOSED_PRIVILEGE_HARDENING_SQL,
+  SQL_DEFAULT_ACL_API_ROLE_GRANTS,
+  scanTransactionSafety,
+  wrapInTransaction,
+} from "./canary-plan-lib";
+import { A7_STEPS } from "./a7-manifest";
+import { sha256Hex } from "./canary-manifest-check";
 
 // ------------------------------------------------------------ errors
 
@@ -85,7 +102,10 @@ export type CanaryProbeFailureCode =
   | "P2_BASELINE_ACL_UNEXPECTED" // the pre-P2 defaults are not the known permissive posture; refusing to send
   | "P2_GLOBAL_ACL_PRESENT" // a global (all-schema) default ACL exists; the schema-scoped revoke would not cover it
   | "P2_HARDENING_INCOMPLETE" // API-role table/sequence defaults survived the hardening request
-  | "P2_UNRELATED_ACL_CHANGED"; // postgres function defaults or supabase_admin defaults drifted from the baseline
+  | "P2_UNRELATED_ACL_CHANGED" // postgres function defaults or supabase_admin defaults drifted from the baseline
+  | "P3_FILE_NOT_IN_MANIFEST" // the named file (with its claimed hash) is not a pinned manifest entry
+  | "P3_FILE_HASH_MISMATCH" // the provided SQL does not hash to the pinned manifest value
+  | "P3_TRANSACTION_UNSAFE"; // the file contains statements that cannot run inside one wrapped transaction
 
 const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   PROBE_SQL_NOT_ALLOWLISTED: "probe transport only sends the frozen W1/W2 SQL; refusing other text",
@@ -106,6 +126,9 @@ const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   P2_GLOBAL_ACL_PRESENT: "a global default ACL exists; the schema-scoped revocations would not remove it — stopping",
   P2_HARDENING_INCOMPLETE: "API-role table/sequence default grants remain after the hardening request; stopping",
   P2_UNRELATED_ACL_CHANGED: "default privileges outside P2's scope changed (postgres functions or supabase_admin); stopping",
+  P3_FILE_NOT_IN_MANIFEST: "the file is not a hash-pinned manifest entry; the migration transport refuses it",
+  P3_FILE_HASH_MISMATCH: "the SQL does not hash to the pinned manifest value; the migration transport refuses it",
+  P3_TRANSACTION_UNSAFE: "the file contains statements that cannot run inside one wrapped transaction; refusing",
 };
 
 export class CanaryProbeError extends Error {
@@ -277,7 +300,19 @@ export type CanaryWriteProbeTransport = {
   readonly runP1Insert: (digestHex: string) => Promise<{ httpStatus: number }>;
   /** P2 hardening request. HTTP 401/403 resolves authorized:false; any other failure throws. */
   readonly runP2Hardening: () => Promise<{ authorized: boolean; httpStatus: number }>;
+  /**
+   * P3: send ONE hash-pinned migration file, wrapped in begin/commit. The SQL
+   * is accepted only when sha256(rawSql) equals the pinned manifest hash for
+   * `file` — the allowlist extended to the 68 reviewed migration hashes, not
+   * a generic SQL interface. HTTP 401/403 resolves authorized:false.
+   */
+  readonly runManifestMigration: (rawSql: string, file: string, expectedSha256: string) => Promise<{ authorized: boolean; httpStatus: number }>;
 };
+
+/** file -> pinned sha256 across all 68 reviewed manifest entries. */
+const MANIFEST_PINNED_HASHES: ReadonlyMap<string, string> = new Map(
+  Object.values(A7_STEPS).flatMap((s) => s.migrations.map((m) => [m.file, m.sha256] as const)),
+);
 
 const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([
   CANARY_PROBE_W1_SQL,
@@ -297,20 +332,16 @@ export function createCanaryWriteProbeTransport(
   assertCanaryEndpoint(CANARY_QUERY_ENDPOINT);
   const doFetch: CanaryFetchLike = fetchImpl ?? (globalThis.fetch as unknown as CanaryFetchLike);
 
-  const send = async (sql: string, context: string, boundDigest?: string) => {
-    if (!ALLOWLISTED_PROBE_SQL.includes(sql)) throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
-    assertNoForbiddenRef(sql, `${context}: sql`);
-    // Only the P1 insert carries a bound parameter, and only a 64-hex digest.
-    if (sql === P1_REQUEST_B_SQL) {
-      if (typeof boundDigest !== "string" || !SHA256_HEX_RE.test(boundDigest)) throw new CanaryProbeError("P1_DIGEST_INVALID", context);
-    } else if (boundDigest !== undefined) {
-      throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
-    }
+  // The one place a request leaves this module. Callers reach it ONLY through
+  // `send` (the frozen-SQL allowlist) or `runManifestMigration` (the
+  // manifest-hash gate); both gates sit between any caller and this function.
+  const post = async (sqlText: string, context: string, boundDigest?: string) => {
+    assertNoForbiddenRef(sqlText, `${context}: sql`);
     const url = CANARY_QUERY_ENDPOINT;
     assertCanaryEndpoint(url); // re-checked immediately before every request
 
-    const body: Record<string, unknown> = { query: sql, read_only: false };
-    if (sql === P1_REQUEST_B_SQL) body.parameters = [boundDigest];
+    const body: Record<string, unknown> = { query: sqlText, read_only: false };
+    if (boundDigest !== undefined) body.parameters = [boundDigest];
 
     let response: Awaited<ReturnType<CanaryFetchLike>>;
     try {
@@ -324,6 +355,17 @@ export function createCanaryWriteProbeTransport(
       throw new CanaryProbeError("PROBE_HTTP_ERROR", `${context}: network failure`);
     }
     return response;
+  };
+
+  const send = async (sql: string, context: string, boundDigest?: string) => {
+    if (!ALLOWLISTED_PROBE_SQL.includes(sql)) throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
+    // Only the P1 insert carries a bound parameter, and only a 64-hex digest.
+    if (sql === P1_REQUEST_B_SQL) {
+      if (typeof boundDigest !== "string" || !SHA256_HEX_RE.test(boundDigest)) throw new CanaryProbeError("P1_DIGEST_INVALID", context);
+    } else if (boundDigest !== undefined) {
+      throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
+    }
+    return post(sql, context, sql === P1_REQUEST_B_SQL ? boundDigest : undefined);
   };
 
   const oneRow = async (response: Awaited<ReturnType<CanaryFetchLike>>, context: string): Promise<ProbeRow> => {
@@ -421,7 +463,32 @@ export function createCanaryWriteProbeTransport(
     return { authorized: true, httpStatus: response.status };
   };
 
-  return Object.freeze({ runW1, runW2, runW3, runP1Ddl, runP1Insert, runP2Hardening });
+  const runManifestMigration: CanaryWriteProbeTransport["runManifestMigration"] = async (rawSql, file, expectedSha256) => {
+    const context = `p3-migration ${typeof file === "string" ? file : "invalid-file"}`;
+    if (typeof file !== "string" || typeof rawSql !== "string" || typeof expectedSha256 !== "string" || !SHA256_HEX_RE.test(expectedSha256)) {
+      throw new CanaryProbeError("P3_FILE_NOT_IN_MANIFEST", context);
+    }
+    const pinned = MANIFEST_PINNED_HASHES.get(file);
+    if (pinned === undefined || pinned !== expectedSha256) throw new CanaryProbeError("P3_FILE_NOT_IN_MANIFEST", context);
+    if (sha256Hex(rawSql) !== pinned) throw new CanaryProbeError("P3_FILE_HASH_MISMATCH", context);
+    const scan = scanTransactionSafety(rawSql);
+    if (!scan.wrapSafe) throw new CanaryProbeError("P3_TRANSACTION_UNSAFE", `${context}: ${scan.blocking.join("; ")}`);
+
+    const response = await post(wrapInTransaction(rawSql), context);
+    if (response.status === 401 || response.status === 403) return { authorized: false, httpStatus: response.status };
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = scrubCanaryText(await response.text());
+      } catch {
+        detail = "";
+      }
+      throw new CanaryProbeError("PROBE_HTTP_ERROR", `${context}: HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
+    }
+    return { authorized: true, httpStatus: response.status };
+  };
+
+  return Object.freeze({ runW1, runW2, runW3, runP1Ddl, runP1Insert, runP2Hardening, runManifestMigration });
 }
 
 // ------------------------------------------------------------ blank-state fingerprint (read-only)

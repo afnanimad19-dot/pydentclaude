@@ -57,6 +57,8 @@ test("the canary tooling is exactly the expected set of files", () => {
   assert.deepEqual(canaryScripts.sort(), [
     "scripts/canary-guard.ts",
     "scripts/canary-manifest-check.ts",
+    "scripts/canary-migrate-lib.ts",
+    "scripts/canary-migrate.ts",
     "scripts/canary-plan-lib.ts",
     "scripts/canary-plan.ts",
     "scripts/canary-preflight-lib.ts",
