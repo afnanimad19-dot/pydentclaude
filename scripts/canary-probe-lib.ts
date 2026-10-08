@@ -105,7 +105,8 @@ export type CanaryProbeFailureCode =
   | "P2_UNRELATED_ACL_CHANGED" // postgres function defaults or supabase_admin defaults drifted from the baseline
   | "P3_FILE_NOT_IN_MANIFEST" // the named file (with its claimed hash) is not a pinned manifest entry
   | "P3_FILE_HASH_MISMATCH" // the provided SQL does not hash to the pinned manifest value
-  | "P3_TRANSACTION_UNSAFE"; // the file contains statements that cannot run inside one wrapped transaction
+  | "P3_TRANSACTION_UNSAFE" // the file contains statements that cannot run inside one wrapped transaction
+  | "P9_PARAMS_INVALID"; // a P9 validation statement's bound parameters fail their declared shape
 
 const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   PROBE_SQL_NOT_ALLOWLISTED: "probe transport only sends the frozen W1/W2 SQL; refusing other text",
@@ -129,6 +130,7 @@ const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   P3_FILE_NOT_IN_MANIFEST: "the file is not a hash-pinned manifest entry; the migration transport refuses it",
   P3_FILE_HASH_MISMATCH: "the SQL does not hash to the pinned manifest value; the migration transport refuses it",
   P3_TRANSACTION_UNSAFE: "the file contains statements that cannot run inside one wrapped transaction; refusing",
+  P9_PARAMS_INVALID: "a validation statement's bound parameters do not match their declared shape; refusing",
 };
 
 export class CanaryProbeError extends Error {
@@ -307,12 +309,93 @@ export type CanaryWriteProbeTransport = {
    * a generic SQL interface. HTTP 401/403 resolves authorized:false.
    */
   readonly runManifestMigration: (rawSql: string, file: string, expectedSha256: string) => Promise<{ authorized: boolean; httpStatus: number }>;
+  /**
+   * P9: execute ONE frozen validation statement with shape-validated bound
+   * parameters and return its rows. Any HTTP failure throws (a raised
+   * exception from the reviewed functions, e.g. P0002 on a cross-workspace
+   * mismatch, surfaces this way and IS an assertable contract outcome).
+   */
+  readonly runValidationStatement: (sql: string, parameters: readonly string[], context: string) => Promise<unknown[]>;
 };
 
 /** file -> pinned sha256 across all 68 reviewed manifest entries. */
 const MANIFEST_PINNED_HASHES: ReadonlyMap<string, string> = new Map(
   Object.values(A7_STEPS).flatMap((s) => s.migrations.map((m) => [m.file, m.sha256] as const)),
 );
+
+// ------------------------------------------------------------ P9 validation statements (frozen, parameterized)
+//
+// The P9 functional validator's ONLY mutation surface: fixed SQL constants,
+// every runtime value a bound parameter with a declared, validated shape.
+// Mirrors the reviewed A7 Phase 2B validator statements; the canary marker
+// prefix is enforced AT THE TRANSPORT on every workspace name, and the
+// cleanup's name parameter must embed the same uuid as its id parameter, so a
+// delete can never reach a non-validation workspace even if a caller misuses
+// the surface. knowledge_chunks is never written directly.
+
+export const P9_VALIDATION_MARKER_PREFIX = "CANARY-2B-VALIDATION";
+
+export const P9_SQL_CREATE_WORKSPACE =
+  "insert into public.workspaces (id, name) values ($1::uuid, $2) returning id::text as id";
+export const P9_SQL_CREATE_RESOURCE =
+  "insert into public.knowledge_resources (id, workspace_id, name, type, status)" +
+  " values ($1::uuid, $2::uuid, $3, 'file', 'empty') returning id::text as id";
+export const P9_SQL_CREATE_AGENT =
+  "insert into public.agents (id, workspace_id, name) values ($1::uuid, $2::uuid, $3) returning id::text as id";
+export const P9_SQL_CREATE_ASSIGNMENT =
+  "insert into public.agent_knowledge_resources (workspace_id, agent_id, resource_id)" +
+  " values ($1::uuid, $2::uuid, $3::uuid)";
+export const P9_SQL_APPLY_DOCUMENT_CHANGES =
+  "select public.knowledge_apply_document_changes($1::uuid, $2::uuid, $3::uuid, $4::jsonb, '{}'::jsonb) as result";
+export const P9_SQL_REINDEX_DOCUMENT =
+  "select public.knowledge_reindex_document($1::uuid, $2::uuid, $3, $4::jsonb) as result";
+/** Read-only in effect, but the read-only role holds no EXECUTE on it, so it runs on the write path. */
+export const P9_SQL_MATCH_CHUNKS =
+  "select public.knowledge_match_chunks($1::uuid, $2::uuid, $3, 8) as result";
+/** Exact id AND exact marker name, both bound; cascades remove everything the run created. */
+export const P9_SQL_CLEANUP_WORKSPACE =
+  "delete from public.workspaces where id = $1::uuid and name = $2 returning id::text as id";
+
+type P9ParamKind = "uuid" | "wsname" | "text" | "hash" | "json";
+const P9_STATEMENT_SHAPES: ReadonlyMap<string, readonly P9ParamKind[]> = new Map([
+  [P9_SQL_CREATE_WORKSPACE, ["uuid", "wsname"]],
+  [P9_SQL_CREATE_RESOURCE, ["uuid", "uuid", "text"]],
+  [P9_SQL_CREATE_AGENT, ["uuid", "uuid", "text"]],
+  [P9_SQL_CREATE_ASSIGNMENT, ["uuid", "uuid", "uuid"]],
+  [P9_SQL_APPLY_DOCUMENT_CHANGES, ["uuid", "uuid", "uuid", "json"]],
+  [P9_SQL_REINDEX_DOCUMENT, ["uuid", "uuid", "hash", "json"]],
+  [P9_SQL_MATCH_CHUNKS, ["uuid", "uuid", "text"]],
+  [P9_SQL_CLEANUP_WORKSPACE, ["uuid", "wsname"]],
+]);
+
+function assertP9Params(sql: string, parameters: readonly string[], context: string): void {
+  const shape = P9_STATEMENT_SHAPES.get(sql);
+  if (shape === undefined) throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
+  if (!Array.isArray(parameters) || parameters.length !== shape.length) throw new CanaryProbeError("P9_PARAMS_INVALID", `${context}: arity`);
+  shape.forEach((kind, i) => {
+    const p = parameters[i];
+    if (typeof p !== "string") throw new CanaryProbeError("P9_PARAMS_INVALID", `${context}: $${i + 1} not a string`);
+    assertNoForbiddenRef(p, `${context}: $${i + 1}`);
+    const ok =
+      kind === "uuid"
+        ? UUID_SHAPE_RE.test(p)
+        : kind === "wsname"
+          ? p === `${P9_VALIDATION_MARKER_PREFIX} ${parameters[0]}` && UUID_SHAPE_RE.test(String(parameters[0]))
+          : kind === "hash"
+            ? SHA256_HEX_RE.test(p)
+            : kind === "json"
+              ? ((): boolean => {
+                  try {
+                    JSON.parse(p);
+                    return p.length <= 1_000_000;
+                  } catch {
+                    return false;
+                  }
+                })()
+              : p.length > 0 && p.length <= 400; // text
+    if (!ok) throw new CanaryProbeError("P9_PARAMS_INVALID", `${context}: $${i + 1} fails its ${kind} shape`);
+  });
+}
 
 const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([
   CANARY_PROBE_W1_SQL,
@@ -335,13 +418,13 @@ export function createCanaryWriteProbeTransport(
   // The one place a request leaves this module. Callers reach it ONLY through
   // `send` (the frozen-SQL allowlist) or `runManifestMigration` (the
   // manifest-hash gate); both gates sit between any caller and this function.
-  const post = async (sqlText: string, context: string, boundDigest?: string) => {
+  const post = async (sqlText: string, context: string, boundParameters?: readonly string[]) => {
     assertNoForbiddenRef(sqlText, `${context}: sql`);
     const url = CANARY_QUERY_ENDPOINT;
     assertCanaryEndpoint(url); // re-checked immediately before every request
 
     const body: Record<string, unknown> = { query: sqlText, read_only: false };
-    if (boundDigest !== undefined) body.parameters = [boundDigest];
+    if (boundParameters !== undefined) body.parameters = [...boundParameters];
 
     let response: Awaited<ReturnType<CanaryFetchLike>>;
     try {
@@ -365,7 +448,7 @@ export function createCanaryWriteProbeTransport(
     } else if (boundDigest !== undefined) {
       throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
     }
-    return post(sql, context, sql === P1_REQUEST_B_SQL ? boundDigest : undefined);
+    return post(sql, context, sql === P1_REQUEST_B_SQL && boundDigest !== undefined ? [boundDigest] : undefined);
   };
 
   const oneRow = async (response: Awaited<ReturnType<CanaryFetchLike>>, context: string): Promise<ProbeRow> => {
@@ -488,7 +571,29 @@ export function createCanaryWriteProbeTransport(
     return { authorized: true, httpStatus: response.status };
   };
 
-  return Object.freeze({ runW1, runW2, runW3, runP1Ddl, runP1Insert, runP2Hardening, runManifestMigration });
+  const runValidationStatement: CanaryWriteProbeTransport["runValidationStatement"] = async (sql, parameters, context) => {
+    assertP9Params(sql, parameters, String(context));
+    const response = await post(sql, `p9 ${String(context)}`, parameters);
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = scrubCanaryText(await response.text());
+      } catch {
+        detail = "";
+      }
+      throw new CanaryProbeError("PROBE_HTTP_ERROR", `p9 ${String(context)}: HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
+    }
+    let rows: unknown;
+    try {
+      rows = await response.json();
+    } catch {
+      throw new CanaryProbeError("PROBE_RESULT_MALFORMED", `p9 ${String(context)}: unparseable response`);
+    }
+    if (!Array.isArray(rows)) throw new CanaryProbeError("PROBE_RESULT_MALFORMED", `p9 ${String(context)}`);
+    return rows;
+  };
+
+  return Object.freeze({ runW1, runW2, runW3, runP1Ddl, runP1Insert, runP2Hardening, runManifestMigration, runValidationStatement });
 }
 
 // ------------------------------------------------------------ blank-state fingerprint (read-only)
