@@ -5,11 +5,18 @@
 //   W1 — SELECT-only identity and transaction-state introspection.
 //   W2 — temporary table inside an explicit transaction, one test row,
 //        ROLLBACK, in-session verification that the temp table is gone.
-//   W3 — failure-atomicity probe (IMPLEMENTED OFFLINE ONLY; live execution
-//        requires its own separate approval): a deliberately failing
+//   W3 — failure-atomicity probe (live run separately approved and completed
+//        2026-10-08: atomic rollback confirmed): a deliberately failing
 //        multi-statement request in the dedicated canary_probe_w3_atomicity
 //        schema, judged solely by read-only absence checks afterwards. Its
 //        cleanup is a reviewed PROPOSAL that no code path can execute.
+//   P1 — sentinel creation executor (IMPLEMENTED OFFLINE ONLY; live execution
+//        requires its own separate approval): exactly the two reviewed
+//        requests from canary-sentinel.ts, reused verbatim — the canary_guard
+//        DDL with its privilege revocations, then the parameterized insert of
+//        the operator token's SHA-256 digest. The only argument any transport
+//        member accepts is that 64-hex digest; neither the token nor the
+//        digest is ever printed, logged or embedded in an error message.
 // NOTHING ELSE. This module is NOT a general-purpose SQL interface: the only
 // exported network surface is runW1/runW2, each of which sends one frozen SQL
 // constant. An internal allowlist refuses any other text as defense in depth.
@@ -32,12 +39,21 @@
 import {
   CANARY_PROJECT_REF,
   CANARY_QUERY_ENDPOINT,
+  CanaryError,
   assertCanaryEndpoint,
   assertCanaryEnvironment,
   assertNoForbiddenRef,
   scrubCanaryText,
 } from "./canary-guard";
 import type { CanaryFetchLike, CanaryReadOnlyExecutor } from "./canary-transport";
+import {
+  CANARY_SENTINEL_TOKEN_ENV,
+  PROPOSED_CANARY_SENTINEL_DDL,
+  PROPOSED_CANARY_SENTINEL_INSERT_SQL,
+  SQL_SENTINEL_PRESENCE,
+  authorizeCanaryMutation,
+  canarySentinelDigest,
+} from "./canary-sentinel";
 
 // ------------------------------------------------------------ errors
 
@@ -51,7 +67,11 @@ export type CanaryProbeFailureCode =
   | "W2_ROLLBACK_NOT_CONFIRMED" // the in-session rollback evidence did not come back all-true
   | "STATE_CHANGED_AFTER_PROBE" // the post-probe read-only verification differs from the baseline
   | "W3_SCHEMA_PRESENT" // the W3 probe schema already exists; W3 refuses to send anything
-  | "W3_CLEANUP_NOT_AUTHORIZED"; // the W3 cleanup is a reviewed proposal; executing it is a separate approval
+  | "W3_CLEANUP_NOT_AUTHORIZED" // the W3 cleanup is a reviewed proposal; executing it is a separate approval
+  | "P1_DIGEST_INVALID" // the sentinel insert's bound parameter is not a 64-hex SHA-256 digest
+  | "P1_ALREADY_PRESENT" // canary_guard (or its sentinel table) already exists; P1 refuses to send anything
+  | "P1_DDL_NOT_VISIBLE" // request A reported success but the schema/table are not visible read-only
+  | "P1_ACL_UNEXPECTED"; // actual ACLs/ownership after request A are not the expected locked-down posture
 
 const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   PROBE_SQL_NOT_ALLOWLISTED: "probe transport only sends the frozen W1/W2 SQL; refusing other text",
@@ -64,6 +84,10 @@ const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   STATE_CHANGED_AFTER_PROBE: "read-only verification after the probe differs from the baseline; investigate",
   W3_SCHEMA_PRESENT: "the W3 probe schema already exists on the canary; W3 refuses to run until it is investigated",
   W3_CLEANUP_NOT_AUTHORIZED: "the W3 cleanup SQL is a reviewed proposal only; no code path in this build may execute it",
+  P1_DIGEST_INVALID: "the sentinel insert only accepts a single 64-hex SHA-256 digest parameter; refusing",
+  P1_ALREADY_PRESENT: "the canary_guard schema or sentinel table already exists; P1 stopped before any request",
+  P1_DDL_NOT_VISIBLE: "request A reported success but the sentinel schema/table are not visible; partial setup — stopping",
+  P1_ACL_UNEXPECTED: "the sentinel schema/table ACLs or ownership are not the expected locked-down posture; stopping before the insert",
 };
 
 export class CanaryProbeError extends Error {
@@ -146,6 +170,53 @@ export function runW3Cleanup(): never {
   throw new CanaryProbeError("W3_CLEANUP_NOT_AUTHORIZED");
 }
 
+/**
+ * P1 — the two sentinel-setup requests, REUSED VERBATIM from the committed
+ * proposal in canary-sentinel.ts (no new SQL is authored here). Request A is
+ * the no-parameter DDL (the request shape W3 proved failure-atomic); request
+ * B is the parameterized single-statement insert of the token digest.
+ */
+export const P1_REQUEST_A_SQL = PROPOSED_CANARY_SENTINEL_DDL;
+export const P1_REQUEST_B_SQL = PROPOSED_CANARY_SENTINEL_INSERT_SQL;
+
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+const UUID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Read CANARY_SENTINEL_TOKEN from the PROCESS environment only and reduce it
+ * to its SHA-256 digest in process. Same refusals as the committed
+ * verification gate: missing, non-UUID, or echoed in any NEXT_PUBLIC_* value.
+ * Neither the token nor the digest ever reaches a message or a log.
+ */
+export function deriveSentinelDigestFromEnv(env: Readonly<Record<string, string | undefined>>): string {
+  const token = env[CANARY_SENTINEL_TOKEN_ENV];
+  if (token === undefined || token === "") throw new CanaryError("SENTINEL_TOKEN_MISSING");
+  if (!UUID_SHAPE_RE.test(token)) throw new CanaryError("SENTINEL_TOKEN_MALFORMED");
+  for (const [key, value] of Object.entries(env)) {
+    if (key.startsWith("NEXT_PUBLIC_") && typeof value === "string" && value.toLowerCase().includes(token.toLowerCase())) {
+      throw new CanaryError("SENTINEL_TOKEN_EXPOSED");
+    }
+  }
+  return canarySentinelDigest(token);
+}
+
+/**
+ * Read-only check of the ACTUAL post-DDL posture (not merely that the REVOKEs
+ * ran): no API role holds any schema or table privilege, both objects are
+ * owned by postgres, and no default ACL is scoped to canary_guard.
+ */
+export const SQL_P1_ACL_CHECK =
+  "select" +
+  " has_schema_privilege('anon', 'canary_guard', 'usage,create') as anon_schema," +
+  " has_schema_privilege('authenticated', 'canary_guard', 'usage,create') as authenticated_schema," +
+  " has_schema_privilege('service_role', 'canary_guard', 'usage,create') as service_role_schema," +
+  " has_table_privilege('anon', 'canary_guard.sentinel', 'select,insert,update,delete,truncate,references,trigger') as anon_table," +
+  " has_table_privilege('authenticated', 'canary_guard.sentinel', 'select,insert,update,delete,truncate,references,trigger') as authenticated_table," +
+  " has_table_privilege('service_role', 'canary_guard.sentinel', 'select,insert,update,delete,truncate,references,trigger') as service_role_table," +
+  " (select pg_get_userbyid(nspowner) from pg_namespace where nspname = 'canary_guard') as schema_owner," +
+  " (select pg_get_userbyid(relowner) from pg_class where oid = 'canary_guard.sentinel'::regclass) as table_owner," +
+  " not exists (select 1 from pg_default_acl d where d.defaclnamespace = to_regnamespace('canary_guard')) as no_default_acl_in_schema";
+
 // ------------------------------------------------------------ probe transport (W1/W2 only)
 
 type ProbeRow = Record<string, unknown>;
@@ -156,9 +227,19 @@ export type CanaryWriteProbeTransport = {
   readonly runW2: () => Promise<ProbeRow>;
   /** W3 EXPECTS the request to fail; every HTTP outcome resolves (never throws on status). */
   readonly runW3: () => Promise<{ requestFailed: boolean; httpStatus: number; errorDetail?: string }>;
+  /** P1 request A (sentinel DDL). HTTP 401/403 resolves authorized:false; any other failure throws. */
+  readonly runP1Ddl: () => Promise<{ authorized: boolean; httpStatus: number }>;
+  /** P1 request B. The ONLY member taking an argument: the 64-hex digest, sent as the bound parameter. */
+  readonly runP1Insert: (digestHex: string) => Promise<{ httpStatus: number }>;
 };
 
-const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([CANARY_PROBE_W1_SQL, CANARY_PROBE_W2_SQL, CANARY_PROBE_W3_SQL]);
+const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([
+  CANARY_PROBE_W1_SQL,
+  CANARY_PROBE_W2_SQL,
+  CANARY_PROBE_W3_SQL,
+  P1_REQUEST_A_SQL,
+  P1_REQUEST_B_SQL,
+]);
 
 export function createCanaryWriteProbeTransport(
   env: Readonly<Record<string, string | undefined>>,
@@ -169,18 +250,27 @@ export function createCanaryWriteProbeTransport(
   assertCanaryEndpoint(CANARY_QUERY_ENDPOINT);
   const doFetch: CanaryFetchLike = fetchImpl ?? (globalThis.fetch as unknown as CanaryFetchLike);
 
-  const send = async (sql: string, context: string) => {
+  const send = async (sql: string, context: string, boundDigest?: string) => {
     if (!ALLOWLISTED_PROBE_SQL.includes(sql)) throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
     assertNoForbiddenRef(sql, `${context}: sql`);
+    // Only the P1 insert carries a bound parameter, and only a 64-hex digest.
+    if (sql === P1_REQUEST_B_SQL) {
+      if (typeof boundDigest !== "string" || !SHA256_HEX_RE.test(boundDigest)) throw new CanaryProbeError("P1_DIGEST_INVALID", context);
+    } else if (boundDigest !== undefined) {
+      throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
+    }
     const url = CANARY_QUERY_ENDPOINT;
     assertCanaryEndpoint(url); // re-checked immediately before every request
+
+    const body: Record<string, unknown> = { query: sql, read_only: false };
+    if (sql === P1_REQUEST_B_SQL) body.parameters = [boundDigest];
 
     let response: Awaited<ReturnType<CanaryFetchLike>>;
     try {
       response = await doFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: sql, read_only: false }),
+        body: JSON.stringify(body),
         redirect: "error",
       });
     } catch {
@@ -245,7 +335,31 @@ export function createCanaryWriteProbeTransport(
     return { requestFailed: true, httpStatus: response.status, errorDetail: detail || undefined };
   };
 
-  return Object.freeze({ runW1, runW2, runW3 });
+  const runP1Ddl: CanaryWriteProbeTransport["runP1Ddl"] = async () => {
+    const response = await send(P1_REQUEST_A_SQL, "p1-ddl");
+    if (response.status === 401 || response.status === 403) return { authorized: false, httpStatus: response.status };
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = scrubCanaryText(await response.text());
+      } catch {
+        detail = "";
+      }
+      throw new CanaryProbeError("PROBE_HTTP_ERROR", `p1-ddl: HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
+    }
+    return { authorized: true, httpStatus: response.status };
+  };
+
+  const runP1Insert: CanaryWriteProbeTransport["runP1Insert"] = async (digestHex) => {
+    const response = await send(P1_REQUEST_B_SQL, "p1-insert", digestHex);
+    if (!response.ok) {
+      // Fixed detail only: the response could echo the parameter, so no body text is surfaced here.
+      throw new CanaryProbeError("PROBE_HTTP_ERROR", `p1-insert: HTTP ${response.status}`);
+    }
+    return { httpStatus: response.status };
+  };
+
+  return Object.freeze({ runW1, runW2, runW3, runP1Ddl, runP1Insert });
 }
 
 // ------------------------------------------------------------ blank-state fingerprint (read-only)
@@ -515,4 +629,123 @@ export async function runCanaryW3Probe(deps: {
     cleanupRequired: false,
     checks,
   };
+}
+
+// ------------------------------------------------------------ P1 orchestration (live run needs separate approval)
+
+export type P1Outcome =
+  | "sentinel_created" // both requests succeeded and every read-only verification passed
+  | "not_authorized"; // HTTP 401/403 on request A — nothing was executed
+
+export type CanaryP1SetupReport = {
+  readonly target: typeof CANARY_PROJECT_REF;
+  readonly outcome: P1Outcome;
+  readonly httpStatusA?: number;
+  readonly httpStatusB?: number;
+  readonly checks: readonly ProbeCheck[];
+};
+
+async function readSentinelPresence(
+  readOnly: CanaryReadOnlyExecutor,
+  context: string,
+): Promise<{ schemaPresent: boolean; tablePresent: boolean }> {
+  const rows = await readOnly(SQL_SENTINEL_PRESENCE, [], context);
+  if (rows.length !== 1 || typeof rows[0] !== "object" || rows[0] === null) {
+    throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+  }
+  const r = rows[0] as ProbeRow;
+  return { schemaPresent: r.schema_present === true, tablePresent: r.table_present === true };
+}
+
+/**
+ * P1 sequence (stop at the first surprise; NEVER retries, NEVER drops):
+ *   token digest from env (no network unless it derives) ->
+ *   blank baseline + sentinel absent -> request A -> presence visible ->
+ *   ACTUAL ACL/ownership posture verified -> request B ->
+ *   authorizeCanaryMutation (the committed gate itself) ->
+ *   fingerprint: public untouched, sentinel present.
+ */
+export async function runCanaryP1SentinelSetup(deps: {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly readOnly: CanaryReadOnlyExecutor;
+  readonly probe: CanaryWriteProbeTransport;
+}): Promise<CanaryP1SetupReport> {
+  assertCanaryEnvironment(deps.env);
+  // Token gate BEFORE any query or request; the digest stays in this scope.
+  const digest = deriveSentinelDigestFromEnv(deps.env);
+
+  const checks: ProbeCheck[] = [];
+  const add = (name: string, ok: boolean, detail?: string) => checks.push({ name, ok, detail });
+  add("operator token present, UUID-shaped, not exposed via NEXT_PUBLIC_*; digest derived in process", true);
+
+  // Blank canary AND no sentinel yet.
+  const baseline = await readBlankFingerprint(deps.readOnly, "p1-baseline");
+  add("baseline (read-only): canary is blank", isBlank(baseline), fingerprintDetail(baseline));
+  if (!isBlank(baseline)) throw new CanaryProbeError("BASELINE_NOT_BLANK", fingerprintDetail(baseline));
+  const before = await readSentinelPresence(deps.readOnly, "p1-before");
+  add("before (read-only): canary_guard absent", !before.schemaPresent && !before.tablePresent);
+  if (before.schemaPresent || before.tablePresent) {
+    throw new CanaryProbeError("P1_ALREADY_PRESENT", `schema_present=${before.schemaPresent} table_present=${before.tablePresent}`);
+  }
+
+  // Request A — the DDL (W3 proved this request shape rolls back atomically on failure).
+  const a = await deps.probe.runP1Ddl();
+  if (!a.authorized) {
+    add("P1 request A authorized", false, `HTTP ${a.httpStatus}: nothing was executed`);
+    return { target: CANARY_PROJECT_REF, outcome: "not_authorized", httpStatusA: a.httpStatus, checks };
+  }
+  add("P1 request A (sentinel DDL) accepted", true, `HTTP ${a.httpStatus}`);
+
+  const presence = await readSentinelPresence(deps.readOnly, "p1-presence");
+  add("after A (read-only): schema and table visible", presence.schemaPresent && presence.tablePresent);
+  if (!presence.schemaPresent || !presence.tablePresent) {
+    throw new CanaryProbeError("P1_DDL_NOT_VISIBLE", `schema_present=${presence.schemaPresent} table_present=${presence.tablePresent}`);
+  }
+
+  // ACTUAL posture, not merely that the REVOKEs ran (fail closed on surprises).
+  const aclRows = await deps.readOnly(SQL_P1_ACL_CHECK, [], "p1-acl");
+  if (aclRows.length !== 1 || typeof aclRows[0] !== "object" || aclRows[0] === null) {
+    throw new CanaryProbeError("PROBE_RESULT_MALFORMED", "p1-acl");
+  }
+  const acl = aclRows[0] as ProbeRow;
+  const aclOk =
+    acl.anon_schema === false &&
+    acl.authenticated_schema === false &&
+    acl.service_role_schema === false &&
+    acl.anon_table === false &&
+    acl.authenticated_table === false &&
+    acl.service_role_table === false &&
+    acl.schema_owner === EXPECTED_WRITE_PATH_ROLE &&
+    acl.table_owner === EXPECTED_WRITE_PATH_ROLE &&
+    acl.no_default_acl_in_schema === true;
+  add(
+    "after A (read-only): no API role holds any privilege; owner postgres; no default ACL in canary_guard",
+    aclOk,
+    `anon=${String(acl.anon_schema)}/${String(acl.anon_table)} authenticated=${String(acl.authenticated_schema)}/${String(acl.authenticated_table)}` +
+      ` service_role=${String(acl.service_role_schema)}/${String(acl.service_role_table)} owner=${String(acl.schema_owner)}/${String(acl.table_owner)}` +
+      ` no_default_acl=${String(acl.no_default_acl_in_schema)}`,
+  );
+  if (!aclOk) throw new CanaryProbeError("P1_ACL_UNEXPECTED");
+
+  // Request B — the parameterized insert (single statement, atomic on its own).
+  const b = await deps.probe.runP1Insert(digest);
+  add("P1 request B (sentinel insert) accepted", true, `HTTP ${b.httpStatus}`);
+
+  // Verify with the COMMITTED gate itself: one row, id 1, canary ref, digest match.
+  const authorization = await authorizeCanaryMutation(deps.readOnly, deps.env);
+  add("sentinel verification (read-only): authorizeCanaryMutation eligible", authorization.eligible === true);
+
+  // Final fingerprint: public untouched, no migration rows, sentinel now present.
+  const after = await readBlankFingerprint(deps.readOnly, "p1-verification");
+  const expected =
+    after.publicRelations === 0 &&
+    after.publicFunctions === 0 &&
+    after.publicTypes === 0 &&
+    after.migrationRows === 0 &&
+    !after.sentinelSchemaAbsent &&
+    after.noPersistedProbeTable;
+  add("verification (read-only): public schema untouched; sentinel present", expected, fingerprintDetail(after));
+  if (!expected) throw new CanaryProbeError("STATE_CHANGED_AFTER_PROBE", fingerprintDetail(after));
+
+  return { target: CANARY_PROJECT_REF, outcome: "sentinel_created", httpStatusA: a.httpStatus, httpStatusB: b.httpStatus, checks };
 }

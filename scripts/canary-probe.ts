@@ -4,6 +4,7 @@
 //   NODE_USE_ENV_PROXY=1 node --experimental-strip-types --import ./tests/alias-loader-register.mjs \
 //     scripts/canary-probe.ts --confirm=<CANARY_PROBE_CONFIRMATION_PHRASE>      # W1/W2
 //     scripts/canary-probe.ts --confirm-w3=<CANARY_W3_CONFIRMATION_PHRASE>      # W3
+//     scripts/canary-probe.ts --confirm-p1=<CANARY_P1_CONFIRMATION_PHRASE>      # P1 (CANARY_SENTINEL_TOKEN in env)
 //
 // Order (each step refuses before the next):
 //   1. exact confirmation phrase for the two approved write-capable requests;
@@ -20,6 +21,7 @@ import {
   CanaryProbeError,
   PROPOSED_W3_CLEANUP_SQL,
   createCanaryWriteProbeTransport,
+  runCanaryP1SentinelSetup,
   runCanaryW3Probe,
   runCanaryWriteProbe,
 } from "./canary-probe-lib";
@@ -31,7 +33,11 @@ export const CANARY_PROBE_CONFIRMATION_PHRASE =
 export const CANARY_W3_CONFIRMATION_PHRASE =
   "I-AUTHORIZE-THE-W3-FAILURE-ATOMICITY-PROBE-AGAINST-THE-CANARY-thqjtoxzkujnljsmkwkp";
 
-export type ProbeCliMode = "w1w2" | "w3";
+/** P1 has its own phrase: creating the sentinel is a separate operator approval. */
+export const CANARY_P1_CONFIRMATION_PHRASE =
+  "I-AUTHORIZE-P1-SENTINEL-CREATION-ON-THE-CANARY-thqjtoxzkujnljsmkwkp";
+
+export type ProbeCliMode = "w1w2" | "w3" | "p1";
 
 export function parseProbeCliArgs(argv: readonly string[]): ProbeCliMode {
   if (argv.length !== 1) throw new CanaryError("INVALID_ARGS");
@@ -42,6 +48,10 @@ export function parseProbeCliArgs(argv: readonly string[]): ProbeCliMode {
   if (argv[0].startsWith("--confirm-w3=")) {
     if (argv[0].slice("--confirm-w3=".length) !== CANARY_W3_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
     return "w3";
+  }
+  if (argv[0].startsWith("--confirm-p1=")) {
+    if (argv[0].slice("--confirm-p1=".length) !== CANARY_P1_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
+    return "p1";
   }
   throw new CanaryError("INVALID_ARGS");
 }
@@ -59,6 +69,22 @@ async function main(): Promise<number> {
   try {
     const readOnlyTransport = createCanaryReadOnlyTransport(process.env);
     const probeTransport = createCanaryWriteProbeTransport(process.env);
+
+    if (mode === "p1") {
+      console.log(`CANARY P1 SENTINEL SETUP — target ${CANARY_PROJECT_REF} (two reviewed requests; token read from env only; nothing is printed from it)`);
+      const report = await runCanaryP1SentinelSetup({
+        env: process.env,
+        readOnly: readOnlyTransport.executeReadOnlyQuery,
+        probe: probeTransport,
+      });
+      for (const c of report.checks) console.log(` ${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.detail ? ` [${c.detail}]` : ""}`);
+      if (report.outcome === "sentinel_created") {
+        console.log("CANARY P1: COMPLETE — sentinel created and verified; public schema untouched.");
+        return 0;
+      }
+      console.error(`CANARY P1: STOPPED with outcome ${report.outcome}. No further request was sent.`);
+      return 1;
+    }
 
     if (mode === "w3") {
       console.log(`CANARY W3 FAILURE-ATOMICITY PROBE — target ${CANARY_PROJECT_REF} (one deliberately failing request; frozen SQL)`);

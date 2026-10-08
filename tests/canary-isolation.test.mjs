@@ -115,8 +115,9 @@ test("the W1/W2 probe lib is the only canary file with read_only:false, allowlis
     const src = read(f);
     if (f === "scripts/canary-probe-lib.ts") {
       assert.match(src, /read_only: false/);
-      assert.match(src, /ALLOWLISTED_PROBE_SQL/, "probe sends only the frozen W1/W2 SQL");
-      assert.doesNotMatch(src, /\bparameters\b\s*:/, "probe requests never carry bound parameters");
+      assert.match(src, /ALLOWLISTED_PROBE_SQL/, "write requests send only frozen, allowlisted SQL");
+      // Exactly one bound-parameter send exists: the P1 sentinel insert (a validated 64-hex digest).
+      assert.equal((src.match(/body\.parameters\s*=/g) ?? []).length, 1, "only the P1 insert carries bound parameters");
     } else {
       // Exact code form; canary-plan-lib's header mentions "read_only:false" in prose.
       assert.doesNotMatch(src, /read_only: false/, `${f}: write-capable request outside the probe lib`);

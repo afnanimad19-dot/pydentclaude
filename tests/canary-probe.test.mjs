@@ -73,12 +73,13 @@ test("the probe SQL is frozen: W1 is SELECT-only, W2 is temp-and-rollback only",
   }
 });
 
-test("the transport exposes exactly runW1, runW2 and runW3 — no generic SQL interface", () => {
+test("the transport exposes exactly runW1, runW2, runW3, runP1Ddl, runP1Insert — no generic SQL interface", () => {
   const { fetchImpl } = probeFetch();
   const t = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
-  assert.deepEqual(Object.keys(t).sort(), ["runW1", "runW2", "runW3"]);
+  assert.deepEqual(Object.keys(t).sort(), ["runP1Ddl", "runP1Insert", "runW1", "runW2", "runW3"]);
   assert.ok(Object.isFrozen(t));
-  for (const member of [t.runW1, t.runW2, t.runW3]) assert.equal(member.length, 0, "probe members take no arguments");
+  for (const member of [t.runW1, t.runW2, t.runW3, t.runP1Ddl]) assert.equal(member.length, 0, "no argument accepted");
+  assert.equal(t.runP1Insert.length, 1, "runP1Insert takes exactly the digest — the only argument on the whole surface");
 });
 
 // ------------------------------------------------------------ guard at construction
@@ -322,13 +323,204 @@ test("W3 malformed absence-check responses stop the probe", async () => {
   await assert.rejects(r, probeStops("W3_SCHEMA_PRESENT")); // non-true booleans read as "not absent": fail closed before sending
 });
 
-test("W3 cleanup is refused by construction: no transport member accepts SQL and runW3Cleanup always throws", () => {
+test("W3 cleanup is refused by construction: no member accepts SQL text and runW3Cleanup always throws", async () => {
   assert.match(PROPOSED_W3_CLEANUP_SQL, /^drop schema if exists canary_probe_w3_atomicity cascade;$/);
   assert.throws(() => runW3Cleanup(), probeStops("W3_CLEANUP_NOT_AUTHORIZED"));
   const { fetchImpl, calls } = makeFakeFetch(async () => ({ json: [] }));
   const t = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
-  assert.ok(!Object.values(t).some((fn) => fn.length > 0), "no member takes SQL, so the cleanup text cannot be sent");
+  // The one argument on the surface is runP1Insert's digest, which refuses SQL-shaped text.
+  await assert.rejects(t.runP1Insert(PROPOSED_W3_CLEANUP_SQL), probeStops("P1_DIGEST_INVALID"));
   assert.equal(calls.length, 0);
+});
+
+// ------------------------------------------------------------ P1 sentinel setup (offline)
+
+const sentinel = await import("../scripts/canary-sentinel.ts");
+const { createHash } = await import("node:crypto");
+const { FAKE_SENTINEL_TOKEN } = await import("./canary-fixtures.mjs");
+
+const {
+  P1_REQUEST_A_SQL,
+  P1_REQUEST_B_SQL,
+  SQL_P1_ACL_CHECK,
+  deriveSentinelDigestFromEnv,
+  runCanaryP1SentinelSetup,
+} = lib;
+
+const FAKE_DIGEST = createHash("sha256").update(FAKE_SENTINEL_TOKEN.toLowerCase(), "utf8").digest("hex");
+const p1Env = (extra = {}) => okEnv({ CANARY_SENTINEL_TOKEN: FAKE_SENTINEL_TOKEN, ...extra });
+
+const P1_ACL_OK_ROW = {
+  anon_schema: false,
+  authenticated_schema: false,
+  service_role_schema: false,
+  anon_table: false,
+  authenticated_table: false,
+  service_role_table: false,
+  schema_owner: "postgres",
+  table_owner: "postgres",
+  no_default_acl_in_schema: true,
+};
+const SENTINEL_OK_ROW = { row_count: 1, id_ok: true, ref_ok: true, token_ok: true };
+const PRESENT_ROW = { schema_present: true, table_present: true };
+const ABSENT_PRESENCE_ROW = { schema_present: false, table_present: false };
+
+/** Read-only dispatcher for the P1 flow; each scripted list repeats its last answer. */
+const p1ReadOnly = ({
+  blank = [{ ...BLANK_ROW }, { ...BLANK_ROW, sentinel_schema_absent: false }],
+  presence = [ABSENT_PRESENCE_ROW, PRESENT_ROW],
+  acl = [P1_ACL_OK_ROW],
+  verification = [SENTINEL_OK_ROW],
+} = {}) => {
+  const counts = { blank: 0, presence: 0, acl: 0, verification: 0 };
+  const next = (list, key) => {
+    const v = list[Math.min(counts[key], list.length - 1)];
+    counts[key] += 1;
+    return [structuredClone(v)];
+  };
+  const executor = async (sql, params) => {
+    if (sql === SQL_PROBE_BLANK_FINGERPRINT) return next(blank, "blank");
+    if (sql === sentinel.SQL_SENTINEL_PRESENCE) return next(presence, "presence");
+    if (sql === SQL_P1_ACL_CHECK) return next(acl, "acl");
+    if (sql === sentinel.CANARY_SENTINEL_VERIFICATION_SQL) {
+      assert.deepEqual(params, [FAKE_DIGEST], "verification binds the in-process digest");
+      return next(verification, "verification");
+    }
+    throw new Error(`unexpected read-only SQL in P1 flow: ${sql.slice(0, 60)}`);
+  };
+  return { executor, counts };
+};
+
+const runP1 = ({ a = { json: [] }, b = { json: [] }, readOnlyParts, env = p1Env() } = {}) => {
+  const { fetchImpl, calls } = makeFakeFetch(async (body) => {
+    if (body.query === P1_REQUEST_A_SQL) {
+      assert.ok(!("parameters" in body), "request A carries no parameters");
+      return a;
+    }
+    if (body.query === P1_REQUEST_B_SQL) {
+      assert.deepEqual(body.parameters, [FAKE_DIGEST], "request B binds exactly the digest");
+      return b;
+    }
+    throw new Error(`unexpected SQL reached the fake endpoint: ${body.query.slice(0, 40)}`);
+  });
+  const probe = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
+  const ro = p1ReadOnly(readOnlyParts);
+  return { calls, ro, report: runCanaryP1SentinelSetup({ env, readOnly: ro.executor, probe }) };
+};
+
+test("P1 reuses the committed sentinel proposal SQL verbatim and allowlists nothing else", () => {
+  assert.equal(P1_REQUEST_A_SQL, sentinel.PROPOSED_CANARY_SENTINEL_DDL);
+  assert.equal(P1_REQUEST_B_SQL, sentinel.PROPOSED_CANARY_SENTINEL_INSERT_SQL);
+  assert.match(P1_REQUEST_A_SQL, /revoke all on schema canary_guard from public, anon, authenticated, service_role;/);
+  assert.match(P1_REQUEST_A_SQL, /revoke all on table canary_guard\.sentinel from public, anon, authenticated, service_role;/);
+  assert.doesNotMatch(P1_REQUEST_A_SQL, /\bgrant\b/i, "no grant to any role");
+});
+
+test("P1 digest derivation: env only, fail-closed on missing, malformed or exposed token", () => {
+  assert.equal(deriveSentinelDigestFromEnv(p1Env()), FAKE_DIGEST);
+  assert.throws(() => deriveSentinelDigestFromEnv(okEnv()), guardStops("SENTINEL_TOKEN_MISSING"));
+  assert.throws(
+    () => deriveSentinelDigestFromEnv(okEnv({ CANARY_SENTINEL_TOKEN: "not-a-uuid" })),
+    guardStops("SENTINEL_TOKEN_MALFORMED"),
+  );
+  assert.throws(
+    () => deriveSentinelDigestFromEnv(p1Env({ NEXT_PUBLIC_DEBUG: `x${FAKE_SENTINEL_TOKEN}y` })),
+    guardStops("SENTINEL_TOKEN_EXPOSED"),
+  );
+});
+
+test("P1 token failures stop before ANY request or query", async () => {
+  const { calls, ro, report } = runP1({ env: okEnv() });
+  await assert.rejects(report, guardStops("SENTINEL_TOKEN_MISSING"));
+  assert.equal(calls.length, 0);
+  assert.equal(Object.values(ro.counts).reduce((s, n) => s + n, 0), 0, "no read-only query either");
+});
+
+test("P1 happy path: A -> presence -> ACL posture -> B -> committed verification -> fingerprint", async () => {
+  const { calls, report } = runP1();
+  const r = await report;
+  assert.equal(r.outcome, "sentinel_created");
+  assert.ok(r.checks.every((c) => c.ok));
+  assert.equal(calls.length, 2, "exactly two write-capable requests");
+  assert.equal(calls[0].body.query, P1_REQUEST_A_SQL);
+  assert.equal(calls[1].body.query, P1_REQUEST_B_SQL);
+  for (const call of calls) {
+    assert.equal(call.body.read_only, false);
+    assert.deepEqual(Object.keys(call.init.headers), ["Content-Type"]);
+  }
+});
+
+test("P1 refuses when the canary is not blank or the sentinel already exists; nothing is sent", async () => {
+  const notBlank = runP1({ readOnlyParts: { blank: [{ ...BLANK_ROW, public_relations: 1 }] } });
+  await assert.rejects(notBlank.report, probeStops("BASELINE_NOT_BLANK"));
+  assert.equal(notBlank.calls.length, 0);
+  const present = runP1({ readOnlyParts: { presence: [PRESENT_ROW] } });
+  await assert.rejects(present.report, probeStops("P1_ALREADY_PRESENT"));
+  assert.equal(present.calls.length, 0);
+});
+
+test("P1 permission failure on request A: reported, request B never sent", async () => {
+  for (const status of [401, 403]) {
+    const { calls, report } = runP1({ a: { status, text: "denied" } });
+    const r = await report;
+    assert.equal(r.outcome, "not_authorized");
+    assert.equal(r.httpStatusA, status);
+    assert.equal(calls.length, 1, "only request A was sent");
+  }
+});
+
+test("P1 partial setup (DDL accepted but objects not visible) stops before the insert", async () => {
+  const { calls, report } = runP1({ readOnlyParts: { presence: [ABSENT_PRESENCE_ROW, ABSENT_PRESENCE_ROW] } });
+  await assert.rejects(report, probeStops("P1_DDL_NOT_VISIBLE"));
+  assert.equal(calls.length, 1, "the insert was never sent");
+});
+
+test("P1 verifies the ACTUAL ACL posture and stops on any surprise before the insert", async () => {
+  for (const bad of [
+    { ...P1_ACL_OK_ROW, service_role_table: true },
+    { ...P1_ACL_OK_ROW, anon_schema: true },
+    { ...P1_ACL_OK_ROW, table_owner: "supabase_admin" },
+    { ...P1_ACL_OK_ROW, no_default_acl_in_schema: false },
+  ]) {
+    const { calls, report } = runP1({ readOnlyParts: { acl: [bad] } });
+    await assert.rejects(report, probeStops("P1_ACL_UNEXPECTED"));
+    assert.equal(calls.length, 1, "the insert was never sent");
+  }
+});
+
+test("P1 mismatched digest: the committed verification gate refuses and the run fails closed", async () => {
+  const { report } = runP1({ readOnlyParts: { verification: [{ ...SENTINEL_OK_ROW, token_ok: false }] } });
+  let thrown;
+  try {
+    await report;
+  } catch (e) {
+    thrown = e;
+  }
+  assert.ok(guardStops("SENTINEL_TOKEN_MISMATCH")(thrown));
+  assert.ok(!thrown.message.includes(FAKE_SENTINEL_TOKEN), "the token never appears in a message");
+  assert.ok(!thrown.message.includes(FAKE_DIGEST), "the digest never appears in a message");
+});
+
+test("P1 insert failure is a fixed-detail stop with no retry and no body text surfaced", async () => {
+  const { calls, report } = runP1({ b: { status: 500, text: `boom ${FAKE_DIGEST}` } });
+  let thrown;
+  try {
+    await report;
+  } catch (e) {
+    thrown = e;
+  }
+  assert.ok(probeStops("PROBE_HTTP_ERROR")(thrown));
+  assert.ok(!thrown.message.includes(FAKE_DIGEST), "response text is not surfaced on the insert path");
+  assert.equal(calls.length, 2, "no retry");
+});
+
+test("P1 transport isolation: the digest argument refuses anything that is not 64-hex", async () => {
+  const { fetchImpl, calls } = makeFakeFetch(async () => ({ json: [] }));
+  const t = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
+  for (const bad of ["", "abc", FAKE_SENTINEL_TOKEN, `${FAKE_DIGEST}ff`, FAKE_DIGEST.toUpperCase(), "drop schema x;"]) {
+    await assert.rejects(t.runP1Insert(bad), probeStops("P1_DIGEST_INVALID"));
+  }
+  assert.equal(calls.length, 0, "nothing reached the endpoint");
 });
 
 // ------------------------------------------------------------ CLI confirmation
@@ -351,6 +543,18 @@ test("the CLI requires the exact phrase for each mode and keeps them distinct", 
     guardStops("CONFIRMATION_REQUIRED"),
     "the W1/W2 phrase does not unlock W3",
   );
+  assert.throws(() => cli.parseProbeCliArgs(["--confirm-p1=nope"]), guardStops("CONFIRMATION_REQUIRED"));
+  assert.throws(
+    () => cli.parseProbeCliArgs([`--confirm-p1=${cli.CANARY_W3_CONFIRMATION_PHRASE}`]),
+    guardStops("CONFIRMATION_REQUIRED"),
+    "the W3 phrase does not unlock P1",
+  );
+  assert.throws(
+    () => cli.parseProbeCliArgs([`--confirm=${cli.CANARY_P1_CONFIRMATION_PHRASE}`]),
+    guardStops("CONFIRMATION_REQUIRED"),
+    "the P1 phrase does not unlock W1/W2",
+  );
   assert.equal(cli.parseProbeCliArgs([`--confirm=${cli.CANARY_PROBE_CONFIRMATION_PHRASE}`]), "w1w2");
   assert.equal(cli.parseProbeCliArgs([`--confirm-w3=${cli.CANARY_W3_CONFIRMATION_PHRASE}`]), "w3");
+  assert.equal(cli.parseProbeCliArgs([`--confirm-p1=${cli.CANARY_P1_CONFIRMATION_PHRASE}`]), "p1");
 });
