@@ -10,13 +10,22 @@
 //        multi-statement request in the dedicated canary_probe_w3_atomicity
 //        schema, judged solely by read-only absence checks afterwards. Its
 //        cleanup is a reviewed PROPOSAL that no code path can execute.
-//   P1 — sentinel creation executor (IMPLEMENTED OFFLINE ONLY; live execution
-//        requires its own separate approval): exactly the two reviewed
-//        requests from canary-sentinel.ts, reused verbatim — the canary_guard
-//        DDL with its privilege revocations, then the parameterized insert of
-//        the operator token's SHA-256 digest. The only argument any transport
-//        member accepts is that 64-hex digest; neither the token nor the
-//        digest is ever printed, logged or embedded in an error message.
+//   P1 — sentinel creation executor (live run separately approved and
+//        completed 2026-10-08: sentinel created and verified): exactly the two
+//        reviewed requests from canary-sentinel.ts, reused verbatim — the
+//        canary_guard DDL with its privilege revocations, then the
+//        parameterized insert of the operator token's SHA-256 digest. The only
+//        argument any transport member accepts is that 64-hex digest; neither
+//        the token nor the digest is ever printed, logged or embedded in an
+//        error message.
+//   P2 — privilege hardening executor (IMPLEMENTED OFFLINE ONLY; live
+//        execution requires its own separate approval): exactly the reviewed
+//        PROPOSED_PRIVILEGE_HARDENING_SQL from canary-plan-lib.ts, reused
+//        verbatim. Sentinel-gated (authorizeCanaryMutation before the write),
+//        with the full default-ACL posture read and snapshotted before the
+//        request and re-verified after it: API-role table/sequence defaults
+//        gone, global defaults still absent, postgres function defaults and
+//        supabase_admin defaults byte-identical to the baseline.
 // NOTHING ELSE. This module is NOT a general-purpose SQL interface: the only
 // exported network surface is runW1/runW2, each of which sends one frozen SQL
 // constant. An internal allowlist refuses any other text as defense in depth.
@@ -54,6 +63,7 @@ import {
   authorizeCanaryMutation,
   canarySentinelDigest,
 } from "./canary-sentinel";
+import { PROPOSED_PRIVILEGE_HARDENING_SQL, SQL_DEFAULT_ACL_API_ROLE_GRANTS } from "./canary-plan-lib";
 
 // ------------------------------------------------------------ errors
 
@@ -71,7 +81,11 @@ export type CanaryProbeFailureCode =
   | "P1_DIGEST_INVALID" // the sentinel insert's bound parameter is not a 64-hex SHA-256 digest
   | "P1_ALREADY_PRESENT" // canary_guard (or its sentinel table) already exists; P1 refuses to send anything
   | "P1_DDL_NOT_VISIBLE" // request A reported success but the schema/table are not visible read-only
-  | "P1_ACL_UNEXPECTED"; // actual ACLs/ownership after request A are not the expected locked-down posture
+  | "P1_ACL_UNEXPECTED" // actual ACLs/ownership after request A are not the expected locked-down posture
+  | "P2_BASELINE_ACL_UNEXPECTED" // the pre-P2 defaults are not the known permissive posture; refusing to send
+  | "P2_GLOBAL_ACL_PRESENT" // a global (all-schema) default ACL exists; the schema-scoped revoke would not cover it
+  | "P2_HARDENING_INCOMPLETE" // API-role table/sequence defaults survived the hardening request
+  | "P2_UNRELATED_ACL_CHANGED"; // postgres function defaults or supabase_admin defaults drifted from the baseline
 
 const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   PROBE_SQL_NOT_ALLOWLISTED: "probe transport only sends the frozen W1/W2 SQL; refusing other text",
@@ -88,6 +102,10 @@ const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   P1_ALREADY_PRESENT: "the canary_guard schema or sentinel table already exists; P1 stopped before any request",
   P1_DDL_NOT_VISIBLE: "request A reported success but the sentinel schema/table are not visible; partial setup — stopping",
   P1_ACL_UNEXPECTED: "the sentinel schema/table ACLs or ownership are not the expected locked-down posture; stopping before the insert",
+  P2_BASELINE_ACL_UNEXPECTED: "the current default privileges are not the known permissive posture; P2 stopped before any request",
+  P2_GLOBAL_ACL_PRESENT: "a global default ACL exists; the schema-scoped revocations would not remove it — stopping",
+  P2_HARDENING_INCOMPLETE: "API-role table/sequence default grants remain after the hardening request; stopping",
+  P2_UNRELATED_ACL_CHANGED: "default privileges outside P2's scope changed (postgres functions or supabase_admin); stopping",
 };
 
 export class CanaryProbeError extends Error {
@@ -171,6 +189,32 @@ export function runW3Cleanup(): never {
 }
 
 /**
+ * P2 — the privilege hardening request, REUSED VERBATIM from the reviewed
+ * proposal in canary-plan-lib.ts (no new SQL is authored here). One request,
+ * explicit transaction, no parameters — the shape W3 proved failure-atomic.
+ */
+export const P2_HARDENING_SQL = PROPOSED_PRIVILEGE_HARDENING_SQL;
+
+/**
+ * Read-only default-ACL detail for schema public: one row per (owner,
+ * objtype, grantee, privilege). The live review of 2026-10-08 showed every
+ * permissive entry here is schema-scoped, which is what makes the
+ * schema-scoped revocations sufficient.
+ */
+export const SQL_P2_ACL_DETAIL =
+  "select pg_get_userbyid(d.defaclrole) as owner, d.defaclobjtype::text as objtype," +
+  " pg_get_userbyid(a.grantee) as grantee, a.privilege_type" +
+  " from pg_default_acl d cross join lateral aclexplode(d.defaclacl) a" +
+  " where d.defaclnamespace = 'public'::regnamespace order by 1, 2, 3, 4";
+
+/** Read-only GLOBAL (all-schema) default ACLs — must be empty before AND after P2. */
+export const SQL_P2_ACL_GLOBAL =
+  "select pg_get_userbyid(d.defaclrole) as owner, d.defaclobjtype::text as objtype," +
+  " pg_get_userbyid(a.grantee) as grantee, a.privilege_type" +
+  " from pg_default_acl d cross join lateral aclexplode(d.defaclacl) a" +
+  " where d.defaclnamespace = 0 order by 1, 2, 3, 4";
+
+/**
  * P1 — the two sentinel-setup requests, REUSED VERBATIM from the committed
  * proposal in canary-sentinel.ts (no new SQL is authored here). Request A is
  * the no-parameter DDL (the request shape W3 proved failure-atomic); request
@@ -231,6 +275,8 @@ export type CanaryWriteProbeTransport = {
   readonly runP1Ddl: () => Promise<{ authorized: boolean; httpStatus: number }>;
   /** P1 request B. The ONLY member taking an argument: the 64-hex digest, sent as the bound parameter. */
   readonly runP1Insert: (digestHex: string) => Promise<{ httpStatus: number }>;
+  /** P2 hardening request. HTTP 401/403 resolves authorized:false; any other failure throws. */
+  readonly runP2Hardening: () => Promise<{ authorized: boolean; httpStatus: number }>;
 };
 
 const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([
@@ -239,6 +285,7 @@ const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([
   CANARY_PROBE_W3_SQL,
   P1_REQUEST_A_SQL,
   P1_REQUEST_B_SQL,
+  P2_HARDENING_SQL,
 ]);
 
 export function createCanaryWriteProbeTransport(
@@ -359,7 +406,22 @@ export function createCanaryWriteProbeTransport(
     return { httpStatus: response.status };
   };
 
-  return Object.freeze({ runW1, runW2, runW3, runP1Ddl, runP1Insert });
+  const runP2Hardening: CanaryWriteProbeTransport["runP2Hardening"] = async () => {
+    const response = await send(P2_HARDENING_SQL, "p2-hardening");
+    if (response.status === 401 || response.status === 403) return { authorized: false, httpStatus: response.status };
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = scrubCanaryText(await response.text());
+      } catch {
+        detail = "";
+      }
+      throw new CanaryProbeError("PROBE_HTTP_ERROR", `p2-hardening: HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
+    }
+    return { authorized: true, httpStatus: response.status };
+  };
+
+  return Object.freeze({ runW1, runW2, runW3, runP1Ddl, runP1Insert, runP2Hardening });
 }
 
 // ------------------------------------------------------------ blank-state fingerprint (read-only)
@@ -748,4 +810,152 @@ export async function runCanaryP1SentinelSetup(deps: {
   if (!expected) throw new CanaryProbeError("STATE_CHANGED_AFTER_PROBE", fingerprintDetail(after));
 
   return { target: CANARY_PROJECT_REF, outcome: "sentinel_created", httpStatusA: a.httpStatus, httpStatusB: b.httpStatus, checks };
+}
+
+// ------------------------------------------------------------ P2 orchestration (live run needs separate approval)
+
+export type P2Outcome =
+  | "hardened" // the request succeeded and every read-only verification passed
+  | "not_authorized"; // HTTP 401/403 — nothing was executed
+
+export type CanaryP2HardeningReport = {
+  readonly target: typeof CANARY_PROJECT_REF;
+  readonly outcome: P2Outcome;
+  readonly httpStatus?: number;
+  readonly checks: readonly ProbeCheck[];
+};
+
+type AclRow = { owner: string; objtype: string; grantee: string; privilege: string };
+const API_ROLES = ["anon", "authenticated", "service_role"] as const;
+
+async function readAclRows(readOnly: CanaryReadOnlyExecutor, sql: string, context: string): Promise<AclRow[]> {
+  const rows = await readOnly(sql, [], context);
+  return rows.map((r) => {
+    if (typeof r !== "object" || r === null) throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+    const row = r as ProbeRow;
+    if (
+      typeof row.owner !== "string" ||
+      typeof row.objtype !== "string" ||
+      typeof row.grantee !== "string" ||
+      typeof row.privilege_type !== "string"
+    ) {
+      throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+    }
+    return { owner: row.owner, objtype: row.objtype, grantee: row.grantee, privilege: row.privilege_type };
+  });
+}
+
+const serializeAcl = (rows: readonly AclRow[]): string =>
+  rows
+    .map((r) => `${r.owner}|${r.objtype}|${r.grantee}|${r.privilege}`)
+    .sort()
+    .join("\n");
+
+const apiTableSeqRows = (rows: readonly AclRow[]): AclRow[] =>
+  rows.filter(
+    (r) => r.owner === EXPECTED_WRITE_PATH_ROLE && (r.objtype === "r" || r.objtype === "S") && (API_ROLES as readonly string[]).includes(r.grantee),
+  );
+
+/** Everything P2 must NOT change: postgres function defaults and every non-postgres owner's defaults. */
+const outOfScopeRows = (rows: readonly AclRow[]): AclRow[] =>
+  rows.filter((r) => r.owner !== EXPECTED_WRITE_PATH_ROLE || r.objtype === "f");
+
+/**
+ * P2 sequence (stop at the first surprise; NEVER retries, NEVER rolls back):
+ *   sentinel gate (authorizeCanaryMutation) -> public blank + history empty
+ *   (sentinel present) -> baseline ACLs: known permissive posture required,
+ *   global defaults must be empty, out-of-scope rows snapshotted ->
+ *   ONE hardening request -> post ACLs: API table/sequence defaults gone,
+ *   global still empty, out-of-scope rows byte-identical, committed
+ *   readiness query clean -> sentinel still valid -> fingerprint unchanged.
+ */
+export async function runCanaryP2Hardening(deps: {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly readOnly: CanaryReadOnlyExecutor;
+  readonly probe: CanaryWriteProbeTransport;
+}): Promise<CanaryP2HardeningReport> {
+  assertCanaryEnvironment(deps.env);
+  const checks: ProbeCheck[] = [];
+  const add = (name: string, ok: boolean, detail?: string) => checks.push({ name, ok, detail });
+
+  // Sentinel gate BEFORE any write (throws fixed-message CanaryError codes on failure).
+  await authorizeCanaryMutation(deps.readOnly, deps.env);
+  add("sentinel gate (read-only): authorizeCanaryMutation eligible", true);
+
+  // Public blank, migration history empty, sentinel present, no probe residue.
+  const baseline = await readBlankFingerprint(deps.readOnly, "p2-baseline");
+  const baselineOk =
+    baseline.publicRelations === 0 &&
+    baseline.publicFunctions === 0 &&
+    baseline.publicTypes === 0 &&
+    baseline.migrationRows === 0 &&
+    !baseline.sentinelSchemaAbsent &&
+    baseline.noPersistedProbeTable;
+  add("baseline (read-only): public blank, history empty, sentinel present", baselineOk, fingerprintDetail(baseline));
+  if (!baselineOk) throw new CanaryProbeError("BASELINE_NOT_BLANK", fingerprintDetail(baseline));
+
+  // Baseline ACLs: the permissive posture P2 exists to remove must actually be present,
+  // the global scope must be empty, and everything out of scope is snapshotted.
+  const preDetail = await readAclRows(deps.readOnly, SQL_P2_ACL_DETAIL, "p2-acl-before");
+  const preGlobal = await readAclRows(deps.readOnly, SQL_P2_ACL_GLOBAL, "p2-acl-global-before");
+  add("before (read-only): no global default ACLs", preGlobal.length === 0, `global_rows=${preGlobal.length}`);
+  if (preGlobal.length !== 0) throw new CanaryProbeError("P2_GLOBAL_ACL_PRESENT", `before: ${preGlobal.length} row(s)`);
+
+  const preApi = apiTableSeqRows(preDetail);
+  const permissive = API_ROLES.every(
+    (role) => preApi.some((r) => r.objtype === "r" && r.grantee === role) && preApi.some((r) => r.objtype === "S" && r.grantee === role),
+  );
+  add(
+    "before (read-only): known permissive posture present (postgres tables+sequences grant all three API roles)",
+    permissive,
+    `api_table_seq_rows=${preApi.length}`,
+  );
+  if (!permissive) throw new CanaryProbeError("P2_BASELINE_ACL_UNEXPECTED", `api_table_seq_rows=${preApi.length}`);
+  const outOfScopeBaseline = serializeAcl(outOfScopeRows(preDetail));
+  add("before (read-only): out-of-scope defaults snapshotted (postgres functions + non-postgres owners)", true, `rows=${outOfScopeRows(preDetail).length}`);
+
+  // The ONE hardening request.
+  const r = await deps.probe.runP2Hardening();
+  if (!r.authorized) {
+    add("P2 hardening request authorized", false, `HTTP ${r.httpStatus}: nothing was executed`);
+    return { target: CANARY_PROJECT_REF, outcome: "not_authorized", httpStatus: r.httpStatus, checks };
+  }
+  add("P2 hardening request accepted", true, `HTTP ${r.httpStatus}`);
+
+  // Post ACLs.
+  const postDetail = await readAclRows(deps.readOnly, SQL_P2_ACL_DETAIL, "p2-acl-after");
+  const postGlobal = await readAclRows(deps.readOnly, SQL_P2_ACL_GLOBAL, "p2-acl-global-after");
+  const postApi = apiTableSeqRows(postDetail);
+  add("after (read-only): no postgres table/sequence default grants to API roles", postApi.length === 0, `api_table_seq_rows=${postApi.length}`);
+  if (postApi.length !== 0) throw new CanaryProbeError("P2_HARDENING_INCOMPLETE", `api_table_seq_rows=${postApi.length}`);
+  add("after (read-only): global default ACLs still absent", postGlobal.length === 0, `global_rows=${postGlobal.length}`);
+  if (postGlobal.length !== 0) throw new CanaryProbeError("P2_GLOBAL_ACL_PRESENT", `after: ${postGlobal.length} row(s)`);
+  const outOfScopeUnchanged = serializeAcl(outOfScopeRows(postDetail)) === outOfScopeBaseline;
+  add("after (read-only): postgres function defaults and supabase_admin defaults unchanged", outOfScopeUnchanged);
+  if (!outOfScopeUnchanged) throw new CanaryProbeError("P2_UNRELATED_ACL_CHANGED");
+
+  // The committed readiness query must now be clean for postgres tables/sequences.
+  const readiness = (await deps.readOnly(SQL_DEFAULT_ACL_API_ROLE_GRANTS, [], "p2-readiness")) as ProbeRow[];
+  const readinessClean = readiness.every(
+    (row) =>
+      !(row.owner === EXPECTED_WRITE_PATH_ROLE && (row.objtype === "r" || row.objtype === "S") && String(row.api_role_grantees ?? "") !== ""),
+  );
+  add("after (read-only): committed A7-equivalence query clean for postgres tables/sequences", readinessClean);
+  if (!readinessClean) throw new CanaryProbeError("P2_HARDENING_INCOMPLETE", "committed readiness query");
+
+  // Sentinel untouched; fingerprint unchanged.
+  await authorizeCanaryMutation(deps.readOnly, deps.env);
+  add("after (read-only): sentinel still valid (authorizeCanaryMutation eligible)", true);
+  const after = await readBlankFingerprint(deps.readOnly, "p2-verification");
+  const unchanged =
+    after.publicRelations === 0 &&
+    after.publicFunctions === 0 &&
+    after.publicTypes === 0 &&
+    after.migrationRows === 0 &&
+    !after.sentinelSchemaAbsent &&
+    after.noPersistedProbeTable;
+  add("verification (read-only): public schema and migration history unchanged; sentinel present", unchanged, fingerprintDetail(after));
+  if (!unchanged) throw new CanaryProbeError("STATE_CHANGED_AFTER_PROBE", fingerprintDetail(after));
+
+  return { target: CANARY_PROJECT_REF, outcome: "hardened", httpStatus: r.httpStatus, checks };
 }

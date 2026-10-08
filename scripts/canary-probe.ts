@@ -5,6 +5,7 @@
 //     scripts/canary-probe.ts --confirm=<CANARY_PROBE_CONFIRMATION_PHRASE>      # W1/W2
 //     scripts/canary-probe.ts --confirm-w3=<CANARY_W3_CONFIRMATION_PHRASE>      # W3
 //     scripts/canary-probe.ts --confirm-p1=<CANARY_P1_CONFIRMATION_PHRASE>      # P1 (CANARY_SENTINEL_TOKEN in env)
+//     scripts/canary-probe.ts --confirm-p2=<CANARY_P2_CONFIRMATION_PHRASE>      # P2 (sentinel-gated)
 //
 // Order (each step refuses before the next):
 //   1. exact confirmation phrase for the two approved write-capable requests;
@@ -22,6 +23,7 @@ import {
   PROPOSED_W3_CLEANUP_SQL,
   createCanaryWriteProbeTransport,
   runCanaryP1SentinelSetup,
+  runCanaryP2Hardening,
   runCanaryW3Probe,
   runCanaryWriteProbe,
 } from "./canary-probe-lib";
@@ -37,7 +39,11 @@ export const CANARY_W3_CONFIRMATION_PHRASE =
 export const CANARY_P1_CONFIRMATION_PHRASE =
   "I-AUTHORIZE-P1-SENTINEL-CREATION-ON-THE-CANARY-thqjtoxzkujnljsmkwkp";
 
-export type ProbeCliMode = "w1w2" | "w3" | "p1";
+/** P2 has its own phrase: hardening the default privileges is a separate operator approval. */
+export const CANARY_P2_CONFIRMATION_PHRASE =
+  "I-AUTHORIZE-P2-PRIVILEGE-HARDENING-ON-THE-CANARY-thqjtoxzkujnljsmkwkp";
+
+export type ProbeCliMode = "w1w2" | "w3" | "p1" | "p2";
 
 export function parseProbeCliArgs(argv: readonly string[]): ProbeCliMode {
   if (argv.length !== 1) throw new CanaryError("INVALID_ARGS");
@@ -52,6 +58,10 @@ export function parseProbeCliArgs(argv: readonly string[]): ProbeCliMode {
   if (argv[0].startsWith("--confirm-p1=")) {
     if (argv[0].slice("--confirm-p1=".length) !== CANARY_P1_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
     return "p1";
+  }
+  if (argv[0].startsWith("--confirm-p2=")) {
+    if (argv[0].slice("--confirm-p2=".length) !== CANARY_P2_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
+    return "p2";
   }
   throw new CanaryError("INVALID_ARGS");
 }
@@ -69,6 +79,22 @@ async function main(): Promise<number> {
   try {
     const readOnlyTransport = createCanaryReadOnlyTransport(process.env);
     const probeTransport = createCanaryWriteProbeTransport(process.env);
+
+    if (mode === "p2") {
+      console.log(`CANARY P2 PRIVILEGE HARDENING — target ${CANARY_PROJECT_REF} (one reviewed request; sentinel-gated; ACL posture verified before and after)`);
+      const report = await runCanaryP2Hardening({
+        env: process.env,
+        readOnly: readOnlyTransport.executeReadOnlyQuery,
+        probe: probeTransport,
+      });
+      for (const c of report.checks) console.log(` ${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.detail ? ` [${c.detail}]` : ""}`);
+      if (report.outcome === "hardened") {
+        console.log("CANARY P2: COMPLETE — defaults hardened and verified. Run canary-preflight for the independent confirmation.");
+        return 0;
+      }
+      console.error(`CANARY P2: STOPPED with outcome ${report.outcome}. No further request was sent.`);
+      return 1;
+    }
 
     if (mode === "p1") {
       console.log(`CANARY P1 SENTINEL SETUP — target ${CANARY_PROJECT_REF} (two reviewed requests; token read from env only; nothing is printed from it)`);

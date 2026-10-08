@@ -73,12 +73,12 @@ test("the probe SQL is frozen: W1 is SELECT-only, W2 is temp-and-rollback only",
   }
 });
 
-test("the transport exposes exactly runW1, runW2, runW3, runP1Ddl, runP1Insert — no generic SQL interface", () => {
+test("the transport exposes exactly the six frozen operations — no generic SQL interface", () => {
   const { fetchImpl } = probeFetch();
   const t = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
-  assert.deepEqual(Object.keys(t).sort(), ["runP1Ddl", "runP1Insert", "runW1", "runW2", "runW3"]);
+  assert.deepEqual(Object.keys(t).sort(), ["runP1Ddl", "runP1Insert", "runP2Hardening", "runW1", "runW2", "runW3"]);
   assert.ok(Object.isFrozen(t));
-  for (const member of [t.runW1, t.runW2, t.runW3, t.runP1Ddl]) assert.equal(member.length, 0, "no argument accepted");
+  for (const member of [t.runW1, t.runW2, t.runW3, t.runP1Ddl, t.runP2Hardening]) assert.equal(member.length, 0, "no argument accepted");
   assert.equal(t.runP1Insert.length, 1, "runP1Insert takes exactly the digest — the only argument on the whole surface");
 });
 
@@ -523,6 +523,151 @@ test("P1 transport isolation: the digest argument refuses anything that is not 6
   assert.equal(calls.length, 0, "nothing reached the endpoint");
 });
 
+// ------------------------------------------------------------ P2 privilege hardening (offline)
+
+const plan = await import("../scripts/canary-plan-lib.ts");
+const { P2_HARDENING_SQL, SQL_P2_ACL_DETAIL, SQL_P2_ACL_GLOBAL, runCanaryP2Hardening } = lib;
+
+const aclRow = (owner, objtype, grantee, privilege_type) => ({ owner, objtype, grantee, privilege_type });
+const PERMISSIVE_DETAIL = [
+  ...["anon", "authenticated", "service_role"].flatMap((g) => [aclRow("postgres", "r", g, "SELECT"), aclRow("postgres", "S", g, "USAGE")]),
+  aclRow("postgres", "f", "anon", "EXECUTE"),
+  aclRow("supabase_admin", "r", "anon", "SELECT"),
+];
+const HARDENED_DETAIL = [aclRow("postgres", "f", "anon", "EXECUTE"), aclRow("supabase_admin", "r", "anon", "SELECT")];
+const READINESS_CLEAN = [
+  { objtype: "f", owner: "postgres", api_role_grantees: "anon" },
+  { objtype: "r", owner: "supabase_admin", api_role_grantees: "anon" },
+];
+const P2_BLANK_ROW = { ...BLANK_ROW, sentinel_schema_absent: false };
+
+/** Read-only dispatcher for the P2 flow; each scripted list repeats its last answer. */
+const p2ReadOnly = ({
+  blank = [P2_BLANK_ROW],
+  detail = [PERMISSIVE_DETAIL, HARDENED_DETAIL],
+  global: globalAcl = [[]],
+  readiness = [READINESS_CLEAN],
+  verification = [SENTINEL_OK_ROW],
+} = {}) => {
+  const counts = { blank: 0, detail: 0, global: 0, readiness: 0, verification: 0 };
+  const one = (list, key) => {
+    const v = list[Math.min(counts[key], list.length - 1)];
+    counts[key] += 1;
+    return structuredClone(Array.isArray(v) ? v : [v]);
+  };
+  const executor = async (sql, params) => {
+    if (sql === SQL_PROBE_BLANK_FINGERPRINT) return one(blank, "blank");
+    if (sql === SQL_P2_ACL_DETAIL) return one(detail, "detail");
+    if (sql === SQL_P2_ACL_GLOBAL) return one(globalAcl, "global");
+    if (sql === plan.SQL_DEFAULT_ACL_API_ROLE_GRANTS) return one(readiness, "readiness");
+    if (sql === sentinel.CANARY_SENTINEL_VERIFICATION_SQL) {
+      assert.deepEqual(params, [FAKE_DIGEST], "the sentinel gate binds the in-process digest");
+      return one(verification, "verification");
+    }
+    throw new Error(`unexpected read-only SQL in P2 flow: ${sql.slice(0, 60)}`);
+  };
+  return { executor, counts };
+};
+
+const runP2 = ({ response = { json: [] }, readOnlyParts, env = p1Env() } = {}) => {
+  const { fetchImpl, calls } = makeFakeFetch(async (body) => {
+    assert.equal(body.query, P2_HARDENING_SQL, "only the frozen P2 SQL may reach the endpoint");
+    assert.equal(body.read_only, false);
+    assert.ok(!("parameters" in body), "the hardening request carries no parameters");
+    return response;
+  });
+  const probe = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
+  const ro = p2ReadOnly(readOnlyParts);
+  return { calls, ro, report: runCanaryP2Hardening({ env, readOnly: ro.executor, probe }) };
+};
+
+test("P2 reuses the reviewed hardening proposal verbatim: one transaction, revokes only", () => {
+  assert.equal(P2_HARDENING_SQL, plan.PROPOSED_PRIVILEGE_HARDENING_SQL);
+  assert.match(P2_HARDENING_SQL, /^begin;/);
+  assert.match(P2_HARDENING_SQL, /revoke all on tables from anon, authenticated, service_role;/);
+  assert.match(P2_HARDENING_SQL, /revoke all on sequences from anon, authenticated, service_role;/);
+  assert.match(P2_HARDENING_SQL, /commit;$/);
+  assert.doesNotMatch(P2_HARDENING_SQL, /\b(grant|drop|truncate|delete|insert|update|create)\b/i);
+  assert.doesNotMatch(P2_HARDENING_SQL, /\bfunctions\b/i, "function defaults are deliberately out of scope");
+});
+
+test("P2 happy path: sentinel gate -> baseline ACLs -> one request -> full post verification", async () => {
+  const { calls, report } = runP2();
+  const r = await report;
+  assert.equal(r.outcome, "hardened");
+  assert.ok(r.checks.every((c) => c.ok));
+  assert.equal(calls.length, 1, "exactly one write-capable request");
+});
+
+test("P2 sentinel gate failures stop before any write", async () => {
+  const mismatch = runP2({ readOnlyParts: { verification: [{ ...SENTINEL_OK_ROW, token_ok: false }] } });
+  await assert.rejects(mismatch.report, guardStops("SENTINEL_TOKEN_MISMATCH"));
+  assert.equal(mismatch.calls.length, 0);
+  const noToken = runP2({ env: okEnv() });
+  await assert.rejects(noToken.report, guardStops("SENTINEL_TOKEN_MISSING"));
+  assert.equal(noToken.calls.length, 0);
+});
+
+test("P2 refuses when public is not blank or history is not empty", async () => {
+  const { calls, report } = runP2({ readOnlyParts: { blank: [{ ...P2_BLANK_ROW, migration_rows: 3 }] } });
+  await assert.rejects(report, probeStops("BASELINE_NOT_BLANK"));
+  assert.equal(calls.length, 0);
+});
+
+test("P2 refuses when the baseline ACLs are not the known permissive posture", async () => {
+  const { calls, report } = runP2({ readOnlyParts: { detail: [HARDENED_DETAIL] } });
+  await assert.rejects(report, probeStops("P2_BASELINE_ACL_UNEXPECTED"));
+  assert.equal(calls.length, 0);
+});
+
+test("P2 refuses when a global default ACL exists (schema-scoped revokes would not cover it)", async () => {
+  const { calls, report } = runP2({ readOnlyParts: { global: [[aclRow("postgres", "r", "anon", "SELECT")]] } });
+  await assert.rejects(report, probeStops("P2_GLOBAL_ACL_PRESENT"));
+  assert.equal(calls.length, 0);
+});
+
+test("P2 permission failure (401/403): reported, nothing further", async () => {
+  for (const status of [401, 403]) {
+    const { calls, report } = runP2({ response: { status, text: "denied" } });
+    const r = await report;
+    assert.equal(r.outcome, "not_authorized");
+    assert.equal(r.httpStatus, status);
+    assert.equal(calls.length, 1);
+  }
+});
+
+test("P2 HTTP failure stops with a scrubbed fixed detail and no retry", async () => {
+  const { calls, report } = runP2({ response: { status: 500, text: "boom" } });
+  await assert.rejects(report, probeStops("PROBE_HTTP_ERROR"));
+  assert.equal(calls.length, 1, "no retry");
+});
+
+test("P2 detects incomplete hardening: surviving API table/sequence defaults fail the run", async () => {
+  const stillPermissive = [...HARDENED_DETAIL, aclRow("postgres", "r", "service_role", "INSERT")];
+  const { report } = runP2({ readOnlyParts: { detail: [PERMISSIVE_DETAIL, stillPermissive] } });
+  await assert.rejects(report, probeStops("P2_HARDENING_INCOMPLETE"));
+});
+
+test("P2 detects out-of-scope drift: postgres function or supabase_admin defaults must be unchanged", async () => {
+  const fDropped = [aclRow("supabase_admin", "r", "anon", "SELECT")];
+  const { report } = runP2({ readOnlyParts: { detail: [PERMISSIVE_DETAIL, fDropped] } });
+  await assert.rejects(report, probeStops("P2_UNRELATED_ACL_CHANGED"));
+  const adminChanged = [aclRow("postgres", "f", "anon", "EXECUTE"), aclRow("supabase_admin", "r", "anon", "DELETE")];
+  const { report: r2 } = runP2({ readOnlyParts: { detail: [PERMISSIVE_DETAIL, adminChanged] } });
+  await assert.rejects(r2, probeStops("P2_UNRELATED_ACL_CHANGED"));
+});
+
+test("P2 detects a global default ACL appearing after the request", async () => {
+  const { report } = runP2({ readOnlyParts: { global: [[], [aclRow("postgres", "r", "anon", "SELECT")]] } });
+  await assert.rejects(report, probeStops("P2_GLOBAL_ACL_PRESENT"));
+});
+
+test("P2 fails closed when the committed readiness query still shows API grantees", async () => {
+  const dirty = [...READINESS_CLEAN, { objtype: "r", owner: "postgres", api_role_grantees: "service_role" }];
+  const { report } = runP2({ readOnlyParts: { readiness: [dirty] } });
+  await assert.rejects(report, probeStops("P2_HARDENING_INCOMPLETE"));
+});
+
 // ------------------------------------------------------------ CLI confirmation
 
 test("the CLI requires the exact phrase for each mode and keeps them distinct", () => {
@@ -554,7 +699,19 @@ test("the CLI requires the exact phrase for each mode and keeps them distinct", 
     guardStops("CONFIRMATION_REQUIRED"),
     "the P1 phrase does not unlock W1/W2",
   );
+  assert.throws(() => cli.parseProbeCliArgs(["--confirm-p2=nope"]), guardStops("CONFIRMATION_REQUIRED"));
+  assert.throws(
+    () => cli.parseProbeCliArgs([`--confirm-p2=${cli.CANARY_P1_CONFIRMATION_PHRASE}`]),
+    guardStops("CONFIRMATION_REQUIRED"),
+    "the P1 phrase does not unlock P2",
+  );
+  assert.throws(
+    () => cli.parseProbeCliArgs([`--confirm-p1=${cli.CANARY_P2_CONFIRMATION_PHRASE}`]),
+    guardStops("CONFIRMATION_REQUIRED"),
+    "the P2 phrase does not unlock P1",
+  );
   assert.equal(cli.parseProbeCliArgs([`--confirm=${cli.CANARY_PROBE_CONFIRMATION_PHRASE}`]), "w1w2");
   assert.equal(cli.parseProbeCliArgs([`--confirm-w3=${cli.CANARY_W3_CONFIRMATION_PHRASE}`]), "w3");
   assert.equal(cli.parseProbeCliArgs([`--confirm-p1=${cli.CANARY_P1_CONFIRMATION_PHRASE}`]), "p1");
+  assert.equal(cli.parseProbeCliArgs([`--confirm-p2=${cli.CANARY_P2_CONFIRMATION_PHRASE}`]), "p2");
 });
