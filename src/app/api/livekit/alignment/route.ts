@@ -4,6 +4,7 @@ import { getLivekitCreds, lkConfigured, livekitAgentConfig, listCloudAgents, wor
 import { splitSources } from "@/lib/kb-retrieval";
 import { AGENT_TOOLS } from "@/lib/agent-config";
 import { authorizeRequest } from "@/lib/server-auth-deps";
+import { knowledgePromptMode } from "@/lib/knowledge-runtime";
 
 // Voice Agent alignment diagnostic — answers "is what Pydent shows for this
 // agent actually what the LiveKit worker will run on the NEXT call?" by
@@ -29,8 +30,9 @@ export async function GET(req: NextRequest) {
   if (!agent) return NextResponse.json({ error: "Voice agent not found in this workspace." }, { status: 404 });
 
   // This is not a preview — it is the same function the per-call config
-  // endpoint uses, so what it returns IS what the worker receives.
-  const cfg: any = livekitAgentConfig(agent, ws, requestOrigin(req));
+  // endpoint uses (including the Phase 1C knowledge mode), so what it returns
+  // IS what the worker receives.
+  const cfg: any = livekitAgentConfig(agent, ws, requestOrigin(req), undefined, undefined, await knowledgePromptMode(ws, String(agent.id)));
 
   const creds = await getLivekitCreds(ws);
   // Which LiveKit agent THIS Pydent agent actually dispatches to — the Pydent

@@ -16,7 +16,7 @@ export function todayInTz(tz: string, now: Date = new Date()): string {
 export const DEFAULT_CLINIC_TZ = process.env.CLINIC_TIMEZONE ?? "Asia/Dubai";
 
 // Scheduling settings with safe defaults for every existing workspace: the
-// clinic_settings columns behind them arrive with migration 0061 (NOT yet
+// clinic_settings columns behind them arrive with migration 0066 (NOT yet
 // applied anywhere); until then — and for any workspace that never configures
 // them — these defaults reproduce the historical 09:00–17:00 / 30-minute grid.
 export interface SchedulingSettings {

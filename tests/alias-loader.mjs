@@ -1,6 +1,6 @@
 // Minimal module resolver so the Node test runner can import the app's modules
 // by their "@/..." tsconfig path alias, the same way Next resolves them.
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -25,7 +25,7 @@ export function resolve(specifier, context, next) {
     return next(pathToFileURL(withExtension(path.join(root, "src", specifier.slice(2)))).href, context);
   }
   if ((specifier.startsWith("./") || specifier.startsWith("../")) && context.parentURL?.startsWith("file:")) {
-    const abs = path.resolve(path.dirname(new URL(context.parentURL).pathname), specifier);
+    const abs = path.resolve(path.dirname(fileURLToPath(context.parentURL)), specifier);
     const hit = withExtension(abs);
     if (hit !== abs) return next(pathToFileURL(hit).href, context);
   }

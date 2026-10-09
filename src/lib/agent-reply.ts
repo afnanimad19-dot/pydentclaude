@@ -134,7 +134,7 @@ function buildSystem(input: AgentReplyInput, retrieval?: RetrievalResult): strin
     .join("\n\n");
 }
 
-async function callOpenRouter(apiKey: string, model: string, body: Record<string, unknown>) {
+export async function callOpenRouter(apiKey: string, model: string, body: Record<string, unknown>) {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
