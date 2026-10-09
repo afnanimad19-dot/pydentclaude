@@ -5,6 +5,7 @@ import { LIVEKIT_DEFAULTS, livekitSttLanguage, type LivekitAgentSettings } from 
 import { normalizeVoiceSettings, AGENT_CONFIG_VERSION } from "@/lib/agent-config";
 import { callEndingRules, resolveClosingMessages, applySilencePolicy } from "@/lib/call-ending";
 import { resolveWorkerTokenOrdered } from "@/lib/worker-token";
+import type { KnowledgePromptMode } from "@/lib/knowledge-runtime";
 import { todayInTz, DEFAULT_CLINIC_TZ } from "@/lib/scheduling";
 import { cloudAgentsHost, parseListAgents } from "@/lib/cloud-agents";
 
@@ -102,8 +103,12 @@ export function boundLivekitAgent(agent: any, c: LivekitCreds): { name: string; 
 // the agent's LIVE instructions + greeting so a console-built (Agent Builder)
 // agent can reference them as {{metadata.instructions}} / {{metadata.greeting}}
 // — that is what makes edits in Pydent apply to that agent in real time.
-export function builderMetadata(agent: any, ws: string, origin: string, extra?: Record<string, unknown>): string {
-  const cfg = livekitAgentConfig(agent, ws, origin);
+// `knowledgeMode` (Phase 1C) flows into the compiled instructions: "central"
+// drops the legacy knowledge blob for a Central-migrated agent; omitted =
+// legacy, byte-identical to the pre-1C output (SIP/number-routing callers are
+// deliberately unchanged this phase).
+export function builderMetadata(agent: any, ws: string, origin: string, extra?: Record<string, unknown>, knowledgeMode?: KnowledgePromptMode): string {
+  const cfg = livekitAgentConfig(agent, ws, origin, undefined, undefined, knowledgeMode);
   return JSON.stringify({
     pydentAgentId: cfg.agentId,
     ws,
@@ -178,7 +183,14 @@ export async function listCloudAgents(c: LivekitCreds): Promise<import("@/lib/cl
 // (never cached globally) from the agent row, normalized + clamped server-side
 // so a corrupt config can't reach the worker, and containing only safe values —
 // no provider keys, no Supabase keys, no LiveKit secret.
-export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: string, clinicName?: string) {
+//
+// knowledgeMode (Phase 1C): "central" = the agent has migrated to Central
+// Knowledge (it has assignments — knowledgePromptMode decides server-side), so
+// the legacy agents.knowledge_base CONTENT is NOT compiled into the prompt and
+// clinic facts come only through the search_knowledge tool. Default "legacy"
+// keeps the pre-1C prompt byte-identical for unmigrated agents and for callers
+// that don't resolve the mode.
+export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: string, clinicName?: string, knowledgeMode: KnowledgePromptMode = "legacy") {
   const vs = normalizeVoiceSettings(agent.voice_settings, {
     canBook: !!agent.can_book,
     canReschedule: !!agent.can_reschedule,
@@ -206,10 +218,21 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: 
     agent.agent_identity && `AGENT IDENTITY:\n${agent.agent_identity}`,
     agent.instructions && `TASKS:\n${agent.instructions}`,
     agent.behavior && `STYLE GUARDRAILS:\n${agent.behavior}`,
-    agent.knowledge_base && `KNOWLEDGE BASE (answer ONLY from this — the clinic's real doctors, services, prices, hours):\n${String(agent.knowledge_base).slice(0, 48000)}`,
-    agent.knowledge_base &&
-      "KNOWLEDGE GROUNDING RULES: the knowledge above may be truncated — for ANY specific clinic fact you cannot see in it (a doctor's education, expertise, experience, a service detail, a price), call the search_knowledge tool with a descriptive query (include the doctor's full name for follow-ups like 'where did she study'). " +
-        "If the fact is not in the knowledge or the search result, say you don't have that detail on hand and offer to check with the team — NEVER guess. Never invent a doctor's nationality, university, qualifications, years of experience, prices, insurance coverage or availability; a doctor's languages or place of study are NOT their nationality.",
+    // Knowledge (Phase 1C): a Central-migrated agent gets NO knowledge content
+    // in the prompt — clinic facts come only through search_knowledge (which
+    // serves its assigned Central Knowledge). A legacy agent keeps the exact
+    // pre-1C blob injection and grounding text.
+    ...(knowledgeMode === "central"
+      ? [
+          "KNOWLEDGE: the clinic's real facts (doctors, services, prices, hours, insurance, policies) live in the clinic knowledge base, reached ONLY through the search_knowledge tool. For ANY clinic-specific question, call search_knowledge with a descriptive query (include the doctor's full name for follow-ups like 'where did she study') and answer ONLY from its result.",
+          "KNOWLEDGE GROUNDING RULES: if search_knowledge returns no answer, say you don't have that detail on hand and offer to check with the team — NEVER guess. Never invent a doctor's nationality, university, qualifications, years of experience, prices, insurance coverage or availability; a doctor's languages or place of study are NOT their nationality.",
+        ]
+      : [
+          agent.knowledge_base && `KNOWLEDGE BASE (answer ONLY from this — the clinic's real doctors, services, prices, hours):\n${String(agent.knowledge_base).slice(0, 48000)}`,
+          agent.knowledge_base &&
+            "KNOWLEDGE GROUNDING RULES: the knowledge above may be truncated — for ANY specific clinic fact you cannot see in it (a doctor's education, expertise, experience, a service detail, a price), call the search_knowledge tool with a descriptive query (include the doctor's full name for follow-ups like 'where did she study'). " +
+              "If the fact is not in the knowledge or the search result, say you don't have that detail on hand and offer to check with the team — NEVER guess. Never invent a doctor's nationality, university, qualifications, years of experience, prices, insurance coverage or availability; a doctor's languages or place of study are NOT their nationality.",
+        ]),
     (agent.first_message_mode ?? "assistant_first") !== "user_first"
       ? "OPENING: your configured opening line is spoken automatically when the call starts — do NOT introduce yourself again or repeat a greeting in your first reply; answer the caller directly."
       : "OPENING: the caller speaks first — wait for them, then greet briefly once and help.",
@@ -251,6 +274,8 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: 
     agentId: String(agent.id),
     agentName: String(agent.name),
     ws,
+    // Observability only (safe metadata; the worker ignores unknown keys).
+    knowledgePromptMode: knowledgeMode,
     // Compiled prompt + the raw sections (kept separate for debugging//audit).
     instructions,
     promptSections: {
@@ -365,6 +390,12 @@ export async function resolveWorkerToken(token: unknown): Promise<{ ok: boolean;
       return data?.workspace_id ? String(data.workspace_id) : null;
     },
   });
+}
+
+/** True when this workspace has provisioned its OWN worker token (env ignored). */
+export async function workspaceHasOwnWorkerToken(ws: string): Promise<boolean> {
+  const { data } = await supabase.from("livekit_config").select("worker_token").eq("workspace_id", ws).maybeSingle();
+  return !!String(data?.worker_token ?? "").trim();
 }
 
 export async function workerTokenConfigured(ws: string | null | undefined): Promise<boolean> {

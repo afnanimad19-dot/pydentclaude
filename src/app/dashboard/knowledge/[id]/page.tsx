@@ -12,6 +12,7 @@ import { ArrowLeft, Copy, FileText, FlaskConical, Globe, Pencil, RefreshCw, Tras
 import { Card, StatusBadge } from "@/components/ui";
 import { toast } from "@/components/toast";
 import {
+  AssignedAgentsEditor,
   ConfirmModal,
   FileUploader,
   LoadingRows,
@@ -265,6 +266,13 @@ export default function KnowledgeResourcePage() {
           </div>
         )}
       </Card>
+
+      {!readOnly && (
+        <Card className="mb-4 p-4">
+          <h2 className="mb-3 text-sm font-semibold text-ink-900">Assigned agents</h2>
+          <AssignedAgentsEditor resourceId={r.id} onChanged={() => void load()} onForbidden={forbidden} />
+        </Card>
+      )}
 
       {!readOnly && (
         <Card className="mb-4 p-4">

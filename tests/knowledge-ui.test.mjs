@@ -446,13 +446,18 @@ test("security: UI never touches Supabase / server modules; all Central KB acces
   assert.match(client, /\(await import\("@\/lib\/auth-fetch"\)\)\.authFetch\(input, init\)/);
   assert.match(client, /const BASE = "\/api\/knowledge";/);
   const builders = client.slice(client.indexOf("export function createKnowledgeClient"));
-  assert.doesNotMatch(builders, /workspace|agentId|\bmodel\b|prompt/i, "no request builder sends these");
+  // agentId became a legitimate request field in Phase 1A (assignment writer);
+  // the workspace, model and prompt still never come from the browser.
+  assert.doesNotMatch(builders, /workspace|\bmodel\b|prompt/i, "no request builder sends these");
   // Components call only the client (no raw URLs to the API).
   for (const f of [LIST, DETAIL, SHARED]) assert.doesNotMatch(code(f), /\/api\//, f);
   // No other browser code reads the Central KB tables.
   const browserFiles = fs.readdirSync(path.join(root, "src"), { recursive: true }).map(String).filter((p) => /\.(tsx?)$/.test(p) && !p.startsWith("app/api") && !p.startsWith("app\\api"));
   for (const p of browserFiles) {
-    if (p.endsWith("knowledge-server.ts")) continue;
+    // The two SERVER-ONLY Central KB modules: the store (knowledge-server) and
+    // the Phase 1B runtime reader (knowledge-runtime). Nothing else may name
+    // the tables.
+    if (p.endsWith("knowledge-server.ts") || p.endsWith("knowledge-runtime.ts")) continue;
     assert.doesNotMatch(src(path.join("src", p)), /from\(["']knowledge_(resources|documents)["']\)|from\(["']agent_knowledge_resources["']\)/, p);
   }
 });
@@ -483,5 +488,7 @@ test("no runtime integration / out-of-scope features: agents, LiveKit, Vapi, Bui
   ]) {
     assert.doesNotMatch(src(f), /knowledge-client|knowledge-ui|knowledge-shared|\/dashboard\/knowledge|\/api\/knowledge/, f);
   }
-  for (const f of UI_FILES) assert.doesNotMatch(code(f), /effectiveKnowledge|embedding|pgvector|cron|setInterval\(|assignAgent/i, f);
+  // assignAgent left this list in Phase 1A: assignment management is now an
+  // approved UI feature. The runtime files above still never touch Central KB.
+  for (const f of UI_FILES) assert.doesNotMatch(code(f), /effectiveKnowledge|embedding|pgvector|cron|setInterval\(/i, f);
 });

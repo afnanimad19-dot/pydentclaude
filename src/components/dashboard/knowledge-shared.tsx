@@ -6,7 +6,7 @@
 // agent, model or prompt. Server authorization stays authoritative — hidden
 // controls are a convenience, not a security boundary.
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, FileUp, FlaskConical, Globe, Info, Loader2, Search } from "lucide-react";
 import { Card, StatusBadge } from "@/components/ui";
 import { Modal, inputCls } from "@/components/modal";
@@ -15,6 +15,7 @@ import {
   type ApiError,
   type KnowledgeDocument,
   type KnowledgeResource,
+  type ResourceAgents,
   type ResourceType,
   type TesterResult,
 } from "@/lib/knowledge-client";
@@ -446,6 +447,127 @@ export function UrlAdder({ resourceId, documents, onChanged, onForbidden }: { re
       )}
       {notices.length > 0 && <div className="space-y-1">{notices.map((n, i) => <NoticeLine key={i} notice={n} />)}</div>}
     </form>
+  );
+}
+
+/**
+ * Assigned-agents editor (Phase 1A): which of the workspace's agents this
+ * resource is assigned to. Only the agent id is ever sent — the server resolves
+ * the workspace from the session and refuses any agent or resource outside it.
+ */
+export function AssignedAgentsEditor({ resourceId, onChanged, onForbidden }: { resourceId: string; onChanged: () => void; onForbidden: () => void }) {
+  const id = useId();
+  const [agents, setAgents] = useState<ResourceAgents | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [busy, setBusy] = useState<string | null>(null); // "assign" or the agent id being unassigned
+  const [notice, setNotice] = useState<Notice | null>(null);
+
+  const load = useCallback(async () => {
+    const r = await knowledgeClient.listAgents(resourceId);
+    if (r.ok) {
+      setAgents(r.data);
+      setFailed(false);
+    } else {
+      setAgents(null);
+      setFailed(true);
+    }
+  }, [resourceId]);
+
+  useEffect(() => {
+    // The agent list is this editor's external data source.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
+
+  async function assign(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy || !selected) return;
+    setBusy("assign");
+    setNotice(null);
+    const r = await knowledgeClient.assignAgent(resourceId, selected);
+    setBusy(null);
+    if (isForbiddenRole(r)) return onForbidden();
+    if (!r.ok) return setNotice({ tone: "error", text: actionError(r) });
+    setSelected("");
+    setNotice({ tone: "success", text: r.data.alreadyAssigned ? `${r.data.agent.name} was already assigned.` : `Assigned ${r.data.agent.name}.` });
+    await load();
+    onChanged();
+  }
+
+  async function unassign(agentId: string, name: string) {
+    if (busy) return;
+    setBusy(agentId);
+    setNotice(null);
+    const r = await knowledgeClient.unassignAgent(resourceId, agentId);
+    setBusy(null);
+    if (isForbiddenRole(r)) return onForbidden();
+    if (!r.ok) return setNotice({ tone: "error", text: actionError(r) });
+    setNotice({ tone: "success", text: `Unassigned ${name}.` });
+    await load();
+    onChanged();
+  }
+
+  if (failed) {
+    return (
+      <p className="text-sm text-ink-500">
+        Couldn&apos;t load the agent list.{" "}
+        <button type="button" onClick={() => void load()} className="font-medium text-brand-600">
+          Retry
+        </button>
+      </p>
+    );
+  }
+  if (!agents) return <p className="text-sm text-ink-500">Loading agents…</p>;
+
+  const none = agents.assignedAgents.length === 0 && agents.availableAgents.length === 0;
+  return (
+    <div className="space-y-3">
+      {none ? (
+        <p className="text-sm text-ink-500">This workspace has no agents yet. Create an agent first, then assign this resource to it here.</p>
+      ) : (
+        <>
+          {agents.assignedAgents.length === 0 ? (
+            <p className="text-sm text-ink-500">Not assigned to any agent yet.</p>
+          ) : (
+            <ul className="divide-y divide-ink-100">
+              {agents.assignedAgents.map((a) => (
+                <li key={a.id} className="flex items-center justify-between gap-2 py-2">
+                  <span className="min-w-0 break-words text-sm font-medium text-ink-800">{a.name}</span>
+                  <button type="button" onClick={() => void unassign(a.id, a.name)} disabled={!!busy} className={`${btnSecondary} shrink-0 text-rose-600`}>
+                    {busy === a.id ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Unassign
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {agents.availableAgents.length > 0 && (
+            <form onSubmit={assign} className="flex flex-col gap-2 sm:flex-row sm:items-end" noValidate>
+              <div className="min-w-0 flex-1">
+                <label htmlFor={`${id}-agent`} className="mb-1.5 block text-sm font-medium text-ink-700">
+                  Assign an agent
+                </label>
+                <select id={`${id}-agent`} className={inputCls} value={selected} onChange={(e) => setSelected(e.target.value)} disabled={!!busy}>
+                  <option value="">Choose an agent…</option>
+                  {agents.availableAgents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button type="submit" disabled={!!busy || !selected} className={btnPrimary}>
+                {busy === "assign" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null} Assign
+              </button>
+            </form>
+          )}
+          {agents.availableAgents.length === 0 && agents.assignedAgents.length > 0 && (
+            <p className="text-xs text-ink-400">Every agent in this workspace is already assigned.</p>
+          )}
+        </>
+      )}
+      {notice && <NoticeLine notice={notice} />}
+    </div>
   );
 }
 

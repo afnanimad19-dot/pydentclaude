@@ -30,8 +30,11 @@ const SECRET = "CONFIDENTIAL-KNOWLEDGE-BODY";
 // ------------------------------------------------------------ in-memory store (0065 semantics)
 
 function makeStore() {
-  const db = { resources: [], documents: [], assignments: [], agents: [] };
+  const db = { resources: [], documents: [], assignments: [], agents: [], chunks: [] };
   const calls = [];
+  // Phase 2B reindex calls, recorded SEPARATELY from `calls`: chunk indexing is
+  // additive and outside the A4.1 "exactly one persistence call" contract.
+  const reindexes = [];
   const faults = {};
   let missing = false;
   const restore = (snap) => { for (const k of Object.keys(db)) db[k] = snap[k]; };
@@ -68,6 +71,7 @@ function makeStore() {
       if (db.assignments.some((a) => a.resource_id === id)) return "assigned"; // NO ACTION FK
       db.resources.splice(i, 1);
       db.documents = db.documents.filter((d) => d.resource_id !== id); // cascade
+      db.chunks = db.chunks.filter((c) => c.resource_id !== id); // 0068 cascade
       return "deleted";
     },
     async listDocuments(ws, rid, { withContent }) {
@@ -112,6 +116,7 @@ function makeStore() {
             if ("error" in c) d.error = c.error;
           } else if (c.op === "delete") {
             db.documents.splice(db.documents.indexOf(d), 1);
+            db.chunks = db.chunks.filter((k) => k.document_id !== d.id); // 0068 FK cascade
             changed = true;
           } else throw pgError("22023");
           results.push({ op: c.op, id: d.id, applied: true });
@@ -163,8 +168,21 @@ function makeStore() {
         .filter((a) => a.workspace_id === ws && (!ids || ids.includes(a.resource_id)))
         .map((a) => ({ resource_id: a.resource_id, agent_id: a.agent_id, agent_name: db.agents.find((g) => g.id === a.agent_id)?.name ?? "" }));
     },
+    // knowledge_reindex_document (0068): lock-free mirror of the hash check +
+    // transactional chunk-set swap. Never throws (indexing is additive).
+    async reindexDocument(ws, documentId, contentHash, chunks) {
+      reindexes.push({ ws, documentId, contentHash, chunks: clone(chunks) });
+      if (missing) return { outcome: "unavailable" }; // 0065 missing ⇒ 0068 missing too
+      const d = db.documents.find((x) => x.workspace_id === ws && x.id === documentId);
+      if (!d) return { outcome: "not_found" };
+      if (d.content_hash !== contentHash) return { outcome: "stale_input" };
+      if (chunks.some((c, i) => c.chunk_index !== i)) return { outcome: "error" }; // the 0068 ordinal check (22023)
+      db.chunks = db.chunks.filter((c) => c.document_id !== documentId);
+      chunks.forEach((c) => db.chunks.push({ ...clone(c), workspace_id: ws, resource_id: d.resource_id, document_id: documentId, content_hash: d.content_hash }));
+      return { outcome: "replaced", chunks: chunks.length };
+    },
   };
-  return { store, db, calls, faults, setMissing: (v) => { missing = v; } };
+  return { store, db, calls, reindexes, faults, setMissing: (v) => { missing = v; } };
 }
 
 // ------------------------------------------------------------ harness
@@ -930,7 +948,8 @@ test("server store: every query is scoped by workspace_id; document writes only 
   // knowledge_documents is only READ directly; every write is one RPC call.
   for (const q of queries.filter((x) => /\.from\(DOCS\)/.test(x))) assert.doesNotMatch(q, /\.(insert|update|delete|upsert)\(/, q.slice(0, 80));
   const rpcs = [...s.matchAll(/supabase\.rpc\("([a-z_]+)", \{([^}]*)\}/g)];
-  assert.deepEqual(rpcs.map((m) => m[1]).sort(), ["knowledge_apply_document_changes", "knowledge_duplicate_resource"]);
+  // Phase 2B adds the one chunk-indexing RPC (0068) to the two 0065 functions.
+  assert.deepEqual(rpcs.map((m) => m[1]).sort(), ["knowledge_apply_document_changes", "knowledge_duplicate_resource", "knowledge_reindex_document"]);
   for (const m of rpcs) assert.match(m[2], /p_workspace_id: ws,/, `${m[1]} gets the SESSION workspace`);
   // The application never computes or writes content_version / status.
   const code = (f) => src(f).replace(/^\s*\/\/[^\n]*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -941,7 +960,13 @@ test("server store: every query is scoped by workspace_id; document writes only 
   assert.doesNotMatch(code("src/lib/knowledge-service.ts"), /store\.(insertDocument|updateDocument|deleteDocument)|syncResource|expectedVersion/);
   assert.match(s, /throw new KnowledgeMigrationMissing\(\)/);
   assert.match(s, /error\.code === "42P01" \|\| error\.code === "PGRST205" \|\| error\.code === "42883" \|\| error\.code === "PGRST202"/);
-  assert.doesNotMatch(s, /console\./);
+  // Phase 2B exception to "no console in the store": reindex outcomes are
+  // observable via ONE [kb-index] metadata line (ids/outcome/count — the same
+  // convention as [kb-retrieval]); knowledge CONTENT is still never logged.
+  const consoles = s.match(/console\.[a-z]+\([^;]*/g) ?? [];
+  assert.equal(consoles.length, 1, "only the [kb-index] line logs");
+  assert.match(consoles[0], /\[kb-index\]/);
+  assert.doesNotMatch(consoles[0], /content|source_label|heading|\bc\./, "the [kb-index] line never logs chunk content");
   assert.doesNotMatch(src("src/lib/knowledge-service.ts"), /console\./);
 });
 

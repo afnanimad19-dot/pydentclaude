@@ -7,6 +7,7 @@
 
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { retrieveKnowledge } from "@/lib/kb-retrieval";
+import { loadAgentCentralKnowledge, type CentralKnowledgeState, type CentralKnowledgeLoader } from "@/lib/knowledge-runtime";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -125,35 +126,56 @@ export interface KnowledgeResult {
   found: boolean;
   text: string;
   sources: { source: string; id: number; score: number }[];
+  /** Which store answered this turn (Phase 1B): assigned Central Knowledge, or the legacy per-agent blob. */
+  sourceMode?: "central" | "legacy";
 }
 
-// The per-turn knowledge retrieval both channels share: the SAME retrieval
-// code the chat agents use (lib/kb-retrieval.ts) over the agent's stored
-// knowledge base. Returns top chunks with their source names.
+// The per-turn knowledge retrieval both channels share: the SAME lexical
+// retrieval code the chat agents use (lib/kb-retrieval.ts).
+//
+// SOURCE MODE (Phase 1B/1C, deterministic — the two stores are never merged):
+//   the agent HAS Central Knowledge assignments (the Phase 1C migration
+//   signal) → central mode: its usable (ready, non-blank) documents are
+//   searched, and when nothing is usable yet the tool truthfully reports no
+//   information — never the stale legacy blob. No assignments (or the
+//   assignment lookup itself failed) → the legacy agents.knowledge_base blob
+//   is searched exactly as before. The ranking, budgets, top-K and the spoken
+//   wrapper are identical in both modes, so the tool contract (and the worker)
+//   see no difference.
 export async function searchKnowledgeCore(
-  agent: { name?: string | null; knowledge_base?: string | null },
+  agent: { id?: string | null; workspace_id?: string | null; name?: string | null; knowledge_base?: string | null },
   a: { query?: unknown; context?: unknown },
-  channel = "voice"
+  channel = "voice",
+  loadCentral: CentralKnowledgeLoader = loadAgentCentralKnowledge
 ): Promise<KnowledgeResult> {
   const query = String(a.query ?? "").trim();
   if (!query) return { success: false, error: "missing_query", found: false, text: "", sources: [] };
   const started = Date.now();
-  const r = retrieveKnowledge(String(agent.knowledge_base ?? ""), [query, String(a.context ?? "")], {
+  let central: CentralKnowledgeState = { assigned: false, knowledge: null };
+  try {
+    central = await loadCentral(String(agent.workspace_id ?? ""), String(agent.id ?? ""));
+  } catch {
+    central = { assigned: false, knowledge: null }; // migration state unknowable → legacy keeps the call alive
+  }
+  const sourceMode: "central" | "legacy" = central.assigned ? "central" : "legacy";
+  const kb = central.assigned ? central.knowledge?.text ?? "" : String(agent.knowledge_base ?? "");
+  const r = retrieveKnowledge(kb, [query, String(a.context ?? "")], {
     budget: 6000,
     relevantBudget: 6000,
     topK: 4,
   });
   // Small KBs come back whole ("full" mode) — trim to the budget for a voice turn.
   const text = r.mode === "full" ? r.text.slice(0, 6000) : r.text;
-  // Observability: sources + scores + latency, never the knowledge text itself.
+  // Observability: source mode, counts, sources + scores + latency — never the knowledge text itself.
   console.log(
-    `[kb-retrieval] agent=${agent.name} channel=${channel} mode=${r.mode} kb_chars=${r.totalKbChars} latency_ms=${Date.now() - started} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 4).join(", ") || "(full)"}`
+    `[kb-retrieval] agent=${agent.name} channel=${channel} source=${sourceMode}${central.assigned ? ` resources=${central.knowledge?.resources ?? 0} documents=${central.knowledge?.documents ?? 0}` : ""} mode=${r.mode} kb_chars=${r.totalKbChars} latency_ms=${Date.now() - started} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 4).join(", ") || "(full)"}`
   );
   return {
     success: true,
     found: !!text.trim(),
     text,
     sources: r.chunks.slice(0, 4).map((c) => ({ source: c.source, id: c.id, score: c.score })),
+    sourceMode,
   };
 }
 
