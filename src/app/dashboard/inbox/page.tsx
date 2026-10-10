@@ -6,6 +6,7 @@ import { Bot, Send, Sparkles, UserCheck, Inbox as InboxIcon, Users, CircleSlash,
 import { Card, ChannelBadge, Avatar, StatusBadge } from "@/components/ui";
 import { BookingModal } from "@/components/dashboard/booking-modal";
 import { toast } from "@/components/toast";
+import { authFetch } from "@/lib/auth-fetch";
 import {
   fetchAgents,
   fetchAssignments,
@@ -30,7 +31,6 @@ import {
   type WaMessage,
   type TeamMember,
   type WaTemplate,
-  getWorkspaceId,
 } from "@/lib/db";
 import { conversations, channelMeta, patients as mockPatients, type Channel, type Message, type Patient } from "@/lib/mock-data";
 
@@ -466,12 +466,13 @@ export default function InboxPage() {
     setAiBusy(true);
     setAiError(null);
     try {
-      const res = await fetch("/api/chat", {
+      // authFetch: /api/chat authorizes server-side (session → workspace) and
+      // resolves Central Knowledge from agentId — never from anything we send.
+      const res = await authFetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: agent.model,
-          ws: (await getWorkspaceId()) ?? undefined,
+          agentId: agent.id,
           agentName: agent.name,
           agentIdentity: agent.agentIdentity,
           instructions: agent.instructions,

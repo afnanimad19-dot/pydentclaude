@@ -60,7 +60,6 @@ import {
   appendTeamChatMessage,
   deleteTeamChat,
   fetchVoiceProvider,
-  getWorkspaceId,
   type VoiceProvider,
   type AiAgent,
   type DataSource,
@@ -1898,12 +1897,13 @@ export function TestChatModal({ agent, onClose }: { agent: AiAgent; onClose: () 
     if (!cid) { cid = await createTeamChat(key, text.slice(0, 60)); setChatId(cid); refreshChats(); }
     if (cid) appendTeamChatMessage(cid, "user", text);
     try {
-      const res = await fetch("/api/chat", {
+      // authFetch: /api/chat authorizes server-side (session → workspace) and
+      // resolves Central Knowledge from agentId — never from anything we send.
+      const res = await authFetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: agent.model,
-          ws: (await getWorkspaceId()) ?? undefined,
+          agentId: agent.id || undefined,
           debug: true, // retrieval metadata comes back and is logged to the console
           agentName: agent.name,
           agentIdentity: agent.agentIdentity,
