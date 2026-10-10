@@ -213,3 +213,95 @@ export async function knowledgePromptMode(ws: string, agentId: string, probe: As
   if ("assigned" in r) return r.assigned ? "central" : "legacy";
   return centralTablesMissing(r.error) ? "legacy" : "central";
 }
+
+// ------------------------------------------------------------------ chunk retrieval (Phase 2C)
+
+/** One authoritative chunk row returned by knowledge_match_chunks (0068). */
+export interface ChunkMatch {
+  resourceId: string;
+  documentId: string;
+  chunkId: string;
+  chunkIndex: number;
+  sourceLabel: string;
+  heading: string;
+  content: string;
+  score: number;
+}
+
+/**
+ * Result of one chunk search. `searchedChunks` is the agent's AUTHORITATIVE
+ * chunk universe — assigned resources → 'ready' documents → chunks whose
+ * content_hash matches the document (the 0068 join re-proves all of it).
+ * The operator-approved semantics hang off that number:
+ *   • ok, searchedChunks > 0, matches present → answer from the chunks;
+ *   • ok, searchedChunks > 0, no matches     → GENUINE no-match: retrieval is
+ *     never broadened past what the index already covers;
+ *   • ok, searchedChunks === 0 → no usable index for this agent (not an
+ *     error) → the caller keeps the existing assigned-document retrieval;
+ *   • ok: false → the RPC itself failed (0068 missing, network, bad shape)
+ *     → controlled fallback to the existing authorized path.
+ */
+export type ChunkMatchResult =
+  | { ok: true; searchedChunks: number; matches: ChunkMatch[] }
+  | { ok: false; error: "rpc_failed" | "bad_response" };
+
+export type ChunkMatcher = (ws: string, agentId: string, query: string, topK?: number) => Promise<ChunkMatchResult>;
+
+const asStr = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/**
+ * Strict parse of the function's jsonb. Any malformed row fails the WHOLE
+ * response (ok: false) — a half-understood result must never masquerade as a
+ * genuine no-match, so shape errors route callers to the fallback path.
+ */
+export function parseChunkMatchResponse(data: unknown): ChunkMatchResult {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return { ok: false, error: "bad_response" };
+  const o = data as Record<string, unknown>;
+  const universe = typeof o.searched_chunks === "number" ? o.searched_chunks : Number.NaN;
+  if (!Number.isFinite(universe) || universe < 0) return { ok: false, error: "bad_response" };
+  if (!Array.isArray(o.matches)) return { ok: false, error: "bad_response" };
+  const matches: ChunkMatch[] = [];
+  for (const m of o.matches) {
+    if (!m || typeof m !== "object" || Array.isArray(m)) return { ok: false, error: "bad_response" };
+    const r = m as Record<string, unknown>;
+    const content = asStr(r.content);
+    const score = typeof r.score === "number" ? r.score : Number.NaN;
+    if (!asStr(r.chunk_id) || !content.trim() || !Number.isFinite(score)) return { ok: false, error: "bad_response" };
+    matches.push({
+      resourceId: asStr(r.resource_id),
+      documentId: asStr(r.document_id),
+      chunkId: asStr(r.chunk_id),
+      chunkIndex: typeof r.chunk_index === "number" && Number.isFinite(r.chunk_index) ? r.chunk_index : 0,
+      sourceLabel: asStr(r.source_label),
+      heading: asStr(r.heading),
+      content,
+      score,
+    });
+  }
+  return { ok: true, searchedChunks: universe, matches };
+}
+
+/**
+ * Tenant+agent-scoped chunk search via knowledge_match_chunks (0068, service
+ * role). Both ids come from the server's own authenticated context — never
+ * from tool arguments or request bodies — and the SQL re-proves workspace
+ * agreement on every join, so an unassigned or foreign resource can never
+ * contribute a row. Never throws, never logs knowledge content.
+ */
+export async function matchAgentChunks(ws: string, agentId: string, query: string, topK = 8): Promise<ChunkMatchResult> {
+  // Blank identity can never have an index — same semantics as universe 0,
+  // and the caller's existing path already handles blank ids correctly.
+  if (!ws || !agentId) return { ok: true, searchedChunks: 0, matches: [] };
+  try {
+    const { data, error } = await supabase.rpc("knowledge_match_chunks", {
+      p_workspace_id: ws,
+      p_agent_id: agentId,
+      p_query: String(query ?? ""),
+      p_top_k: Math.max(1, Math.min(Math.trunc(topK) || 8, 20)),
+    });
+    if (error) return { ok: false, error: "rpc_failed" };
+    return parseChunkMatchResponse(data);
+  } catch {
+    return { ok: false, error: "rpc_failed" };
+  }
+}
