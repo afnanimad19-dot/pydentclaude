@@ -29,6 +29,13 @@ export interface AgentReplyInput {
   patientContext?: string;
   sessionNote?: string;
   messages: { role: "user" | "assistant"; content: string }[];
+  /**
+   * SERVER-ONLY (Phase 2C): a retrieval computed by a trusted caller AFTER
+   * server-side authorization (centralRetrievalForReply — webhook/session-
+   * resolved agent). When set it replaces the legacy knowledgeBase retrieval
+   * for this turn. Routes must NEVER copy this field from a request body.
+   */
+  retrieval?: RetrievalResult;
 }
 
 export interface BookingArgs {
@@ -308,7 +315,7 @@ export async function generateAgentReply(
   // OpenRouter key is only required for OpenRouter-routed models.
   if (!apiKey && !isLivekitModel(model)) return { error: "OPENROUTER_API_KEY is not configured on the server.", status: 503 };
   const opts = { ws: input.ws, agentName: input.agentName };
-  const retrieval = runRetrieval(input);
+  const retrieval = input.retrieval ?? runRetrieval(input);
   try {
     const data = await resilientChat(apiKey, model, {
       messages: [{ role: "system", content: buildSystem(input, retrieval) }, ...input.messages.slice(-20)],
@@ -318,8 +325,12 @@ export async function generateAgentReply(
     // Last resort: shrink the knowledge section so the prompt fits the
     // provider's remaining allowance and try once more on the SAME provider —
     // now keeping the RELEVANT chunks instead of blindly keeping the first 6k.
+    // An INJECTED (Central) retrieval is trimmed, never swapped for the legacy
+    // blob — the knowledge source of a turn must not change mid-request.
     try {
-      const slimR = retrieveKnowledge(input.knowledgeBase ?? "", queriesFromMessages(input.messages), { budget: 6000, relevantBudget: 6000, topK: 4 });
+      const slimR = input.retrieval
+        ? { ...input.retrieval, text: input.retrieval.text.slice(0, 6000), contextChars: Math.min(input.retrieval.contextChars, 6000) }
+        : retrieveKnowledge(input.knowledgeBase ?? "", queriesFromMessages(input.messages), { budget: 6000, relevantBudget: 6000, topK: 4 });
       const slimBody = { messages: [{ role: "system", content: buildSystem(input, slimR) }, ...input.messages.slice(-12)] };
       const data = isLivekitModel(model)
         ? await callLivekitChat(model, slimBody, input.ws)
@@ -426,7 +437,7 @@ export async function generateAgentReplyWithTools(
   const tools = toolsFor(input.capabilities ?? {});
   if (tools.length === 0) return generateAgentReply(input);
   const opts = { ws: input.ws, agentName: input.agentName };
-  const retrieval = runRetrieval(input);
+  const retrieval = input.retrieval ?? runRetrieval(input);
 
   const messages: any[] = [{ role: "system", content: buildSystem(input, retrieval) }, ...input.messages.slice(-20)];
   try {

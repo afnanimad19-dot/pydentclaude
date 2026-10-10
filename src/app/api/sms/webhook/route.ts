@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { generateAgentReply, generateAgentReplyWithTools, returningGreetingNote } from "@/lib/agent-reply";
+import { centralRetrievalForReply } from "@/lib/agent-tools-core";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
 import { sendAgentEmail } from "@/lib/email-send";
 import { sendSms } from "@/lib/sms-send";
@@ -47,6 +48,15 @@ async function autoReply(ws: string, conversationId: string, from: string, name:
   }
   const sessionNote = upcomingAppt ? returningGreetingNote({ name, appt: upcomingAppt, known }) : "";
 
+  const replyMessages = history.map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body }));
+  // Central Knowledge (Phase 2C): ONE retrieval per turn, from the SERVER-
+  // resolved workspace + agent (webhook → conversation → agent — nothing here
+  // comes from the sender). null = legacy agent → knowledgeBase path unchanged.
+  const central = await centralRetrievalForReply(
+    { id: agent.id, workspace_id: ws, name: agent.name, knowledge_base: agent.knowledge_base },
+    replyMessages,
+    "sms"
+  );
   const replyInput = {
     model: agent.model ?? "openai/gpt-4o-mini",
     // Workspace id lets a "livekit:" model authenticate with this clinic's own
@@ -61,7 +71,8 @@ async function autoReply(ws: string, conversationId: string, from: string, name:
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
     patientContext: `Contact name: ${name}. Contact phone: ${from}.${apptContext} Keep replies short — this is SMS.`,
     sessionNote,
-    messages: history.map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body })),
+    messages: replyMessages,
+    ...(central ? { retrieval: central.retrieval } : {}),
   };
 
   const bookingCtx: BookingCtx = { ws, patientId, name, phone: from, source: "sms", bookedBy: agent.name };

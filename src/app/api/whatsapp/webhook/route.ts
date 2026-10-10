@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { generateAgentReply, generateAgentReplyWithTools, returningGreetingNote } from "@/lib/agent-reply";
+import { centralRetrievalForReply } from "@/lib/agent-tools-core";
 import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPageId } from "@/lib/wa-send";
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
 import { sendAgentEmail } from "@/lib/email-send";
@@ -426,6 +427,15 @@ async function storeInbound(
     sessionNote = returningGreetingNote({ name, appt: upcomingAppt, known });
   }
 
+  const replyMessages = (history ?? []).map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body }));
+  // Central Knowledge (Phase 2C): ONE retrieval per turn, from the SERVER-
+  // resolved workspace + agent (webhook → conversation → agent — nothing here
+  // comes from the sender). null = legacy agent → knowledgeBase path unchanged.
+  const central = await centralRetrievalForReply(
+    { id: agent.id, workspace_id: ws, name: agent.name, knowledge_base: agent.knowledge_base },
+    replyMessages,
+    "whatsapp"
+  );
   const replyInput = {
     model: agent.model ?? "openai/gpt-4o-mini",
     // Workspace id lets a "livekit:" model authenticate with this clinic's own
@@ -440,7 +450,8 @@ async function storeInbound(
     capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
     patientContext: `Contact name: ${name}. Contact phone: ${contactId}.${apptContext}`,
     sessionNote,
-    messages: (history ?? []).map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body })),
+    messages: replyMessages,
+    ...(central ? { retrieval: central.retrieval } : {}),
   };
 
   const useTools = agent.can_book || agent.can_reschedule || agent.can_cancel;
