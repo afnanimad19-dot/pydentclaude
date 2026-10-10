@@ -110,7 +110,7 @@ export function chunkKnowledge(kb: string): KbChunk[] {
   return splitSources(kb).flatMap((s) => chunkSource(s.name, s.text));
 }
 
-function expandQuery(q: string): string {
+export function expandQuery(q: string): string {
   const extra = tokenize(q).map((t) => QUERY_ALIASES[t]).filter(Boolean).join(" ");
   return extra ? `${q} ${extra}` : q;
 }

@@ -6,8 +6,15 @@
 // cores changes nothing the worker sees.
 
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
-import { retrieveKnowledge } from "@/lib/kb-retrieval";
-import { loadAgentCentralKnowledge, type CentralKnowledgeState, type CentralKnowledgeLoader } from "@/lib/knowledge-runtime";
+import { retrieveKnowledge, tokenize, expandQuery, queriesFromMessages, type RetrievalResult } from "@/lib/kb-retrieval";
+import {
+  loadAgentCentralKnowledge,
+  matchAgentChunks,
+  type CentralKnowledgeState,
+  type CentralKnowledgeLoader,
+  type ChunkMatcher,
+  type ChunkMatch,
+} from "@/lib/knowledge-runtime";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -126,57 +133,217 @@ export interface KnowledgeResult {
   found: boolean;
   text: string;
   sources: { source: string; id: number; score: number }[];
-  /** Which store answered this turn (Phase 1B): assigned Central Knowledge, or the legacy per-agent blob. */
-  sourceMode?: "central" | "legacy";
+  /** Which store answered this turn: the 0068 chunk index, the assigned
+   *  Central documents (lexical), or the legacy per-agent blob. */
+  sourceMode?: "central-chunks" | "central" | "legacy";
 }
 
-// The per-turn knowledge retrieval both channels share: the SAME lexical
-// retrieval code the chat agents use (lib/kb-retrieval.ts).
-//
-// SOURCE MODE (Phase 1B/1C, deterministic — the two stores are never merged):
-//   the agent HAS Central Knowledge assignments (the Phase 1C migration
-//   signal) → central mode: its usable (ready, non-blank) documents are
-//   searched, and when nothing is usable yet the tool truthfully reports no
-//   information — never the stale legacy blob. No assignments (or the
-//   assignment lookup itself failed) → the legacy agents.knowledge_base blob
-//   is searched exactly as before. The ranking, budgets, top-K and the spoken
-//   wrapper are identical in both modes, so the tool contract (and the worker)
-//   see no difference.
-export async function searchKnowledgeCore(
+export const FTS_MAX_TERMS = 24;
+
+/**
+ * Shape conversation text into a websearch_to_tsquery-friendly query.
+ * websearch ANDs plain words, so a whole sentence would match almost nothing;
+ * instead the SAME tokenization + abbreviation expansion the lexical engine
+ * uses produces distinct terms OR-ed together — ts_rank_cd still rewards the
+ * chunks that match more of them.
+ */
+export function ftsQueryFor(queries: readonly string[]): string {
+  const seen = new Set<string>();
+  for (const q of queries) {
+    if (!q || !q.trim()) continue;
+    for (const t of tokenize(expandQuery(q))) {
+      if (seen.size >= FTS_MAX_TERMS) break;
+      seen.add(t);
+    }
+    if (seen.size >= FTS_MAX_TERMS) break;
+  }
+  return [...seen].join(" OR ");
+}
+
+/** "Source label · heading" attribution line for one chunk (no ids, no newlines). */
+function chunkSourceLine(m: ChunkMatch): string {
+  return [String(m.sourceLabel || "Knowledge resource"), String(m.heading || "")]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(" · ")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Chunk sections with their source attribution, within a hard char budget.
+ * Order (the function's score-then-position order) is preserved; the first
+ * chunk is always included (truncated if it alone exceeds the budget).
+ */
+export function formatChunkSections(matches: readonly ChunkMatch[], budget: number): { text: string; used: ChunkMatch[] } {
+  const parts: string[] = [];
+  const used: ChunkMatch[] = [];
+  let len = 0;
+  for (const m of matches) {
+    const section = `--- ${chunkSourceLine(m)} ---\n${m.content}`;
+    if (!used.length) {
+      parts.push(section.length > budget ? section.slice(0, budget) : section);
+      used.push(m);
+      len = Math.min(section.length, budget);
+      continue;
+    }
+    if (len + 2 + section.length > budget) break;
+    parts.push(section);
+    used.push(m);
+    len += 2 + section.length;
+  }
+  return { text: parts.join("\n\n"), used };
+}
+
+/** What one central search decided and produced (observability fields never carry content). */
+interface CentralSearchOutcome {
+  sourceMode: "central-chunks" | "central" | "legacy";
+  retrieval: RetrievalResult;
+  searchedChunks?: number;
+  central?: CentralKnowledgeState;
+}
+
+// The retrieval ladder (Phase 2C, operator-approved semantics):
+//   1. knowledge_match_chunks (0068) is PRIMARY. Its searched_chunks value is
+//      the agent's authoritative chunk universe:
+//      • universe > 0 with matches → answer from those chunks;
+//      • universe > 0 with NO matches → genuine no-match — retrieval is never
+//        broadened past what the live index already covers;
+//      • universe = 0 → no usable index (not an error) → step 2.
+//   2. The existing Phase 1B path, unchanged: assigned Central documents are
+//      searched lexically; an assigned agent with nothing usable truthfully
+//      has nothing (never the stale legacy blob); an UNASSIGNED agent uses
+//      the legacy agents.knowledge_base exactly as before.
+//   An RPC failure in step 1 (0068 missing, network, bad shape) falls back to
+//   step 2 — the controlled, already-authorized path — never to a dead tool.
+//   Workspace and agent ids come from the caller's server-resolved context.
+async function runCentralSearch(
   agent: { id?: string | null; workspace_id?: string | null; name?: string | null; knowledge_base?: string | null },
-  a: { query?: unknown; context?: unknown },
-  channel = "voice",
-  loadCentral: CentralKnowledgeLoader = loadAgentCentralKnowledge
-): Promise<KnowledgeResult> {
-  const query = String(a.query ?? "").trim();
-  if (!query) return { success: false, error: "missing_query", found: false, text: "", sources: [] };
-  const started = Date.now();
+  queries: readonly string[],
+  opts: { budget: number; relevantBudget: number; topK: number },
+  loadCentral: CentralKnowledgeLoader,
+  matchChunks: ChunkMatcher
+): Promise<CentralSearchOutcome> {
+  const ws = String(agent.workspace_id ?? "");
+  const agentId = String(agent.id ?? "");
+  const fts = ftsQueryFor(queries);
+  if (fts) {
+    const m = await matchChunks(ws, agentId, fts, Math.min(opts.topK, 20));
+    if (m.ok && m.searchedChunks > 0) {
+      const { text, used } = formatChunkSections(m.matches, opts.relevantBudget);
+      return {
+        sourceMode: "central-chunks",
+        searchedChunks: m.searchedChunks,
+        retrieval: {
+          text,
+          mode: used.length ? "retrieved" : "empty",
+          chunks: used.map((c) => ({
+            source: chunkSourceLine(c),
+            id: c.chunkIndex,
+            score: Math.round(c.score * 100) / 100,
+            chars: c.content.length,
+            preview: c.content.slice(0, 120),
+          })),
+          totalKbChars: text.length,
+          contextChars: text.length,
+        },
+      };
+    }
+  }
   let central: CentralKnowledgeState = { assigned: false, knowledge: null };
   try {
-    central = await loadCentral(String(agent.workspace_id ?? ""), String(agent.id ?? ""));
+    central = await loadCentral(ws, agentId);
   } catch {
     central = { assigned: false, knowledge: null }; // migration state unknowable → legacy keeps the call alive
   }
   const sourceMode: "central" | "legacy" = central.assigned ? "central" : "legacy";
   const kb = central.assigned ? central.knowledge?.text ?? "" : String(agent.knowledge_base ?? "");
-  const r = retrieveKnowledge(kb, [query, String(a.context ?? "")], {
-    budget: 6000,
-    relevantBudget: 6000,
-    topK: 4,
-  });
-  // Small KBs come back whole ("full" mode) — trim to the budget for a voice turn.
-  const text = r.mode === "full" ? r.text.slice(0, 6000) : r.text;
+  return {
+    sourceMode,
+    central,
+    retrieval: retrieveKnowledge(
+      kb,
+      queries.filter((q) => q && q.trim()),
+      opts
+    ),
+  };
+}
+
+function logCentralSearch(agentName: unknown, channel: string, out: CentralSearchOutcome, startedAt: number): void {
+  const r = out.retrieval;
   // Observability: source mode, counts, sources + scores + latency — never the knowledge text itself.
   console.log(
-    `[kb-retrieval] agent=${agent.name} channel=${channel} source=${sourceMode}${central.assigned ? ` resources=${central.knowledge?.resources ?? 0} documents=${central.knowledge?.documents ?? 0}` : ""} mode=${r.mode} kb_chars=${r.totalKbChars} latency_ms=${Date.now() - started} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 4).join(", ") || "(full)"}`
+    `[kb-retrieval] agent=${agentName} channel=${channel} source=${out.sourceMode}${out.sourceMode === "central-chunks" ? ` searched_chunks=${out.searchedChunks}` : ""}${out.central?.assigned ? ` resources=${out.central.knowledge?.resources ?? 0} documents=${out.central.knowledge?.documents ?? 0}` : ""} mode=${r.mode} kb_chars=${r.totalKbChars} latency_ms=${Date.now() - startedAt} top=${r.chunks.map((c) => `${c.source}#${c.id}:${c.score}`).slice(0, 4).join(", ") || "(full)"}`
   );
+}
+
+// The per-turn knowledge retrieval shared by the LiveKit worker's tool-exec
+// endpoint and the Builder adapter (and, via centralRetrievalForReply, the
+// text channels). Spoken wrapper and tool contract are unchanged — the worker
+// sees no difference between source modes.
+export async function searchKnowledgeCore(
+  agent: { id?: string | null; workspace_id?: string | null; name?: string | null; knowledge_base?: string | null },
+  a: { query?: unknown; context?: unknown },
+  channel = "voice",
+  loadCentral: CentralKnowledgeLoader = loadAgentCentralKnowledge,
+  matchChunks: ChunkMatcher = matchAgentChunks
+): Promise<KnowledgeResult> {
+  const query = String(a.query ?? "").trim();
+  if (!query) return { success: false, error: "missing_query", found: false, text: "", sources: [] };
+  const started = Date.now();
+  const out = await runCentralSearch(agent, [query, String(a.context ?? "")], { budget: 6000, relevantBudget: 6000, topK: 4 }, loadCentral, matchChunks);
+  const r = out.retrieval;
+  // Small KBs come back whole ("full" mode) — trim to the budget for a voice turn.
+  const text = r.mode === "full" ? r.text.slice(0, 6000) : r.text;
+  logCentralSearch(agent.name, channel, out, started);
   return {
     success: true,
     found: !!text.trim(),
     text,
     sources: r.chunks.slice(0, 4).map((c) => ({ source: c.source, id: c.id, score: c.score })),
-    sourceMode,
+    sourceMode: out.sourceMode,
   };
+}
+
+// ── central retrieval for text-channel replies (Phase 2C) ────────────────────
+
+/** Injected into the prompt when the live index holds nothing for this
+ *  question: grounding survives even though no knowledge text matched. */
+export const NO_MATCH_PROMPT_NOTE =
+  "No stored clinic knowledge matched this question. For clinic-specific facts (doctors, services, prices, hours, credentials), say you don't have that detail on hand and offer to check with the team — never guess.";
+
+export interface ReplyRetrieval {
+  retrieval: RetrievalResult;
+  sourceMode: "central-chunks" | "central";
+}
+
+/**
+ * Per-turn Central Knowledge retrieval for TEXT channels (WhatsApp, SMS, the
+ * authenticated dashboard chat). Callers MUST have resolved the agent row and
+ * workspace server-side (webhook → channel → workspace → agent, or a
+ * session-authorized lookup) — nothing here may be fed from a request body.
+ *
+ * Returns null for a legacy (unassigned) agent, so callers keep today's
+ * knowledgeBase path byte-for-byte. For a central agent the result is a
+ * RetrievalResult to inject into generateAgentReply; when nothing matched
+ * (or nothing is usable yet) the text is NO_MATCH_PROMPT_NOTE so the
+ * grounding rules stay in the prompt without broadening retrieval.
+ * One call per conversation turn — compute once, pass it down.
+ */
+export async function centralRetrievalForReply(
+  agent: { id?: string | null; workspace_id?: string | null; name?: string | null; knowledge_base?: string | null },
+  messages: { role: string; content: string }[],
+  channel: string,
+  loadCentral: CentralKnowledgeLoader = loadAgentCentralKnowledge,
+  matchChunks: ChunkMatcher = matchAgentChunks
+): Promise<ReplyRetrieval | null> {
+  const started = Date.now();
+  const out = await runCentralSearch(agent, queriesFromMessages(messages ?? []), { budget: 48000, relevantBudget: 12000, topK: 8 }, loadCentral, matchChunks);
+  if (out.sourceMode === "legacy") return null;
+  logCentralSearch(agent.name, channel, out, started);
+  const retrieval = out.retrieval.text.trim()
+    ? out.retrieval
+    : { ...out.retrieval, text: NO_MATCH_PROMPT_NOTE, mode: "empty" as const, chunks: [] };
+  return { retrieval, sourceMode: out.sourceMode };
 }
 
 export function searchKnowledgeSpoken(r: KnowledgeResult): string {
