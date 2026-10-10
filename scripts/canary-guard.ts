@@ -119,11 +119,25 @@ export function assertNoForbiddenRef(text: string, where: string): void {
   if (text.includes(FORBIDDEN_A7_REF)) throw new CanaryError("A7_REF_BLOCKED", where);
 }
 
+/**
+ * The ONE sanctioned local credential (Step 72C): the canary's own sb_secret_
+ * data-API key for the 2C PostgREST leg, under this EXACT env name and shape.
+ * The shape proves the key FORMAT only — it does NOT prove the key belongs to
+ * the canary project. Containment comes from the consumer: the key is usable
+ * only by the origin-pinned canary PostgREST client, and a wrong-project key
+ * simply authenticates nowhere it can reach.
+ */
+export const CANARY_SERVICE_KEY_ENV = "CANARY_SUPABASE_SERVICE_KEY";
+export const CANARY_SERVICE_KEY_SHAPE = /^sb_secret_[A-Za-z0-9_-]{10,}$/;
+
 /** Env var KEYS (never values) that look like a locally held Supabase credential. */
 export function findLocalSupabaseCredentials(env: Env): string[] {
   const hits: string[] = [];
   for (const [key, value] of Object.entries(env)) {
     if (typeof value !== "string" || value === "") continue;
+    // Exact-name, exact-shape exception; anything else in this slot (a JWT,
+    // an sbp_ token, a connection string, a near-miss name) still refuses.
+    if (key === CANARY_SERVICE_KEY_ENV && CANARY_SERVICE_KEY_SHAPE.test(value)) continue;
     const keyLooksSecret =
       /SUPABASE.*(KEY|TOKEN|SECRET|PASS)/i.test(key) ||
       /^(A7_SUPABASE_MGMT_TOKEN|A7_SENTINEL_TOKEN|PGPASSWORD|SUPABASE_DB_PASSWORD)$/.test(key);
@@ -183,6 +197,7 @@ export function assertCanaryEndpoint(url: string): void {
 export function scrubCanaryText(text: string): string {
   return text
     .replace(/Bearer\s+\S+/gi, "[redacted]")
+    .replace(/sb_secret_[A-Za-z0-9_-]+/g, "[redacted]")
     .replace(/sbp_[A-Za-z0-9_]+/g, "[redacted]")
     .replace(/eyJ[A-Za-z0-9_-]{8,}/g, "[redacted]")
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "[redacted-uuid]")

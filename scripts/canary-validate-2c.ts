@@ -18,7 +18,7 @@
 // canary-bound matcher and loader below. Reads no .env file, never retries.
 
 import { pathToFileURL } from "node:url";
-import { CANARY_PROJECT_REF, CanaryError, scrubCanaryText } from "./canary-guard";
+import { CANARY_PROJECT_REF, CANARY_SERVICE_KEY_ENV, CANARY_SERVICE_KEY_SHAPE, CanaryError, scrubCanaryText } from "./canary-guard";
 import { createCanaryReadOnlyTransport } from "./canary-transport";
 import { createCanaryWriteProbeTransport, CanaryProbeError } from "./canary-probe-lib";
 import { createCanaryKbClient, fetchCanaryServiceRoleKey, type CanaryKbClient, type FetchLike } from "./canary-kb-client";
@@ -40,6 +40,37 @@ export const CANARY_2C_CONFIRMATION_PHRASE =
 export function parse2cCliArgs(argv: readonly string[]): void {
   if (argv.length !== 1 || !argv[0].startsWith("--confirm-2c=")) throw new CanaryError("INVALID_ARGS");
   if (argv[0].slice("--confirm-2c=".length) !== CANARY_2C_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
+}
+
+/**
+ * The Leg B service key (Step 72C). Preference order, FAIL CLOSED at each step:
+ *   1. CANARY_SUPABASE_SERVICE_KEY set → it MUST match the sb_secret_ shape
+ *      (malformed → refuse outright, never a silent fallback) and MUST NOT
+ *      appear in any NEXT_PUBLIC_* value (the sentinel token's exposure rule).
+ *      The shape check proves the FORMAT only, never project ownership —
+ *      containment stays with the origin-pinned PostgREST client, which can
+ *      reach nothing but the canary.
+ *   2. Variable absent → the existing Management-API fetch (proxy-side
+ *      credential; may be refused by that credential's scope).
+ * The returned key is closure-held by the caller and never printed/persisted.
+ */
+export async function resolveCanaryServiceKey(
+  env: Readonly<Record<string, string | undefined>>,
+  fetchKey: () => Promise<string>
+): Promise<string> {
+  const fromEnv = env[CANARY_SERVICE_KEY_ENV];
+  if (fromEnv !== undefined && fromEnv !== "") {
+    if (!CANARY_SERVICE_KEY_SHAPE.test(fromEnv)) {
+      throw new CanaryError("INVALID_ARGS", `${CANARY_SERVICE_KEY_ENV} is not an sb_secret_ key; refusing (no fallback)`);
+    }
+    for (const [k, v] of Object.entries(env)) {
+      if (k.startsWith("NEXT_PUBLIC_") && typeof v === "string" && v.includes(fromEnv)) {
+        throw new CanaryError("SENTINEL_TOKEN_EXPOSED", `${CANARY_SERVICE_KEY_ENV} value appears in ${k}`);
+      }
+    }
+    return fromEnv;
+  }
+  return fetchKey();
 }
 
 /** The REAL matcher production shape: PostgREST rpc → the strict Phase 2C parser. */
@@ -94,9 +125,9 @@ async function main(): Promise<number> {
     const probeTransport = createCanaryWriteProbeTransport(process.env);
     console.log(`CANARY 2C RETRIEVAL VALIDATION — target ${CANARY_PROJECT_REF} (temporary marker-named data; exact-id cleanup; sentinel-gated)`);
 
-    // Leg B: runtime-fetched key (never printed), origin-pinned client.
+    // Leg B: env-supplied or runtime-fetched key (never printed), origin-pinned client.
     const fetchImpl = fetch as unknown as FetchLike;
-    const serviceKey = await fetchCanaryServiceRoleKey(fetchImpl);
+    const serviceKey = await resolveCanaryServiceKey(process.env, () => fetchCanaryServiceRoleKey(fetchImpl));
     const kb = createCanaryKbClient(serviceKey, fetchImpl);
 
     const report = await runCanary2cRetrievalValidation({

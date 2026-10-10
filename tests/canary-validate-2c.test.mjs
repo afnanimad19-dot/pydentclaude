@@ -366,3 +366,78 @@ test("the 2C lib performs no network I/O and value-imports no app module that bu
   assert.doesNotMatch(src, /^import \{[^}]*\} from "@\/lib\/agent-tools-core"/m, "agent-tools-core only as import type");
   assert.match(src, /import type \{[^}]*ChunkMatcher/);
 });
+
+// ------------------------------------------------------------ Step 72C: env-supplied sb_secret_ key
+
+const GOOD_KEY = "sb_secret_FAKE2cKey_0123456789";
+
+test("72C guard: the exact env name with an sb_secret_ value is the ONE sanctioned local credential", () => {
+  assert.deepEqual(guard.findLocalSupabaseCredentials({ CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY }), []);
+  const r = guard.checkCanaryEnvironment(c2cEnv({ CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY }));
+  assert.equal(r.ok, true);
+});
+
+test("72C guard: near-miss names and wrong-shaped values still refuse", () => {
+  for (const env of [
+    { MY_CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY },
+    { CANARY_SUPABASE_SERVICE_KEY2: GOOD_KEY },
+    { SUPABASE_SERVICE_ROLE_KEY: GOOD_KEY },
+    { CANARY_SUPABASE_SERVICE_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake.fake" }, // a JWT is not sanctioned
+    // Clearly synthetic (uppercase, non-hex) so GitHub push protection cannot
+    // mistake it for a real sbp_ token; the guard regex still flags it.
+    { CANARY_SUPABASE_SERVICE_KEY: "sbp_FAKEFIXTUREVALUE" },
+    { CANARY_SUPABASE_SERVICE_KEY: "postgresql://postgres:supersecretpw@db.example/db" },
+    { CANARY_SUPABASE_SERVICE_KEY: "sb_secret_x" }, // too short
+  ]) {
+    assert.ok(guard.findLocalSupabaseCredentials(env).length >= 1, JSON.stringify(Object.keys(env)));
+  }
+});
+
+test("72C guard: production-ref rejection still precedes and overrides everything", () => {
+  const r = guard.checkCanaryEnvironment(c2cEnv({ CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY, SOME_URL: `https://${guard.FORBIDDEN_PRODUCTION_REF}.supabase.co` }));
+  assert.deepEqual([r.ok, r.code], [false, "PRODUCTION_REF_BLOCKED"]);
+  // Even a shape-valid key whose VALUE embeds the production ref refuses.
+  const r2 = guard.checkCanaryEnvironment(c2cEnv({ CANARY_SUPABASE_SERVICE_KEY: `sb_secret_${guard.FORBIDDEN_PRODUCTION_REF}x` }));
+  assert.deepEqual([r2.ok, r2.code], [false, "PRODUCTION_REF_BLOCKED"]);
+});
+
+test("72C guard: the scrubber redacts sb_secret_ values, bare or Bearer-prefixed", () => {
+  const out = guard.scrubCanaryText(`failed with apikey ${GOOD_KEY} and Authorization Bearer ${GOOD_KEY}.`);
+  assert.ok(!out.includes(GOOD_KEY));
+  assert.match(out, /\[redacted\]/);
+});
+
+test("72C CLI: the env key is preferred and NO Management-API key fetch happens", async () => {
+  let fetched = 0;
+  const key = await cli.resolveCanaryServiceKey(c2cEnv({ CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY }), async () => { fetched++; return "unused"; });
+  assert.equal(key, GOOD_KEY);
+  assert.equal(fetched, 0, "api-keys endpoint never consulted when the env key is present");
+});
+
+test("72C CLI: a malformed env key refuses outright — never a silent fallback", async () => {
+  let fetched = 0;
+  await assert.rejects(
+    cli.resolveCanaryServiceKey(c2cEnv({ CANARY_SUPABASE_SERVICE_KEY: "not-a-secret" }), async () => { fetched++; return "unused"; }),
+    guardStops("INVALID_ARGS"),
+  );
+  assert.equal(fetched, 0);
+});
+
+test("72C CLI: NEXT_PUBLIC exposure of the key value refuses", async () => {
+  await assert.rejects(
+    cli.resolveCanaryServiceKey(c2cEnv({ CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY, NEXT_PUBLIC_DEBUG_BLOB: `x ${GOOD_KEY} y` }), async () => "unused"),
+    guardStops("SENTINEL_TOKEN_EXPOSED"),
+  );
+});
+
+test("72C CLI: absent env key keeps the Management-API fallback", async () => {
+  assert.equal(await cli.resolveCanaryServiceKey(c2cEnv(), async () => "fetched-key"), "fetched-key");
+});
+
+test("72C end-to-end: the full offline run passes with the env key configured", async () => {
+  const { db, report } = run({ env: c2cEnv({ CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY }) });
+  const r = await report;
+  assert.deepEqual(r.checks.filter((c) => !c.ok), []);
+  assert.equal(r.ok, true);
+  assert.equal(db.workspaces.size, 0);
+});
