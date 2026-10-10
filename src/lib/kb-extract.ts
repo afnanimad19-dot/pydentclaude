@@ -25,6 +25,21 @@ export type ExtractResult =
   | { ok: true; text: string; kind: ExtractKind; ocr?: true }
   | { ok: false; status: 400 | 415 | 422 | 500; error: string };
 
+/**
+ * Healthcare data protection (Phase 2C): OCR hands the WHOLE document to an
+ * EXTERNAL service (the Hyperfx engine). Clinic documents can carry patient-
+ * identifiable data, so that flow is OFF unless the operator consciously sets
+ * KNOWLEDGE_EXTERNAL_OCR=on. Local parsers (pdf-parse, mammoth) are unaffected.
+ */
+export function externalOcrEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.KNOWLEDGE_EXTERNAL_OCR === "on";
+}
+
+export const OCR_DISABLED_PDF_ERROR =
+  "This PDF has no selectable text, and OCR for scanned documents is disabled on this server (it would send the file to an external service; an administrator can enable it with KNOWLEDGE_EXTERNAL_OCR=on). Re-export it as a text PDF, or paste the text into the knowledge base directly.";
+export const OCR_DISABLED_IMAGE_ERROR =
+  "Reading photos and scans uses OCR, which is disabled on this server (it would send the image to an external service; an administrator can enable it with KNOWLEDGE_EXTERNAL_OCR=on). Re-export the content as a text PDF or .docx, or paste the text into the knowledge base directly.";
+
 export interface ExtractDeps {
   /** Embedded text of a PDF; throws on a parse error. */
   parsePdf: (buf: Buffer) => Promise<string>;
@@ -32,6 +47,8 @@ export interface ExtractDeps {
   parseDocx: (buf: Buffer) => Promise<string>;
   /** OCR through the engine; may throw or return "". */
   ocr: (buf: Buffer, kind: "pdf" | "image") => Promise<string>;
+  /** Whether the external-OCR fallback may run at all (default: the env gate). */
+  ocrEnabled?: () => boolean;
 }
 
 export const defaultExtractDeps: ExtractDeps = {
@@ -52,6 +69,7 @@ export const defaultExtractDeps: ExtractDeps = {
     const { ocrViaEngine } = await import("@/lib/kb-ocr");
     return ocrViaEngine(buf, kind);
   },
+  ocrEnabled: () => externalOcrEnabled(),
 };
 
 // Identify the format from the file's leading bytes -- the most reliable signal.
@@ -133,6 +151,9 @@ export async function extractDocument(
   }
 
   const kind = detectKind(buf, name, mime);
+  // Injected test deps without the gate keep their historical behaviour (OCR
+  // allowed); the REAL default deps carry the KNOWLEDGE_EXTERNAL_OCR env gate.
+  const ocrAllowed = deps.ocrEnabled ? deps.ocrEnabled() : true;
 
   try {
     let text = "";
@@ -141,8 +162,8 @@ export async function extractDocument(
       try {
         text = await deps.parsePdf(buf);
       } catch (e) {
-        // A parse error (not just empty) -- try OCR before giving up.
-        const ocr = await deps.ocr(buf, "pdf").catch(() => "");
+        // A parse error (not just empty) -- try OCR (when permitted) before giving up.
+        const ocr = ocrAllowed ? await deps.ocr(buf, "pdf").catch(() => "") : "";
         if (cleanup(ocr)) return { ok: true, text: cleanup(ocr).slice(0, EXTRACT_MAX_CHARS), kind, ocr: true };
         return {
           ok: false,
@@ -150,13 +171,15 @@ export async function extractDocument(
           error: `Couldn't read that PDF: ${e instanceof Error ? e.message : "parse error"}. If it's password-protected, remove the password and try again.`,
         };
       }
-      // Scanned PDF (no embedded text) -- OCR it through the engine.
+      // Scanned PDF (no embedded text) -- OCR it through the engine, if permitted.
       if (!cleanup(text)) {
+        if (!ocrAllowed) return { ok: false, status: 422, error: OCR_DISABLED_PDF_ERROR };
         const ocr = await deps.ocr(buf, "pdf").catch(() => "");
         if (cleanup(ocr)) text = ocr;
       }
     } else if (kind === "image") {
-      // A photo/scan of a page -- straight to OCR.
+      // A photo/scan of a page -- OCR is the ONLY way to read it.
+      if (!ocrAllowed) return { ok: false, status: 422, error: OCR_DISABLED_IMAGE_ERROR };
       text = await deps.ocr(buf, "image").catch(() => "");
       if (!cleanup(text)) {
         return {

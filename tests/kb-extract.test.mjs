@@ -168,5 +168,56 @@ test("library: no auth, no workspace, parsers loaded lazily (no top-level heavy 
   assert.match(lib, /await import\("pdf-parse"\)/);
   assert.match(lib, /await import\("mammoth"\)/);
   assert.match(lib, /await import\("@\/lib\/kb-ocr"\)/);
-  assert.doesNotMatch(lib, /authorize|workspace|supabase|process\.env|console\./i);
+  assert.doesNotMatch(lib, /authorize|workspace|supabase|console\./i);
+  // Phase 2C: the ONE sanctioned env read is the external-OCR gate.
+  assert.equal((lib.match(/process\.env/g) ?? []).length, 1, "only the KNOWLEDGE_EXTERNAL_OCR gate reads env");
+  assert.match(lib, /env\.KNOWLEDGE_EXTERNAL_OCR === "on"/);
+});
+
+// ── Phase 2C: external OCR is OFF by default (healthcare data protection) ───
+
+test("externalOcrEnabled: off unless KNOWLEDGE_EXTERNAL_OCR is exactly 'on'", () => {
+  assert.equal(X.externalOcrEnabled({}), false);
+  assert.equal(X.externalOcrEnabled({ KNOWLEDGE_EXTERNAL_OCR: "" }), false);
+  assert.equal(X.externalOcrEnabled({ KNOWLEDGE_EXTERNAL_OCR: "true" }), false);
+  assert.equal(X.externalOcrEnabled({ KNOWLEDGE_EXTERNAL_OCR: "ON" }), false);
+  assert.equal(X.externalOcrEnabled({ KNOWLEDGE_EXTERNAL_OCR: "on" }), true);
+  assert.match(src("src/lib/kb-extract.ts"), /ocrEnabled: \(\) => externalOcrEnabled\(\)/, "the real default deps carry the gate");
+});
+
+test("gate OFF: a scanned PDF fails closed with the disabled message and the OCR dep is NEVER called", async () => {
+  const { d, calls } = deps({ pdf: "" });
+  const r = await X.extractDocument({ buf: PDF, name: "scan.pdf", mime: "application/pdf" }, { ...d, ocrEnabled: () => false });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, 422);
+  assert.equal(r.error, X.OCR_DISABLED_PDF_ERROR);
+  assert.deepEqual(calls.ocr, [], "document bytes never leave for the external service");
+});
+
+test("gate OFF: an image fails closed with the disabled message and the OCR dep is NEVER called", async () => {
+  const { d, calls } = deps();
+  const r = await X.extractDocument({ buf: PNG, name: "photo.png", mime: "image/png" }, { ...d, ocrEnabled: () => false });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, 422);
+  assert.equal(r.error, X.OCR_DISABLED_IMAGE_ERROR);
+  assert.deepEqual(calls.ocr, []);
+});
+
+test("gate OFF: a PDF parse error keeps its password message without calling OCR; embedded text still works", async () => {
+  const { d, calls } = deps({ pdf: () => { throw new Error("bad xref"); } });
+  const r = await X.extractDocument({ buf: PDF, name: "x.pdf", mime: "" }, { ...d, ocrEnabled: () => false });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /Couldn't read that PDF: bad xref/);
+  assert.deepEqual(calls.ocr, []);
+  const ok = await X.extractDocument({ buf: PDF, name: "x.pdf", mime: "" }, { ...deps().d, ocrEnabled: () => false });
+  assert.equal(ok.ok, true, "local parsing is unaffected by the gate");
+  assert.equal(ok.text, "PDF text");
+});
+
+test("gate ON (or injected deps without a gate): OCR behaves exactly as before", async () => {
+  const on = await X.extractDocument({ buf: PNG, name: "p.png", mime: "" }, { ...deps().d, ocrEnabled: () => true });
+  assert.equal(on.ok, true);
+  assert.equal(on.text, "OCR text");
+  const legacy = await X.extractDocument({ buf: PNG, name: "p.png", mime: "" }, deps().d);
+  assert.equal(legacy.ok, true, "test deps without ocrEnabled keep historical behaviour");
 });
