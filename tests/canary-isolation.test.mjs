@@ -56,6 +56,9 @@ const canaryScripts = fs.readdirSync(path.join(root, "scripts")).filter((f) => f
 test("the canary tooling is exactly the expected set of files", () => {
   assert.deepEqual(canaryScripts.sort(), [
     "scripts/canary-guard.ts",
+    // Phase 2C additions (Step 71): the retrieval integration validator and
+    // its PostgREST client. The frozen P9 SQL allowlist is unchanged.
+    "scripts/canary-kb-client.ts",
     "scripts/canary-manifest-check.ts",
     "scripts/canary-migrate-lib.ts",
     "scripts/canary-migrate.ts",
@@ -67,17 +70,29 @@ test("the canary tooling is exactly the expected set of files", () => {
     "scripts/canary-probe.ts",
     "scripts/canary-sentinel.ts",
     "scripts/canary-transport.ts",
+    "scripts/canary-validate-2c-lib.ts",
+    "scripts/canary-validate-2c.ts",
     "scripts/canary-validate-lib.ts",
     "scripts/canary-validate.ts",
   ]);
 });
 
-test("canary code never reads .env files, never sets Authorization, never uses A7 transport/guard", () => {
+test("canary code never reads .env files, never sets Authorization (one sanctioned 2C site), never uses A7 transport/guard", () => {
   for (const f of canaryScripts) {
     const src = read(f);
     assert.doesNotMatch(src, /readFileSync\([^)]*\.env/, `${f}: reads an .env file`);
     assert.doesNotMatch(src, /\.env\.a7|ENV_A7_FILENAME|parseEnvA7/, `${f}: touches A7 env handling`);
-    assert.doesNotMatch(src, /Authorization\s*:/, `${f}: sets an Authorization header`);
+    if (f === "scripts/canary-kb-client.ts") {
+      // Phase 2C: the ONE sanctioned Authorization site — the canary's own
+      // service-role key, fetched at runtime through the proxy-authenticated
+      // Management API. It must never come from env and can never be logged.
+      assert.equal((src.match(/Authorization\s*:/g) ?? []).length, 1, `${f}: exactly one Authorization site`);
+      assert.doesNotMatch(src, /process\.env/, `${f}: the key must never come from env`);
+      assert.doesNotMatch(src, /console\./, `${f}: never logs (the key could leak)`);
+      assert.match(src, /redirect:\s*"error"/, `${f}: redirects are refused`);
+    } else {
+      assert.doesNotMatch(src, /Authorization\s*:/, `${f}: sets an Authorization header`);
+    }
     assert.doesNotMatch(src, /from\s+["'](\.\/a7-live-transport|@\/lib\/a7-guard|@\/lib\/a7-sentinel-guard)["']/, `${f}: imports A7 transport/guard`);
     assert.doesNotMatch(src, /A7_SUPABASE_MGMT_TOKEN\s*[,)]|env\.A7_SUPABASE_MGMT_TOKEN/, `${f}: reads the A7 token`);
   }
@@ -94,12 +109,14 @@ test("forbidden refs appear only as the guard's literal constants", () => {
   }
 });
 
-test("only the two transports perform network I/O; plan and libraries are network-free", () => {
-  const networkFiles = ["scripts/canary-transport.ts", "scripts/canary-probe-lib.ts"];
+test("only the transports, the 2C PostgREST client and the 2C CLI touch network I/O; libraries are network-free", () => {
+  // canary-kb-client performs Leg B requests through an injected fetch; the
+  // 2C CLI is the only file that hands it the real global fetch.
+  const networkFiles = ["scripts/canary-transport.ts", "scripts/canary-probe-lib.ts", "scripts/canary-kb-client.ts", "scripts/canary-validate-2c.ts"];
   for (const f of canaryScripts) {
     const src = read(f);
-    const network = /\bfetch\s*\(|globalThis\.fetch|node:https?|node:net|node:tls/.test(src);
-    if (networkFiles.includes(f)) assert.ok(network);
+    const network = /\bfetch\s*\(|\bfetchImpl\s*\(|\bfetch as\b|globalThis\.fetch|node:https?|node:net|node:tls/.test(src);
+    if (networkFiles.includes(f)) assert.ok(network, `${f}: expected to be a declared network file`);
     else assert.ok(!network, `${f}: network code outside the transports`);
   }
   for (const f of ["scripts/canary-plan.ts", "scripts/canary-plan-lib.ts", "scripts/canary-manifest-check.ts"]) {
