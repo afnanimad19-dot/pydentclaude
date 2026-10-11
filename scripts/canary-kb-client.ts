@@ -62,16 +62,8 @@ export interface CanaryKbClient {
 
 const enc = encodeURIComponent;
 
-export function createCanaryKbClient(serviceRoleKey: string, fetchImpl: FetchLike): CanaryKbClient {
-  if (!serviceRoleKey || typeof serviceRoleKey !== "string") throw new CanaryError("INVALID_ARGS", "missing service key");
-  // Closure-held only; no property exposes it.
-  const baseHeaders = {
-    apikey: serviceRoleKey,
-    Authorization: `Bearer ${serviceRoleKey}`,
-    Accept: "application/json",
-    "Content-Type": "application/json",
-  };
-
+/** The shared request core: every mode keeps the same pins and redaction. */
+function buildCanaryKbClient(baseHeaders: Record<string, string>, fetchImpl: FetchLike): CanaryKbClient {
   const request = async (path: string, init: { method: string; body?: string }): Promise<FetchResponseLike> => {
     assertNoForbiddenRef(path, "postgrest path");
     if (!path.startsWith("/rest/v1/")) throw new CanaryError("ENDPOINT_MISMATCH", "postgrest path outside /rest/v1/");
@@ -117,4 +109,34 @@ export function createCanaryKbClient(serviceRoleKey: string, fetchImpl: FetchLik
       ),
   };
   return Object.freeze(client);
+}
+
+/**
+ * Key-holding mode (local/non-cloud runs): the caller supplies the canary's
+ * sb_secret_ key (env- or Management-API-sourced), closure-held only.
+ */
+export function createCanaryKbClient(serviceRoleKey: string, fetchImpl: FetchLike): CanaryKbClient {
+  if (!serviceRoleKey || typeof serviceRoleKey !== "string") throw new CanaryError("INVALID_ARGS", "missing service key");
+  return buildCanaryKbClient(
+    {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    fetchImpl,
+  );
+}
+
+/**
+ * PROXY-INJECTED mode (Step 72C.8, CANARY_KB_AUTH=proxy): application code
+ * sends NO credential at all — the platform's protected Network secret for
+ * thqjtoxzkujnljsmkwkp.supabase.co (custom header `apikey`, path /rest/v1/)
+ * attaches the key at the session proxy, so it never exists in env, code,
+ * logs or artifacts. Origin pinning, the /rest/v1/ path gate, redirect
+ * refusal, response-origin checks and status-only errors are identical to
+ * the key-holding mode.
+ */
+export function createProxyInjectedCanaryKbClient(fetchImpl: FetchLike): CanaryKbClient {
+  return buildCanaryKbClient({ Accept: "application/json", "Content-Type": "application/json" }, fetchImpl);
 }

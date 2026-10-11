@@ -441,3 +441,92 @@ test("72C end-to-end: the full offline run passes with the env key configured", 
   assert.equal(r.ok, true);
   assert.equal(db.workspaces.size, 0);
 });
+
+// ------------------------------------------------------------ Step 72C.8: proxy-injected auth mode
+
+test("72C.8 proxy client: NO credential headers, all pins retained", async () => {
+  const calls = [];
+  const client = kbc.createProxyInjectedCanaryKbClient(async (url, init) => {
+    calls.push({ url, init });
+    return res({ searched_chunks: 0, matches: [] });
+  });
+  await client.rpcMatchChunks({ ws: randomUUID(), agentId: randomUUID(), query: "x", topK: 8 });
+  await client.selectAssignments(randomUUID(), randomUUID());
+  for (const c of calls) {
+    const headers = c.init.headers ?? {};
+    assert.ok(!("apikey" in headers), "no apikey header from application code");
+    assert.ok(!("Authorization" in headers) && !("authorization" in headers), "no Authorization header from application code");
+    assert.ok(c.url.startsWith(`https://${guard.CANARY_PROJECT_REF}.supabase.co/rest/v1/`), c.url);
+    assert.equal(c.init.redirect, "error");
+  }
+  // Origin-change and forbidden-ref protections are the shared core:
+  const moved = kbc.createProxyInjectedCanaryKbClient(async () => res([], { url: "https://evil.example/rest/v1/x" }));
+  await assert.rejects(moved.selectAssignments(randomUUID(), randomUUID()), guardStops("ENDPOINT_MISMATCH"));
+  await assert.rejects(
+    kbc.createProxyInjectedCanaryKbClient(async () => res([])).selectResources(randomUUID(), [`x${guard.FORBIDDEN_PRODUCTION_REF}`]),
+    guardStops("PRODUCTION_REF_BLOCKED"),
+  );
+});
+
+test("72C.8 mode resolution: explicit proxy/env/managed, 72C-compatible default, garbage refused", () => {
+  assert.equal(cli.resolveKbAuthMode(c2cEnv({ CANARY_KB_AUTH: "proxy" })), "proxy");
+  assert.equal(cli.resolveKbAuthMode(c2cEnv({ CANARY_KB_AUTH: "env", CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY })), "env");
+  assert.equal(cli.resolveKbAuthMode(c2cEnv({ CANARY_KB_AUTH: "managed" })), "managed");
+  assert.equal(cli.resolveKbAuthMode(c2cEnv({ CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY })), "env", "unset keeps 72C preference");
+  assert.equal(cli.resolveKbAuthMode(c2cEnv()), "managed", "unset without key keeps the managed fallback");
+  assert.throws(() => cli.resolveKbAuthMode(c2cEnv({ CANARY_KB_AUTH: "yolo" })), guardStops("INVALID_ARGS"));
+});
+
+test("72C.8 proxy mode: no credential retrieval and the env key is ignored even when present", async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push({ url, headers: init.headers ?? {} });
+    return res({ searched_chunks: 0, matches: [] });
+  };
+  const { mode, kb } = await cli.buildCanaryKb(c2cEnv({ CANARY_KB_AUTH: "proxy", CANARY_SUPABASE_SERVICE_KEY: GOOD_KEY }), fetchImpl);
+  assert.equal(mode, "proxy");
+  await kb.rpcMatchChunks({ ws: randomUUID(), agentId: randomUUID(), query: "x", topK: 4 });
+  assert.ok(seen.every((c) => !c.url.includes("api-keys")), "the Management api-keys endpoint is never consulted");
+  assert.ok(seen.every((c) => !JSON.stringify(c.headers).includes(GOOD_KEY)), "the env key never reaches a request");
+});
+
+test("72C.8 env mode without a key refuses outright (no managed fallback)", async () => {
+  await assert.rejects(cli.buildCanaryKb(c2cEnv({ CANARY_KB_AUTH: "env" }), async () => res([])), guardStops("INVALID_ARGS"));
+});
+
+test("72C.8 managed mode still fetches via the Management API and builds a key-holding client", async () => {
+  const urls = [];
+  const fetchImpl = async (url, init) => {
+    urls.push(url);
+    if (url.includes("api-keys")) return res(keyRows);
+    assert.equal((init.headers ?? {}).apikey, "sb_secret_FAKE_2c_key", "managed mode still sends the fetched key");
+    return res({ searched_chunks: 0, matches: [] });
+  };
+  const { mode, kb } = await cli.buildCanaryKb(c2cEnv({ CANARY_KB_AUTH: "managed" }), fetchImpl);
+  assert.equal(mode, "managed");
+  await kb.rpcMatchChunks({ ws: randomUUID(), agentId: randomUUID(), query: "x", topK: 4 });
+  assert.ok(urls[0].includes("api-keys"));
+});
+
+test("72C.8 end-to-end: the REAL ladder answers through the proxy client with zero credential headers", async () => {
+  const WS = randomUUID();
+  const AGENT = randomUUID();
+  const chunk = { resource_id: randomUUID(), document_id: randomUUID(), chunk_id: randomUUID(), chunk_index: 0, source_label: "Proxy FAQ / p.txt", heading: "Prices", content: "canaryproxyretrieval veneers cost 900.", score: 0.9 };
+  const headersSeen = [];
+  const kb = kbc.createProxyInjectedCanaryKbClient(async (url, init) => {
+    headersSeen.push(init.headers ?? {});
+    assert.ok(url.includes("/rest/v1/rpc/knowledge_match_chunks"));
+    return res({ searched_chunks: 3, matches: [chunk] });
+  });
+  const matcher = cli.buildCanaryMatcher(kb);
+  const r = await app.searchKnowledgeCore(
+    { id: AGENT, workspace_id: WS, name: "Proxy agent", knowledge_base: "LEGACY" },
+    { query: "canaryproxyretrieval" },
+    "canary-2c",
+    async () => ({ assigned: true, knowledge: null }),
+    matcher,
+  );
+  assert.equal(r.sourceMode, "central-chunks");
+  assert.match(r.text, /canaryproxyretrieval/);
+  assert.ok(headersSeen.every((h) => !("apikey" in h) && !("Authorization" in h)));
+});

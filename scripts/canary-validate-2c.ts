@@ -21,7 +21,13 @@ import { pathToFileURL } from "node:url";
 import { CANARY_PROJECT_REF, CANARY_SERVICE_KEY_ENV, CANARY_SERVICE_KEY_SHAPE, CanaryError, scrubCanaryText } from "./canary-guard";
 import { createCanaryReadOnlyTransport } from "./canary-transport";
 import { createCanaryWriteProbeTransport, CanaryProbeError } from "./canary-probe-lib";
-import { createCanaryKbClient, fetchCanaryServiceRoleKey, type CanaryKbClient, type FetchLike } from "./canary-kb-client";
+import {
+  createCanaryKbClient,
+  createProxyInjectedCanaryKbClient,
+  fetchCanaryServiceRoleKey,
+  type CanaryKbClient,
+  type FetchLike,
+} from "./canary-kb-client";
 import { Canary2cError, runCanary2cRetrievalValidation } from "./canary-validate-2c-lib";
 import {
   parseChunkMatchResponse,
@@ -71,6 +77,42 @@ export async function resolveCanaryServiceKey(
     return fromEnv;
   }
   return fetchKey();
+}
+
+// ------------------------------------------------------------ Leg B auth mode (Step 72C.8)
+
+export const CANARY_KB_AUTH_ENV = "CANARY_KB_AUTH";
+export type CanaryKbAuthMode = "proxy" | "env" | "managed";
+
+/**
+ * Explicit Leg B authentication mode:
+ *   "proxy"   — application code sends NO credential; the platform's protected
+ *               Network secret for the canary host injects the apikey header.
+ *               Nothing reads CANARY_SUPABASE_SERVICE_KEY and the Management
+ *               API is never asked for a key.
+ *   "env"     — CANARY_SUPABASE_SERVICE_KEY is REQUIRED (no silent fallback).
+ *   "managed" — the Management-API key fetch, as in Step 71.
+ * Unset keeps the Step 72C behaviour: env key when present, else managed.
+ * Any other value refuses outright.
+ */
+export function resolveKbAuthMode(env: Readonly<Record<string, string | undefined>>): CanaryKbAuthMode {
+  const v = env[CANARY_KB_AUTH_ENV];
+  if (v === undefined || v === "") return env[CANARY_SERVICE_KEY_ENV] ? "env" : "managed";
+  if (v === "proxy" || v === "env" || v === "managed") return v;
+  throw new CanaryError("INVALID_ARGS", `${CANARY_KB_AUTH_ENV} must be proxy, env or managed`);
+}
+
+/** Build the Leg B client for the resolved mode (key paths stay closure-held). */
+export async function buildCanaryKb(env: Readonly<Record<string, string | undefined>>, fetchImpl: FetchLike): Promise<{ mode: CanaryKbAuthMode; kb: CanaryKbClient }> {
+  const mode = resolveKbAuthMode(env);
+  if (mode === "proxy") return { mode, kb: createProxyInjectedCanaryKbClient(fetchImpl) };
+  if (mode === "env") {
+    const key = await resolveCanaryServiceKey(env, async () => {
+      throw new CanaryError("INVALID_ARGS", `${CANARY_KB_AUTH_ENV}=env requires ${CANARY_SERVICE_KEY_ENV}; refusing (no fallback)`);
+    });
+    return { mode, kb: createCanaryKbClient(key, fetchImpl) };
+  }
+  return { mode, kb: createCanaryKbClient(await fetchCanaryServiceRoleKey(fetchImpl), fetchImpl) };
 }
 
 /** The REAL matcher production shape: PostgREST rpc → the strict Phase 2C parser. */
@@ -125,10 +167,10 @@ async function main(): Promise<number> {
     const probeTransport = createCanaryWriteProbeTransport(process.env);
     console.log(`CANARY 2C RETRIEVAL VALIDATION — target ${CANARY_PROJECT_REF} (temporary marker-named data; exact-id cleanup; sentinel-gated)`);
 
-    // Leg B: env-supplied or runtime-fetched key (never printed), origin-pinned client.
+    // Leg B: proxy-injected, env-supplied or managed key (never printed), origin-pinned client.
     const fetchImpl = fetch as unknown as FetchLike;
-    const serviceKey = await resolveCanaryServiceKey(process.env, () => fetchCanaryServiceRoleKey(fetchImpl));
-    const kb = createCanaryKbClient(serviceKey, fetchImpl);
+    const { mode, kb } = await buildCanaryKb(process.env, fetchImpl);
+    console.log(`leg B auth mode: ${mode}`);
 
     const report = await runCanary2cRetrievalValidation({
       env: process.env,
