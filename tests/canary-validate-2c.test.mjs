@@ -234,11 +234,29 @@ function makeFakeDb() {
   return db;
 }
 
-const run = ({ db = makeFakeDb(), env = c2cEnv(), readOnlyOverrides = {} } = {}) => ({
+/** The eight frozen P9 statements — the ONLY SQL the 2C runner may send to the write transport. */
+const FROZEN_P9_SQL = new Set([
+  probeLib.P9_SQL_CREATE_WORKSPACE, probeLib.P9_SQL_CREATE_RESOURCE, probeLib.P9_SQL_CREATE_AGENT,
+  probeLib.P9_SQL_CREATE_ASSIGNMENT, probeLib.P9_SQL_APPLY_DOCUMENT_CHANGES, probeLib.P9_SQL_REINDEX_DOCUMENT,
+  probeLib.P9_SQL_MATCH_CHUNKS, probeLib.P9_SQL_CLEANUP_WORKSPACE,
+]);
+const assertOnlyFrozenP9Sql = (db) => {
+  for (const m of db.mutations) assert.ok(FROZEN_P9_SQL.has(m.sql), `unexpected SQL: ${m.sql.slice(0, 50)}`);
+};
+/** Cleanup attempts for one run workspace: exactly the frozen delete, bound to the run id and its marker name. */
+const cleanupAttempts = (db, label, ws) =>
+  db.mutations.filter((m) => m.context === `cleanup-${label}-workspace`).map((m) => {
+    assert.equal(m.sql, probeLib.P9_SQL_CLEANUP_WORKSPACE);
+    assert.deepEqual(m.params, [ws, `${probeLib.P9_VALIDATION_MARKER_PREFIX} ${ws}`]);
+    return m;
+  });
+const checkNamed = (r, prefix) => r.checks.filter((c) => c.name.startsWith(prefix));
+
+const run = ({ db = makeFakeDb(), env = c2cEnv(), readOnlyOverrides = {}, readOnly } = {}) => ({
   db,
   report: runCanary2cRetrievalValidation({
     env,
-    readOnly: db.readOnly(readOnlyOverrides),
+    readOnly: readOnly ?? db.readOnly(readOnlyOverrides),
     probe: { runValidationStatement: db.validate },
     matcher: cli.buildCanaryMatcher(db.kbClient),
     loader: cli.buildCanaryLoader(db.kbClient),
@@ -258,12 +276,7 @@ test("2C happy path: the full Step 70 matrix passes, cleanup removes everything,
   assert.equal(db.agents.size, 0);
   assert.equal(db.assignments.size, 0);
   // Only the eight frozen P9 statements ever reached the transport.
-  const allowed = new Set([
-    probeLib.P9_SQL_CREATE_WORKSPACE, probeLib.P9_SQL_CREATE_RESOURCE, probeLib.P9_SQL_CREATE_AGENT,
-    probeLib.P9_SQL_CREATE_ASSIGNMENT, probeLib.P9_SQL_APPLY_DOCUMENT_CHANGES, probeLib.P9_SQL_REINDEX_DOCUMENT,
-    probeLib.P9_SQL_MATCH_CHUNKS, probeLib.P9_SQL_CLEANUP_WORKSPACE,
-  ]);
-  for (const m of db.mutations) assert.ok(allowed.has(m.sql), `unexpected SQL: ${m.sql.slice(0, 50)}`);
+  assertOnlyFrozenP9Sql(db);
 });
 
 test("2C gates refuse before any mutation (sentinel, markers, residue)", async () => {
@@ -310,6 +323,138 @@ test("2C cleanup failure is reported with run ids for separately-approved recove
   assert.equal(r.cleanupOk, false);
   assert.match(String(r.cleanupDetail), /cleanup transport failure/);
   assert.match(r.runIds.w1, /^[0-9a-f-]{36}$/i);
+  assert.match(r.runIds.w2, /^[0-9a-f-]{36}$/i);
+});
+
+// ------------------------------------------------------------ Step 72C.27: independent per-workspace cleanup
+
+test("72C.27 cleanup: both workspaces deleted and verified once each, baseline verified, when nothing fails", async () => {
+  const { db, report } = run();
+  const r = await report;
+  assert.equal(r.ok, true);
+  assert.equal(r.cleanupOk, true);
+  assert.equal(r.cleanupDetail, undefined);
+  assert.equal(cleanupAttempts(db, "w1", r.runIds.w1).length, 1, "exactly one delete for W1 (no retry)");
+  assert.equal(cleanupAttempts(db, "w2", r.runIds.w2).length, 1, "exactly one delete for W2 (no retry)");
+  assert.deepEqual(checkNamed(r, "cleanup: w1 rows absent").map((c) => c.ok), [true]);
+  assert.deepEqual(checkNamed(r, "cleanup: w2 rows absent").map((c) => c.ok), [true]);
+  assert.deepEqual(checkNamed(r, "cleanup: baseline counts restored").map((c) => c.ok), [true]);
+  assert.equal(checkNamed(r, "cleanup: w1 completed").length, 0);
+  assert.equal(checkNamed(r, "cleanup: w2 completed").length, 0);
+  assert.equal(checkNamed(r, "cleanup: baseline verified").length, 0);
+  assert.equal(db.workspaces.size, 0);
+  assertOnlyFrozenP9Sql(db);
+});
+
+test("72C.27 cleanup: W2 is still deleted and verified when W1 cleanup throws; baseline still verified; run fails", async () => {
+  const db = makeFakeDb();
+  db.failOn.set("cleanup-w1-workspace", 1);
+  const r = await run({ db }).report;
+  // W1's delete failed at the transport; it was attempted exactly once (no retry).
+  assert.equal(cleanupAttempts(db, "w1", r.runIds.w1).length, 1);
+  assert.deepEqual(checkNamed(r, "cleanup: w1 completed").map((c) => c.ok), [false]);
+  assert.match(checkNamed(r, "cleanup: w1 completed")[0].detail, /^w1 cleanup transport failure: /);
+  assert.equal(checkNamed(r, "cleanup: w1 rows absent").length, 0, "W1 absence check is skipped when its delete threw");
+  // W2 was STILL attempted, succeeded and verified absent.
+  assert.equal(cleanupAttempts(db, "w2", r.runIds.w2).length, 1);
+  assert.deepEqual(checkNamed(r, "cleanup: w2 rows absent").map((c) => c.ok), [true]);
+  assert.ok(db.workspaces.has(r.runIds.w1), "W1 remains (its delete failed)");
+  assert.ok(!db.workspaces.has(r.runIds.w2), "W2 is gone");
+  // Baseline verification still ran and honestly reports the W1 drift.
+  const baseline = checkNamed(r, "cleanup: baseline counts restored");
+  assert.equal(baseline.length, 1);
+  assert.equal(baseline[0].ok, false);
+  assert.match(String(baseline[0].detail), /workspaces/);
+  // Failure is surfaced, never suppressed; the first failure wins the summary detail.
+  assert.equal(r.ok, false);
+  assert.equal(r.cleanupOk, false);
+  assert.match(String(r.cleanupDetail), /^w1 cleanup transport failure: /);
+  assert.doesNotMatch(String(r.cleanupDetail), /[0-9a-f]{8}-[0-9a-f]{4}-/i, "detail carries no ids (run ids travel separately)");
+  assertOnlyFrozenP9Sql(db);
+});
+
+test("72C.27 cleanup: W1 is deleted and verified when W2 cleanup throws; baseline still verified; run fails", async () => {
+  const db = makeFakeDb();
+  db.failOn.set("cleanup-w2-workspace", 1);
+  const r = await run({ db }).report;
+  assert.equal(cleanupAttempts(db, "w1", r.runIds.w1).length, 1);
+  assert.deepEqual(checkNamed(r, "cleanup: w1 rows absent").map((c) => c.ok), [true]);
+  assert.ok(!db.workspaces.has(r.runIds.w1), "W1 is gone");
+  assert.equal(cleanupAttempts(db, "w2", r.runIds.w2).length, 1, "W2 attempted exactly once (no retry)");
+  assert.deepEqual(checkNamed(r, "cleanup: w2 completed").map((c) => c.ok), [false]);
+  assert.match(checkNamed(r, "cleanup: w2 completed")[0].detail, /^w2 cleanup transport failure: /);
+  assert.ok(db.workspaces.has(r.runIds.w2), "W2 remains (its delete failed)");
+  const baseline = checkNamed(r, "cleanup: baseline counts restored");
+  assert.equal(baseline.length, 1);
+  assert.equal(baseline[0].ok, false);
+  assert.equal(r.ok, false);
+  assert.equal(r.cleanupOk, false);
+  assert.match(String(r.cleanupDetail), /^w2 cleanup transport failure: /);
+  assertOnlyFrozenP9Sql(db);
+});
+
+test("72C.27 cleanup: when BOTH deletes throw, both are attempted once, baseline is still verified, run fails", async () => {
+  const db = makeFakeDb();
+  db.failOn.set("cleanup-w1-workspace", 1);
+  db.failOn.set("cleanup-w2-workspace", 1);
+  const r = await run({ db }).report;
+  assert.equal(cleanupAttempts(db, "w1", r.runIds.w1).length, 1);
+  assert.equal(cleanupAttempts(db, "w2", r.runIds.w2).length, 1);
+  assert.deepEqual(checkNamed(r, "cleanup: w1 completed").map((c) => c.ok), [false]);
+  assert.deepEqual(checkNamed(r, "cleanup: w2 completed").map((c) => c.ok), [false]);
+  assert.equal(checkNamed(r, "cleanup: baseline counts restored").length, 1, "baseline verification still attempted");
+  assert.equal(checkNamed(r, "cleanup: baseline counts restored")[0].ok, false);
+  assert.ok(db.workspaces.has(r.runIds.w1) && db.workspaces.has(r.runIds.w2));
+  assert.equal(r.ok, false);
+  assert.equal(r.cleanupOk, false);
+  assert.match(String(r.cleanupDetail), /^w1 cleanup transport failure: /, "first failure wins the summary detail");
+  assertOnlyFrozenP9Sql(db);
+});
+
+test("72C.27 cleanup: a failing baseline-after read is reported as a failed check, after both deletes succeeded", async () => {
+  const db = makeFakeDb();
+  const readOnly = db.readOnly();
+  let baselineAfterCalls = 0;
+  const failingBaselineRead = async (sql, params, context) => {
+    if (context === "c2c-baseline-after") {
+      baselineAfterCalls += 1;
+      throw httpError("injected failure at c2c-baseline-after");
+    }
+    return readOnly(sql, params, context);
+  };
+  const r = await run({ db, readOnly: failingBaselineRead }).report;
+  assert.equal(baselineAfterCalls, 1, "attempted exactly once (no retry)");
+  assert.equal(cleanupAttempts(db, "w1", r.runIds.w1).length, 1);
+  assert.equal(cleanupAttempts(db, "w2", r.runIds.w2).length, 1);
+  assert.deepEqual(checkNamed(r, "cleanup: w1 rows absent").map((c) => c.ok), [true]);
+  assert.deepEqual(checkNamed(r, "cleanup: w2 rows absent").map((c) => c.ok), [true]);
+  assert.equal(db.workspaces.size, 0, "both run workspaces are gone");
+  assert.deepEqual(checkNamed(r, "cleanup: baseline verified").map((c) => c.ok), [false]);
+  assert.match(checkNamed(r, "cleanup: baseline verified")[0].detail, /^baseline cleanup transport failure: /);
+  assert.equal(checkNamed(r, "cleanup: baseline counts restored").length, 0);
+  assert.equal(r.ok, false, "an unverifiable baseline is never reported as success");
+  assert.equal(r.cleanupOk, false);
+  assert.match(String(r.cleanupDetail), /^baseline cleanup transport failure: /);
+  assertOnlyFrozenP9Sql(db);
+});
+
+test("72C.27 cleanup: the finally block is structurally independent per workspace (source pin)", () => {
+  const src = read("scripts/canary-validate-2c-lib.ts");
+  // The run's own finally is the LAST one in the file (withCapturedLogs has an earlier, unrelated one).
+  const finallyBlock = src.slice(src.lastIndexOf("} finally {"), src.indexOf("const logLeaks ="));
+  // Two independent try/catch sites: one inside the per-workspace loop, one for the baseline.
+  assert.equal((finallyBlock.match(/\btry \{/g) ?? []).length, 2);
+  assert.equal((finallyBlock.match(/\bcatch \(e\) \{/g) ?? []).length, 2);
+  assert.ok(finallyBlock.indexOf("for (const [ws, label] of") < finallyBlock.indexOf("try {"), "the loop wraps the try, not the reverse");
+  // Every catch records the failure; none swallows it.
+  for (const m of finallyBlock.matchAll(/catch \(e\) \{([\s\S]*?)\n\s{6,8}\}/g)) {
+    assert.match(m[1], /cleanupOk = false/);
+    assert.match(m[1], /add\(/);
+    assert.match(m[1], /safeMessage\(e\)/);
+  }
+  // The only mutation in cleanup is still the frozen exact-id-and-name delete.
+  assert.equal((finallyBlock.match(/mutate\(/g) ?? []).length, 1);
+  assert.match(finallyBlock, /mutate\(P9_SQL_CLEANUP_WORKSPACE, \[ws, wsName\(ws\)\]/);
 });
 
 // ------------------------------------------------------------ kb-client unit tests

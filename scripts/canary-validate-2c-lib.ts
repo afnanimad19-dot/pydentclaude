@@ -29,8 +29,9 @@
 // Safety invariants are P9's, unchanged: the SAME frozen parameterized
 // statements (the allowlist is NOT expanded), transport-enforced marker
 // names, sentinel + migrated-state + residue + baseline gates before any
-// write, exact-id-and-name cleanup in finally with absence and baseline
-// restoration, and output discipline (check names, counts, run uuids,
+// write, exact-id-and-name cleanup in finally (each workspace attempted
+// independently; baseline restoration verified regardless), and output
+// discipline (check names, counts, run uuids,
 // scrubbed transport text — never knowledge content or credentials).
 //
 // This module performs no network I/O and VALUE-imports no application
@@ -440,8 +441,14 @@ export async function runCanary2cRetrievalValidation(deps: Canary2cDeps): Promis
     add("validation sequence completed without transport error", false, safeMessage(e));
   } finally {
     if (mutated) {
-      try {
-        for (const [ws, label] of [[w1, "w1"], [w2, "w2"]] as const) {
+      // Cleanup is INDEPENDENT per workspace (Step 72C.27): a transport failure
+      // while deleting one run workspace never skips the other, and the
+      // baseline comparison runs regardless of either outcome. Every failure
+      // is recorded as a failed check AND cleanupOk=false — nothing is
+      // swallowed; nothing is retried. Detail text carries only the label and
+      // the safe (fixed-code / scrubbed) transport message.
+      for (const [ws, label] of [[w1, "w1"], [w2, "w2"]] as const) {
+        try {
           await mutate(P9_SQL_CLEANUP_WORKSPACE, [ws, wsName(ws)], `cleanup-${label}-workspace`);
           const absent = oneRow(await read(SQL_P9_VERIFY_RUN_ABSENT, [ws], `cleanup-${label}-absent`), `cleanup-${label}-absent`);
           const left = BASELINE_TABLES.filter((t) => asInt(absent[t]) !== 0);
@@ -450,7 +457,14 @@ export async function runCanary2cRetrievalValidation(deps: Canary2cDeps): Promis
             cleanupOk = false;
             cleanupDetail = cleanupDetail ?? `${label} rows remain in: ${left.join(", ")}`;
           }
+        } catch (e) {
+          cleanupOk = false;
+          const detail = `${label} cleanup transport failure: ${safeMessage(e)}`;
+          cleanupDetail = cleanupDetail ?? detail;
+          add(`cleanup: ${label} completed`, false, detail);
         }
+      }
+      try {
         const after = oneRow(await read(SQL_P9_BASELINE_COUNTS, [], "c2c-baseline-after"), "c2c-baseline-after");
         const drifted = BASELINE_TABLES.filter((t) => asInt(after[t]) !== asInt(baseline[t]));
         add("cleanup: baseline counts restored (nothing unrelated disturbed)", drifted.length === 0, drifted.join(", ") || undefined);
@@ -460,8 +474,9 @@ export async function runCanary2cRetrievalValidation(deps: Canary2cDeps): Promis
         }
       } catch (e) {
         cleanupOk = false;
-        cleanupDetail = `cleanup transport failure: ${safeMessage(e)}`;
-        add("cleanup: completed", false, cleanupDetail);
+        const detail = `baseline cleanup transport failure: ${safeMessage(e)}`;
+        cleanupDetail = cleanupDetail ?? detail;
+        add("cleanup: baseline verified", false, detail);
       }
     }
   }
