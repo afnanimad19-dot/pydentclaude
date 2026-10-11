@@ -77,7 +77,12 @@ test("every sentinel mismatch refuses with its fixed code", async () => {
 });
 
 test("sentinel is pinned to the canary and separate from the A7 sentinel schema", () => {
-  for (const sql of [s.PROPOSED_CANARY_SENTINEL_DDL, s.PROPOSED_CANARY_SENTINEL_INSERT_SQL, s.CANARY_SENTINEL_VERIFICATION_SQL]) {
+  for (const sql of [
+    s.PROPOSED_CANARY_SENTINEL_DDL,
+    s.PROPOSED_CANARY_SENTINEL_INSERT_SQL,
+    s.PROPOSED_CANARY_SENTINEL_ROTATE_SQL,
+    s.CANARY_SENTINEL_VERIFICATION_SQL,
+  ]) {
     assert.ok(sql.includes(CANARY_PROJECT_REF));
     assert.ok(!/a7_guard/.test(sql));
     assert.ok(!sql.includes(FORBIDDEN_A7_REF) && !sql.includes(FORBIDDEN_PRODUCTION_REF));

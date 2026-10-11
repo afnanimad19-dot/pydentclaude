@@ -36,6 +36,18 @@
 //        supabase_migrations history is NEVER written (the preflight requires
 //        0 rows); step markers are the migrations' own objects, committed
 //        atomically within the same transaction as the migration itself.
+//   PR — sentinel ROTATION executor (Step 72C.14; IMPLEMENTED OFFLINE ONLY;
+//        live execution requires its own separate approval): exactly the
+//        reviewed PROPOSED_CANARY_SENTINEL_ROTATE_SQL from canary-sentinel.ts,
+//        a single parameterized compare-and-swap, reused verbatim and held in
+//        its OWN one-entry allowlist (the frozen-SQL `send` path refuses it).
+//        The only arguments are two 64-hex digests: the NEXT token's and the
+//        CURRENT token's, both derived in process from the environment. Gated
+//        by authorizeCanaryMutation with the CURRENT token before the write,
+//        requires exactly one returned row, and afterwards proves with the
+//        committed gate itself that the NEXT token passes and the CURRENT one
+//        is refused, with inventory, sentinel ACL posture, row count and
+//        project ref unchanged. No retry; no rollback to the exposed token.
 // NOTHING ELSE. This module is NOT a general-purpose SQL interface: the only
 // exported network surface is runW1/runW2, each of which sends one frozen SQL
 // constant. An internal allowlist refuses any other text as defense in depth.
@@ -67,8 +79,11 @@ import {
 import type { CanaryFetchLike, CanaryReadOnlyExecutor } from "./canary-transport";
 import {
   CANARY_SENTINEL_TOKEN_ENV,
+  CANARY_SENTINEL_TOKEN_NEXT_ENV,
+  CANARY_SENTINEL_VERIFICATION_SQL,
   PROPOSED_CANARY_SENTINEL_DDL,
   PROPOSED_CANARY_SENTINEL_INSERT_SQL,
+  PROPOSED_CANARY_SENTINEL_ROTATE_SQL,
   SQL_SENTINEL_PRESENCE,
   authorizeCanaryMutation,
   canarySentinelDigest,
@@ -79,6 +94,7 @@ import {
   scanTransactionSafety,
   wrapInTransaction,
 } from "./canary-plan-lib";
+import { SQL_PUBLIC_INVENTORY } from "./canary-preflight-lib";
 import { A7_STEPS } from "./a7-manifest";
 import { sha256Hex } from "./canary-manifest-check";
 
@@ -106,7 +122,17 @@ export type CanaryProbeFailureCode =
   | "P3_FILE_NOT_IN_MANIFEST" // the named file (with its claimed hash) is not a pinned manifest entry
   | "P3_FILE_HASH_MISMATCH" // the provided SQL does not hash to the pinned manifest value
   | "P3_TRANSACTION_UNSAFE" // the file contains statements that cannot run inside one wrapped transaction
-  | "P9_PARAMS_INVALID"; // a P9 validation statement's bound parameters fail their declared shape
+  | "P9_PARAMS_INVALID" // a P9 validation statement's bound parameters fail their declared shape
+  | "PR_NEXT_TOKEN_MISSING" // CANARY_SENTINEL_TOKEN_NEXT is not set; nothing to rotate to
+  | "PR_NEXT_TOKEN_MALFORMED" // CANARY_SENTINEL_TOKEN_NEXT is not a UUID
+  | "PR_NEXT_TOKEN_EXPOSED" // CANARY_SENTINEL_TOKEN_NEXT value appears in a NEXT_PUBLIC_* variable
+  | "PR_TOKENS_IDENTICAL" // the next token equals the current token; a rotation must change the digest
+  | "PR_DIGESTS_INVALID" // the rotation member was not handed exactly two distinct 64-hex digests
+  | "PR_NO_ROW_UPDATED" // the compare-and-swap matched no row: the current digest is not what the sentinel holds
+  | "PR_RESULT_UNEXPECTED" // the rotation request returned something other than exactly one row with id 1
+  | "PR_NEW_TOKEN_NOT_VALID" // after the request, the committed gate does not accept the next token
+  | "PR_OLD_TOKEN_STILL_VALID" // after the request, the committed gate still accepts the current token
+  | "PR_STATE_CHANGED"; // inventory or sentinel ACL posture differs from the pre-rotation snapshot
 
 const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   PROBE_SQL_NOT_ALLOWLISTED: "probe transport only sends the frozen W1/W2 SQL; refusing other text",
@@ -131,6 +157,16 @@ const PROBE_MESSAGES: Record<CanaryProbeFailureCode, string> = {
   P3_FILE_HASH_MISMATCH: "the SQL does not hash to the pinned manifest value; the migration transport refuses it",
   P3_TRANSACTION_UNSAFE: "the file contains statements that cannot run inside one wrapped transaction; refusing",
   P9_PARAMS_INVALID: "a validation statement's bound parameters do not match their declared shape; refusing",
+  PR_NEXT_TOKEN_MISSING: "CANARY_SENTINEL_TOKEN_NEXT is not set; there is no token to rotate to — refusing",
+  PR_NEXT_TOKEN_MALFORMED: "CANARY_SENTINEL_TOKEN_NEXT is not a well-formed UUID; refusing",
+  PR_NEXT_TOKEN_EXPOSED: "CANARY_SENTINEL_TOKEN_NEXT value appears in a NEXT_PUBLIC_* variable; refusing",
+  PR_TOKENS_IDENTICAL: "the next sentinel token equals the current one; a rotation must change the digest — refusing",
+  PR_DIGESTS_INVALID: "the rotation only accepts exactly two distinct 64-hex SHA-256 digests; refusing",
+  PR_NO_ROW_UPDATED: "the rotation matched no sentinel row (current digest not held by the sentinel); nothing changed — stopping",
+  PR_RESULT_UNEXPECTED: "the rotation request did not return exactly one row with id 1; run the read-only rotation status check",
+  PR_NEW_TOKEN_NOT_VALID: "after the rotation request the next token is NOT accepted by the committed gate; run the read-only rotation status check",
+  PR_OLD_TOKEN_STILL_VALID: "after the rotation request the current token is STILL accepted by the committed gate; run the read-only rotation status check",
+  PR_STATE_CHANGED: "inventory or sentinel ACL posture differs from the pre-rotation snapshot; investigate before any further request",
 };
 
 export class CanaryProbeError extends Error {
@@ -286,6 +322,44 @@ export const SQL_P1_ACL_CHECK =
   " (select pg_get_userbyid(relowner) from pg_class where oid = 'canary_guard.sentinel'::regclass) as table_owner," +
   " not exists (select 1 from pg_default_acl d where d.defaclnamespace = to_regnamespace('canary_guard')) as no_default_acl_in_schema";
 
+/**
+ * PR — the sentinel ROTATION request, REUSED VERBATIM from the reviewed
+ * proposal in canary-sentinel.ts (no new SQL is authored here). One
+ * parameterized compare-and-swap: $1 = next digest, $2 = current digest.
+ */
+export const PR_REQUEST_SQL = PROPOSED_CANARY_SENTINEL_ROTATE_SQL;
+
+/**
+ * Read CANARY_SENTINEL_TOKEN_NEXT from the PROCESS environment only and reduce
+ * it to its SHA-256 digest in process. Same refusals as the current token
+ * (missing, non-UUID, echoed in any NEXT_PUBLIC_* value), under PR_ codes so
+ * the operator can tell which of the two tokens is at fault. Neither token nor
+ * digest ever reaches a message or a log.
+ */
+export function deriveNextSentinelDigestFromEnv(env: Readonly<Record<string, string | undefined>>): string {
+  const token = env[CANARY_SENTINEL_TOKEN_NEXT_ENV];
+  if (token === undefined || token === "") throw new CanaryProbeError("PR_NEXT_TOKEN_MISSING");
+  if (!UUID_SHAPE_RE.test(token)) throw new CanaryProbeError("PR_NEXT_TOKEN_MALFORMED");
+  for (const [key, value] of Object.entries(env)) {
+    if (key.startsWith("NEXT_PUBLIC_") && typeof value === "string" && value.toLowerCase().includes(token.toLowerCase())) {
+      throw new CanaryProbeError("PR_NEXT_TOKEN_EXPOSED");
+    }
+  }
+  return canarySentinelDigest(token);
+}
+
+/**
+ * Fixed operator guidance when a rotation request's outcome is unknown (the
+ * response was lost, or a post-request verification disagreed). Recovery is
+ * READ-ONLY and is never automatic: no retry, no rollback to the exposed token.
+ */
+export const ROTATION_RECOVERY_GUIDANCE =
+  "Rotation outcome unknown. Do NOT re-run the rotation blindly. Run the read-only rotation status check" +
+  " (canary-probe --confirm-rotation-status=...): if only the CURRENT token verifies, the request did not land and" +
+  " the rotation may be run again; if only the NEXT token verifies, the rotation landed — update" +
+  ` ${CANARY_SENTINEL_TOKEN_ENV} to the next value and remove ${CANARY_SENTINEL_TOKEN_NEXT_ENV}; if neither verifies,` +
+  " stop: the sentinel was altered outside this tooling and the documented canary recovery (operator decision) applies.";
+
 // ------------------------------------------------------------ probe transport (W1/W2 only)
 
 type ProbeRow = Record<string, unknown>;
@@ -316,6 +390,19 @@ export type CanaryWriteProbeTransport = {
    * mismatch, surfaces this way and IS an assertable contract outcome).
    */
   readonly runValidationStatement: (sql: string, parameters: readonly string[], context: string) => Promise<unknown[]>;
+  /**
+   * PR: send the ONE reviewed sentinel compare-and-swap with exactly two
+   * distinct 64-hex digests (next, current) as bound parameters. Held in its
+   * own one-entry allowlist; the frozen-SQL path refuses it. HTTP 401/403
+   * resolves authorized:false (nothing executed); any other non-2xx or a
+   * network failure throws with a FIXED detail (the body could echo a
+   * parameter, so it is never surfaced). On success returns how many rows
+   * came back and whether every one of them is { id: 1 }.
+   */
+  readonly runSentinelRotation: (
+    nextDigestHex: string,
+    currentDigestHex: string,
+  ) => Promise<{ authorized: boolean; httpStatus: number; rowsReturned: number; idOk: boolean }>;
 };
 
 /** file -> pinned sha256 across all 68 reviewed manifest entries. */
@@ -406,6 +493,13 @@ const ALLOWLISTED_PROBE_SQL: readonly string[] = Object.freeze([
   P2_HARDENING_SQL,
 ]);
 
+/**
+ * The rotation's OWN allowlist: one entry, consulted only by runSentinelRotation.
+ * It is deliberately NOT part of ALLOWLISTED_PROBE_SQL, so the frozen-SQL
+ * `send` path (which binds at most one digest) can never carry it.
+ */
+const ALLOWLISTED_ROTATION_SQL: readonly string[] = Object.freeze([PR_REQUEST_SQL]);
+
 export function createCanaryWriteProbeTransport(
   env: Readonly<Record<string, string | undefined>>,
   fetchImpl?: CanaryFetchLike,
@@ -441,6 +535,8 @@ export function createCanaryWriteProbeTransport(
   };
 
   const send = async (sql: string, context: string, boundDigest?: string) => {
+    // The rotation statement has its own two-digest path; the frozen path refuses it outright.
+    if (ALLOWLISTED_ROTATION_SQL.includes(sql)) throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
     if (!ALLOWLISTED_PROBE_SQL.includes(sql)) throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", context);
     // Only the P1 insert carries a bound parameter, and only a 64-hex digest.
     if (sql === P1_REQUEST_B_SQL) {
@@ -593,7 +689,52 @@ export function createCanaryWriteProbeTransport(
     return rows;
   };
 
-  return Object.freeze({ runW1, runW2, runW3, runP1Ddl, runP1Insert, runP2Hardening, runManifestMigration, runValidationStatement });
+  const runSentinelRotation: CanaryWriteProbeTransport["runSentinelRotation"] = async (nextDigestHex, currentDigestHex, ...extra: unknown[]) => {
+    // Exactly two distinct 64-hex digests; anything else (SQL-shaped text, a
+    // UUID, an extra or missing value) refuses before any network use.
+    if (
+      extra.length !== 0 ||
+      typeof nextDigestHex !== "string" ||
+      typeof currentDigestHex !== "string" ||
+      !SHA256_HEX_RE.test(nextDigestHex) ||
+      !SHA256_HEX_RE.test(currentDigestHex) ||
+      nextDigestHex === currentDigestHex
+    ) {
+      throw new CanaryProbeError("PR_DIGESTS_INVALID", "pr-rotate");
+    }
+    if (!ALLOWLISTED_ROTATION_SQL.includes(PR_REQUEST_SQL)) throw new CanaryProbeError("PROBE_SQL_NOT_ALLOWLISTED", "pr-rotate");
+    const response = await post(PR_REQUEST_SQL, "pr-rotate", [nextDigestHex, currentDigestHex]);
+    if (response.status === 401 || response.status === 403) {
+      return { authorized: false, httpStatus: response.status, rowsReturned: 0, idOk: false };
+    }
+    if (!response.ok) {
+      // Fixed detail only: the response could echo a bound parameter, so no body text is surfaced.
+      throw new CanaryProbeError("PROBE_HTTP_ERROR", `pr-rotate: HTTP ${response.status}`);
+    }
+    let rows: unknown;
+    try {
+      rows = await response.json();
+    } catch {
+      throw new CanaryProbeError("PROBE_RESULT_MALFORMED", "pr-rotate: unparseable response");
+    }
+    if (!Array.isArray(rows)) throw new CanaryProbeError("PROBE_RESULT_MALFORMED", "pr-rotate");
+    const idOk =
+      rows.length > 0 &&
+      rows.every((r) => typeof r === "object" && r !== null && (r as ProbeRow).id === 1 && Object.keys(r as ProbeRow).length === 1);
+    return { authorized: true, httpStatus: response.status, rowsReturned: rows.length, idOk };
+  };
+
+  return Object.freeze({
+    runW1,
+    runW2,
+    runW3,
+    runP1Ddl,
+    runP1Insert,
+    runP2Hardening,
+    runManifestMigration,
+    runValidationStatement,
+    runSentinelRotation,
+  });
 }
 
 // ------------------------------------------------------------ blank-state fingerprint (read-only)
@@ -1130,4 +1271,213 @@ export async function runCanaryP2Hardening(deps: {
   if (!unchanged) throw new CanaryProbeError("STATE_CHANGED_AFTER_PROBE", fingerprintDetail(after));
 
   return { target: CANARY_PROJECT_REF, outcome: "hardened", httpStatus: r.httpStatus, checks };
+}
+
+// ------------------------------------------------------------ PR orchestration (sentinel rotation; live run needs separate approval)
+
+export type RotationOutcome =
+  | "rotated" // the compare-and-swap updated exactly one row and every read-only verification passed
+  | "not_authorized" // HTTP 401/403 on the request — nothing was executed
+  | "request_failed"; // transport failure or non-2xx — the outcome is UNKNOWN; read-only status check required
+
+export type CanarySentinelRotationReport = {
+  readonly target: typeof CANARY_PROJECT_REF;
+  readonly outcome: RotationOutcome;
+  readonly httpStatus?: number;
+  readonly checks: readonly ProbeCheck[];
+  /** Set when outcome is request_failed: FIXED guidance text; never response content. */
+  readonly recoveryGuidance?: string;
+};
+
+type SentinelVerification = { rowCount: number; idOk: boolean; refOk: boolean; tokenOk: boolean };
+
+/** One fixed read-only verification query with a digest as the bound parameter; booleans and a count only. */
+async function readSentinelVerification(readOnly: CanaryReadOnlyExecutor, digestHex: string, context: string): Promise<SentinelVerification> {
+  if (!SHA256_HEX_RE.test(digestHex)) throw new CanaryProbeError("PR_DIGESTS_INVALID", context);
+  const rows = await readOnly(CANARY_SENTINEL_VERIFICATION_SQL, [digestHex], context);
+  if (rows.length !== 1 || typeof rows[0] !== "object" || rows[0] === null) throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+  const r = rows[0] as ProbeRow;
+  const rowCount = asInt(r.row_count);
+  if (!Number.isFinite(rowCount)) throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+  return { rowCount, idOk: r.id_ok === true, refOk: r.ref_ok === true, tokenOk: r.token_ok === true };
+}
+
+/** Public inventory counts as one fixed string, for before/after equality. */
+async function readInventoryFingerprint(readOnly: CanaryReadOnlyExecutor, context: string): Promise<string> {
+  const rows = await readOnly(SQL_PUBLIC_INVENTORY, [], context);
+  if (rows.length !== 1 || typeof rows[0] !== "object" || rows[0] === null) throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+  const r = rows[0] as ProbeRow;
+  const relations = asInt(r.relations);
+  const functions = asInt(r.functions);
+  const types = asInt(r.types);
+  if (![relations, functions, types].every(Number.isFinite)) throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+  return `relations=${relations} functions=${functions} types=${types}`;
+}
+
+/** The sentinel's actual ACL/ownership posture (SQL_P1_ACL_CHECK) as one fixed string, for before/after equality. */
+async function readSentinelAclFingerprint(readOnly: CanaryReadOnlyExecutor, context: string): Promise<string> {
+  const rows = await readOnly(SQL_P1_ACL_CHECK, [], context);
+  if (rows.length !== 1 || typeof rows[0] !== "object" || rows[0] === null) throw new CanaryProbeError("PROBE_RESULT_MALFORMED", context);
+  const r = rows[0] as ProbeRow;
+  return Object.keys(r)
+    .sort()
+    .map((k) => `${k}=${String(r[k])}`)
+    .join(" ");
+}
+
+/** The environment as the NEXT token would see it: CANARY_SENTINEL_TOKEN replaced by CANARY_SENTINEL_TOKEN_NEXT. */
+const envWithNextToken = (env: Readonly<Record<string, string | undefined>>): Record<string, string | undefined> => ({
+  ...env,
+  [CANARY_SENTINEL_TOKEN_ENV]: env[CANARY_SENTINEL_TOKEN_NEXT_ENV],
+});
+
+/**
+ * PR sequence (stop at the first surprise; NEVER retries; NEVER rolls back to the exposed token):
+ *   both digests from env (no network unless both derive and differ) ->
+ *   committed gate with the CURRENT token (authorizeCanaryMutation) ->
+ *   before: next token not yet accepted; inventory + sentinel ACL posture snapshotted ->
+ *   ONE compare-and-swap request (exactly one row, id 1, required) ->
+ *   after: committed gate ACCEPTS the next token and REFUSES the current one
+ *   (SENTINEL_TOKEN_MISMATCH specifically); row count 1, id 1, canary ref;
+ *   inventory and ACL posture byte-identical to the snapshot.
+ * A lost response or non-2xx ends the run as request_failed with FIXED recovery
+ * guidance (and a best-effort read-only status reading); nothing is re-sent.
+ */
+export async function runCanarySentinelRotation(deps: {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly readOnly: CanaryReadOnlyExecutor;
+  readonly probe: CanaryWriteProbeTransport;
+}): Promise<CanarySentinelRotationReport> {
+  assertCanaryEnvironment(deps.env);
+  // Token gates BEFORE any query or request; both digests stay in this scope.
+  const currentDigest = deriveSentinelDigestFromEnv(deps.env);
+  const nextDigest = deriveNextSentinelDigestFromEnv(deps.env);
+  if (currentDigest === nextDigest) throw new CanaryProbeError("PR_TOKENS_IDENTICAL");
+
+  const checks: ProbeCheck[] = [];
+  const add = (name: string, ok: boolean, detail?: string) => checks.push({ name, ok, detail });
+  add("current and next tokens present, UUID-shaped, not exposed via NEXT_PUBLIC_*, distinct; digests derived in process", true);
+
+  // The committed gate with the CURRENT token must pass before anything is sent.
+  await authorizeCanaryMutation(deps.readOnly, deps.env);
+  add("sentinel gate (read-only): authorizeCanaryMutation eligible with the CURRENT token", true);
+
+  const beforeNext = await readSentinelVerification(deps.readOnly, nextDigest, "pr-before-next");
+  const beforeOk = beforeNext.rowCount === 1 && beforeNext.idOk && beforeNext.refOk && !beforeNext.tokenOk;
+  add("before (read-only): one sentinel row, id 1, canary ref; NEXT token not yet accepted", beforeOk, `row_count=${beforeNext.rowCount}`);
+  if (!beforeOk) throw new CanaryProbeError("PR_STATE_CHANGED", "before: sentinel row or next-token state unexpected");
+
+  const inventoryBefore = await readInventoryFingerprint(deps.readOnly, "pr-inventory-before");
+  const aclBefore = await readSentinelAclFingerprint(deps.readOnly, "pr-acl-before");
+  add("before (read-only): public inventory and sentinel ACL posture snapshotted", true, inventoryBefore);
+
+  // The ONE compare-and-swap request.
+  let r: Awaited<ReturnType<CanaryWriteProbeTransport["runSentinelRotation"]>>;
+  try {
+    r = await deps.probe.runSentinelRotation(nextDigest, currentDigest);
+  } catch (e) {
+    // Refusals that provably sent nothing propagate (digest shape, allowlist, guard refusals before the fetch);
+    // anything else leaves the outcome unknown.
+    if (e instanceof CanaryError) throw e;
+    if (e instanceof CanaryProbeError && (e.code === "PR_DIGESTS_INVALID" || e.code === "PROBE_SQL_NOT_ALLOWLISTED")) throw e;
+    const failureDetail = e instanceof CanaryProbeError ? e.message : "unexpected transport failure";
+    add("rotation request: outcome UNKNOWN (transport failure or non-2xx); nothing re-sent", false, failureDetail);
+    try {
+      const status = await runCanarySentinelRotationStatus({ env: deps.env, readOnly: deps.readOnly });
+      add("state captured (read-only) after failure", true, `reading=${status.reading}`);
+    } catch {
+      add("state capture (read-only) after failure", false, "status query itself failed");
+    }
+    return { target: CANARY_PROJECT_REF, outcome: "request_failed", checks, recoveryGuidance: ROTATION_RECOVERY_GUIDANCE };
+  }
+  if (!r.authorized) {
+    add("rotation request authorized", false, `HTTP ${r.httpStatus}: nothing was executed`);
+    return { target: CANARY_PROJECT_REF, outcome: "not_authorized", httpStatus: r.httpStatus, checks };
+  }
+  add("rotation request accepted", true, `HTTP ${r.httpStatus} rows_returned=${r.rowsReturned}`);
+  if (r.rowsReturned === 0) throw new CanaryProbeError("PR_NO_ROW_UPDATED", `HTTP ${r.httpStatus}`);
+  if (r.rowsReturned !== 1 || !r.idOk) throw new CanaryProbeError("PR_RESULT_UNEXPECTED", `rows_returned=${r.rowsReturned} id_ok=${r.idOk}`);
+  add("exactly one row updated (id 1)", true);
+
+  // After: the committed gate itself decides. Next token must pass; current must be refused for the token specifically.
+  try {
+    await authorizeCanaryMutation(deps.readOnly, envWithNextToken(deps.env));
+  } catch (e) {
+    throw new CanaryProbeError("PR_NEW_TOKEN_NOT_VALID", e instanceof CanaryError ? e.code : "unexpected");
+  }
+  add("after (read-only): committed gate ACCEPTS the next token (one row, id 1, canary ref)", true);
+  let oldRefusedForToken = false;
+  try {
+    await authorizeCanaryMutation(deps.readOnly, deps.env);
+  } catch (e) {
+    if (e instanceof CanaryError && e.code === "SENTINEL_TOKEN_MISMATCH") oldRefusedForToken = true;
+    else throw new CanaryProbeError("PR_STATE_CHANGED", e instanceof CanaryError ? e.code : "unexpected");
+  }
+  if (!oldRefusedForToken) throw new CanaryProbeError("PR_OLD_TOKEN_STILL_VALID");
+  add("after (read-only): committed gate REFUSES the current token (SENTINEL_TOKEN_MISMATCH)", true);
+
+  const inventoryAfter = await readInventoryFingerprint(deps.readOnly, "pr-inventory-after");
+  const aclAfter = await readSentinelAclFingerprint(deps.readOnly, "pr-acl-after");
+  const unchanged = inventoryAfter === inventoryBefore && aclAfter === aclBefore;
+  add("after (read-only): public inventory and sentinel ACL posture unchanged", unchanged, inventoryAfter);
+  if (!unchanged) throw new CanaryProbeError("PR_STATE_CHANGED", "after: inventory or ACL posture differs from the snapshot");
+
+  return { target: CANARY_PROJECT_REF, outcome: "rotated", httpStatus: r.httpStatus, checks };
+}
+
+// ------------------------------------------------------------ PR status (read-only recovery reading)
+
+export type RotationStatusReading =
+  | "not_rotated" // only the CURRENT token verifies — a rotation request never landed
+  | "rotated" // only the NEXT token verifies — the rotation landed; update the environment
+  | "neither" // neither verifies — the sentinel was altered outside this tooling
+  | "both"; // both verify — impossible for one row with distinct digests; treat as corrupted
+
+export type CanarySentinelRotationStatus = {
+  readonly target: typeof CANARY_PROJECT_REF;
+  readonly rowCount: number;
+  readonly currentVerifies: boolean;
+  readonly nextVerifies: boolean;
+  readonly reading: RotationStatusReading;
+  /** FIXED guidance per reading; never a token, digest or response text. */
+  readonly guidance: string;
+};
+
+const STATUS_GUIDANCE: Record<RotationStatusReading, string> = {
+  not_rotated: "Only the CURRENT token verifies: no rotation landed. The rotation may be run (once) when authorized.",
+  rotated:
+    `Only the NEXT token verifies: the rotation landed. Set ${CANARY_SENTINEL_TOKEN_ENV} to the next value and remove` +
+    ` ${CANARY_SENTINEL_TOKEN_NEXT_ENV} in the environment; start a fresh session; do not run the rotation again.`,
+  neither: "Neither token verifies: the sentinel was altered outside this tooling. Stop; the documented canary recovery (operator decision) applies.",
+  both: "Both tokens verify: inconsistent with a single sentinel row. Stop; investigate before any further request.",
+};
+
+/**
+ * READ-ONLY. Two fixed verification queries (current digest, next digest) and a
+ * reading. Used after an interrupted rotation, and usable before one. Sends
+ * nothing with read_only:false; never retries or repairs.
+ */
+export async function runCanarySentinelRotationStatus(deps: {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly readOnly: CanaryReadOnlyExecutor;
+}): Promise<CanarySentinelRotationStatus> {
+  assertCanaryEnvironment(deps.env);
+  const currentDigest = deriveSentinelDigestFromEnv(deps.env);
+  const nextDigest = deriveNextSentinelDigestFromEnv(deps.env);
+  if (currentDigest === nextDigest) throw new CanaryProbeError("PR_TOKENS_IDENTICAL");
+  const current = await readSentinelVerification(deps.readOnly, currentDigest, "pr-status-current");
+  const next = await readSentinelVerification(deps.readOnly, nextDigest, "pr-status-next");
+  const shapeOk = (v: SentinelVerification) => v.rowCount === 1 && v.idOk && v.refOk;
+  const currentVerifies = shapeOk(current) && current.tokenOk;
+  const nextVerifies = shapeOk(next) && next.tokenOk;
+  const reading: RotationStatusReading =
+    currentVerifies && nextVerifies ? "both" : currentVerifies ? "not_rotated" : nextVerifies ? "rotated" : "neither";
+  return Object.freeze({
+    target: CANARY_PROJECT_REF,
+    rowCount: current.rowCount,
+    currentVerifies,
+    nextVerifies,
+    reading,
+    guidance: STATUS_GUIDANCE[reading],
+  });
 }

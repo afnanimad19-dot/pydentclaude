@@ -55,6 +55,31 @@ export const PROPOSED_CANARY_SENTINEL_DDL = [
 export const PROPOSED_CANARY_SENTINEL_INSERT_SQL =
   `insert into canary_guard.sentinel (id, project_ref, token_sha256) values (1, '${CANARY_PROJECT_REF}', $1)`;
 
+/**
+ * REVIEWED (Step 72C.14, offline only) sentinel ROTATION statement: a single
+ * parameterized compare-and-swap. $1 = SHA-256 hex digest of the NEXT operator
+ * token, $2 = SHA-256 hex digest of the CURRENT token. The WHERE clause on the
+ * current digest means a stale or duplicate run matches zero rows and changes
+ * nothing; `returning id` reports one row or none without returning a digest.
+ * Nothing in this module executes it; the only executor is the dedicated
+ * rotation member of the write-capable probe transport, behind its own
+ * allowlist and confirmation phrase.
+ */
+export const PROPOSED_CANARY_SENTINEL_ROTATE_SQL =
+  "UPDATE canary_guard.sentinel\n" +
+  "SET token_sha256 = $1\n" +
+  "WHERE id = 1\n" +
+  `  AND project_ref = '${CANARY_PROJECT_REF}'\n` +
+  "  AND token_sha256 = $2\n" +
+  "RETURNING id;";
+
+/**
+ * The NEXT operator token during a rotation, read from the PROCESS environment
+ * only (same rules as CANARY_SENTINEL_TOKEN). Present only for the rotation
+ * run; the operator removes it once CANARY_SENTINEL_TOKEN holds the new value.
+ */
+export const CANARY_SENTINEL_TOKEN_NEXT_ENV = "CANARY_SENTINEL_TOKEN_NEXT";
+
 /** Read-only existence probe (never errors when the sentinel is absent). */
 export const SQL_SENTINEL_PRESENCE =
   "select to_regnamespace('canary_guard') is not null as schema_present," +

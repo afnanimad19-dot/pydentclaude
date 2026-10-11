@@ -6,6 +6,10 @@
 //     scripts/canary-probe.ts --confirm-w3=<CANARY_W3_CONFIRMATION_PHRASE>      # W3
 //     scripts/canary-probe.ts --confirm-p1=<CANARY_P1_CONFIRMATION_PHRASE>      # P1 (CANARY_SENTINEL_TOKEN in env)
 //     scripts/canary-probe.ts --confirm-p2=<CANARY_P2_CONFIRMATION_PHRASE>      # P2 (sentinel-gated)
+//     scripts/canary-probe.ts --confirm-rotate=<CANARY_ROTATION_CONFIRMATION_PHRASE>
+//                                     # PR sentinel rotation (CANARY_SENTINEL_TOKEN + CANARY_SENTINEL_TOKEN_NEXT in env)
+//     scripts/canary-probe.ts --confirm-rotation-status=<CANARY_ROTATION_STATUS_CONFIRMATION_PHRASE>
+//                                     # READ-ONLY: which of the two tokens the sentinel currently accepts
 //
 // Order (each step refuses before the next):
 //   1. exact confirmation phrase for the two approved write-capable requests;
@@ -24,6 +28,8 @@ import {
   createCanaryWriteProbeTransport,
   runCanaryP1SentinelSetup,
   runCanaryP2Hardening,
+  runCanarySentinelRotation,
+  runCanarySentinelRotationStatus,
   runCanaryW3Probe,
   runCanaryWriteProbe,
 } from "./canary-probe-lib";
@@ -43,7 +49,15 @@ export const CANARY_P1_CONFIRMATION_PHRASE =
 export const CANARY_P2_CONFIRMATION_PHRASE =
   "I-AUTHORIZE-P2-PRIVILEGE-HARDENING-ON-THE-CANARY-thqjtoxzkujnljsmkwkp";
 
-export type ProbeCliMode = "w1w2" | "w3" | "p1" | "p2";
+/** PR has its own phrase: rotating the sentinel token is a separate operator approval. */
+export const CANARY_ROTATION_CONFIRMATION_PHRASE =
+  "I-AUTHORIZE-PR-SENTINEL-TOKEN-ROTATION-ON-THE-CANARY-thqjtoxzkujnljsmkwkp";
+
+/** The read-only rotation status reading has its own phrase too (it still contacts the canary). */
+export const CANARY_ROTATION_STATUS_CONFIRMATION_PHRASE =
+  "I-UNDERSTAND-THIS-READS-THE-CANARY-SENTINEL-ROTATION-STATUS-READ-ONLY-thqjtoxzkujnljsmkwkp";
+
+export type ProbeCliMode = "w1w2" | "w3" | "p1" | "p2" | "rotate" | "rotation-status";
 
 export function parseProbeCliArgs(argv: readonly string[]): ProbeCliMode {
   if (argv.length !== 1) throw new CanaryError("INVALID_ARGS");
@@ -63,6 +77,16 @@ export function parseProbeCliArgs(argv: readonly string[]): ProbeCliMode {
     if (argv[0].slice("--confirm-p2=".length) !== CANARY_P2_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
     return "p2";
   }
+  if (argv[0].startsWith("--confirm-rotate=")) {
+    if (argv[0].slice("--confirm-rotate=".length) !== CANARY_ROTATION_CONFIRMATION_PHRASE) throw new CanaryError("CONFIRMATION_REQUIRED");
+    return "rotate";
+  }
+  if (argv[0].startsWith("--confirm-rotation-status=")) {
+    if (argv[0].slice("--confirm-rotation-status=".length) !== CANARY_ROTATION_STATUS_CONFIRMATION_PHRASE) {
+      throw new CanaryError("CONFIRMATION_REQUIRED");
+    }
+    return "rotation-status";
+  }
   throw new CanaryError("INVALID_ARGS");
 }
 
@@ -78,7 +102,35 @@ async function main(): Promise<number> {
 
   try {
     const readOnlyTransport = createCanaryReadOnlyTransport(process.env);
+
+    if (mode === "rotation-status") {
+      // READ-ONLY: no write-capable transport is even constructed in this mode.
+      console.log(`CANARY SENTINEL ROTATION STATUS — target ${CANARY_PROJECT_REF} (read-only; two fixed verification queries; nothing printed from either token)`);
+      const status = await runCanarySentinelRotationStatus({ env: process.env, readOnly: readOnlyTransport.executeReadOnlyQuery });
+      console.log(` row_count=${status.rowCount} current_verifies=${status.currentVerifies} next_verifies=${status.nextVerifies} reading=${status.reading}`);
+      console.log(` ${status.guidance}`);
+      return status.reading === "not_rotated" || status.reading === "rotated" ? 0 : 1;
+    }
+
     const probeTransport = createCanaryWriteProbeTransport(process.env);
+
+    if (mode === "rotate") {
+      console.log(`CANARY PR SENTINEL ROTATION — target ${CANARY_PROJECT_REF} (one reviewed compare-and-swap; both tokens read from env only; nothing is printed from them)`);
+      const report = await runCanarySentinelRotation({
+        env: process.env,
+        readOnly: readOnlyTransport.executeReadOnlyQuery,
+        probe: probeTransport,
+      });
+      for (const c of report.checks) console.log(` ${c.ok ? "PASS" : "FAIL"}  ${c.name}${c.detail ? ` [${c.detail}]` : ""}`);
+      if (report.outcome === "rotated") {
+        console.log("CANARY PR: COMPLETE — sentinel rotated and verified (next token accepted, current token refused; inventory and ACL posture unchanged).");
+        console.log("NEXT (operator, outside this session): set CANARY_SENTINEL_TOKEN to the next value, remove CANARY_SENTINEL_TOKEN_NEXT, start a fresh session.");
+        return 0;
+      }
+      if (report.recoveryGuidance) console.error(report.recoveryGuidance);
+      console.error(`CANARY PR: STOPPED with outcome ${report.outcome}. No further request was sent.`);
+      return 1;
+    }
 
     if (mode === "p2") {
       console.log(`CANARY P2 PRIVILEGE HARDENING — target ${CANARY_PROJECT_REF} (one reviewed request; sentinel-gated; ACL posture verified before and after)`);

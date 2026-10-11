@@ -73,7 +73,7 @@ test("the probe SQL is frozen: W1 is SELECT-only, W2 is temp-and-rollback only",
   }
 });
 
-test("the transport surface is closed: six frozen operations plus the manifest-hash-gated migration sender", () => {
+test("the transport surface is closed: six frozen operations, the manifest-hash-gated migration sender, and the isolated sentinel rotation", () => {
   const { fetchImpl } = probeFetch();
   const t = createCanaryWriteProbeTransport(okEnv(), fetchImpl);
   assert.deepEqual(Object.keys(t).sort(), [
@@ -81,6 +81,7 @@ test("the transport surface is closed: six frozen operations plus the manifest-h
     "runP1Ddl",
     "runP1Insert",
     "runP2Hardening",
+    "runSentinelRotation",
     "runValidationStatement",
     "runW1",
     "runW2",
@@ -89,6 +90,7 @@ test("the transport surface is closed: six frozen operations plus the manifest-h
   assert.ok(Object.isFrozen(t));
   for (const member of [t.runW1, t.runW2, t.runW3, t.runP1Ddl, t.runP2Hardening]) assert.equal(member.length, 0, "no argument accepted");
   assert.equal(t.runP1Insert.length, 1, "runP1Insert takes exactly the validated digest");
+  assert.equal(t.runSentinelRotation.length, 2, "runSentinelRotation takes exactly (next digest, current digest)");
   assert.equal(t.runManifestMigration.length, 3, "runManifestMigration takes (rawSql, file, pinned hash), all hash-verified");
   assert.equal(t.runValidationStatement.length, 3, "runValidationStatement takes (frozen sql, shaped params, context)");
 });
