@@ -2496,6 +2496,10 @@ export interface Campaign {
   direction: "inbound" | "outbound";
   status: "active" | "paused" | "draft";
   createdAt: string;
+  // LiveKit outbound (0069): explicit human approval + the dialer's halt note.
+  // Undefined until the migration is applied.
+  approvedAt?: string | null;
+  haltedReason?: string;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -2509,6 +2513,8 @@ function rowToCampaign(r: any): Campaign {
     direction: r.direction ?? "outbound",
     status: r.status ?? "active",
     createdAt: r.created_at,
+    approvedAt: "approved_at" in r ? r.approved_at ?? null : undefined,
+    haltedReason: typeof r.halted_reason === "string" ? r.halted_reason : undefined,
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -2554,6 +2560,18 @@ export async function updateCampaign(id: string, input: Partial<Omit<Campaign, "
 
 export async function deleteCampaign(id: string): Promise<void> {
   await supabase.from("campaigns").delete().eq("id", id);
+}
+
+/** Record the explicit human approval the LiveKit dialer requires (0069).
+ *  Without it every start-call attempt is refused (fail closed). */
+export async function approveCampaign(id: string): Promise<{ ok: boolean; message: string }> {
+  const { data } = await supabase.auth.getUser();
+  const { error } = await supabase
+    .from("campaigns")
+    .update({ approved_at: new Date().toISOString(), approved_by: data?.user?.id ?? null })
+    .eq("id", id);
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, message: "Campaign approved for calling." };
 }
 
 // ----------------------------------------------------------- team members (0023)

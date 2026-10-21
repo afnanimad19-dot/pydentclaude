@@ -480,6 +480,41 @@ def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | N
 
         tools.append(transfer_call)
 
+    # OUTBOUND campaign calls only: the mandatory opening-consent record. The
+    # tool exists so the recipient's answer to the recording disclosure and
+    # "may we continue?" question lands in Pydent as DATA (campaign_leads +
+    # the call log), not just in the transcript. A refusal or opt-out answer
+    # instructs the agent to close politely with NO promotional content; the
+    # server adds opt-outs to the permanent do-not-call registry.
+    if state.get("is_outbound"):
+
+        @function_tool(
+            name="record_opening_consent",
+            description=(
+                "REQUIRED on this call: record the recipient's answer to the opening disclosure "
+                "(that you are an AI assistant, the purpose, that the call is recorded, and whether "
+                "they wish to continue). Call it IMMEDIATELY after their answer and BEFORE any "
+                "promotional content. outcome: accepted (clear yes) | declined (no / not now) | "
+                "opt_out (asked not to be called again) | unclear."
+            ),
+        )
+        async def record_opening_consent(outcome: str = "unclear") -> str:
+            v = str(outcome or "").strip().lower()
+            if v not in ("accepted", "declined", "opt_out", "unclear"):
+                v = "unclear"
+            state["opening_consent"] = v
+            logger.info("opening consent recorded: %s", v)
+            if v in ("declined", "opt_out"):
+                return (
+                    "Recorded. They declined — thank them briefly, say goodbye, and end the call now. "
+                    "Do NOT share any promotional information."
+                )
+            if v == "unclear":
+                return "Recorded as unclear. Politely ask once more whether they are happy to continue; do not proceed to promotional content until they clearly agree."
+            return "Recorded. You may continue with the purpose of the call."
+
+        tools.append(record_opening_consent)
+
     logger.info("tools registered: %s", [getattr(getattr(t, "info", None), "name", "?") for t in tools])
     return tools
 
@@ -790,6 +825,28 @@ class CallLifecycle:
         self._tasks.clear()
 
 
+# ── Outbound answer gate ─────────────────────────────────────────────────────
+async def wait_for_sip_answer(ctx: JobContext, timeout_s: float = 45.0) -> bool:
+    """OUTBOUND rooms only: wait until the dialed SIP participant has actually
+    ANSWERED before the agent says a word (the mandatory opening disclosure
+    must reach a human, not ringback). Returns False on no-answer/hangup or
+    timeout. A non-SIP remote participant (a browser join in testing) counts
+    as answered."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        for p in ctx.room.remote_participants.values():
+            attrs = p.attributes or {}
+            status = str(attrs.get("sip.callStatus") or "")
+            if status == "active":
+                return True
+            if status in ("hangup", "error"):
+                return False
+            if not status and not any(k.startswith("sip.") for k in attrs):
+                return True  # web participant (pilot/testing) — treat as answered
+        await asyncio.sleep(0.5)
+    return False
+
+
 # ── Worker entrypoint ───────────────────────────────────────────────────────
 server = AgentServer()
 
@@ -900,7 +957,14 @@ async def entrypoint(ctx: JobContext):
     lines: list[dict[str, Any]] = []
     # Per-call private runtime state shared with the tool layer (never spoken,
     # never logged in full). The SIP caller number lands here once known.
-    call_state: dict[str, Any] = {"caller_phone": ""}
+    # Outbound campaign calls (room name contains "_out_") additionally carry
+    # the dialed number and the recipient's opening-consent outcome.
+    is_outbound = "_out_" in ctx.room.name
+    call_state: dict[str, Any] = {
+        "caller_phone": "",
+        "is_outbound": is_outbound,
+        "to_phone": normalize_phone(meta.get("toPhone")) if is_outbound else "",
+    }
 
     async def post_call_log() -> None:
         """Send the call to Pydent. Privacy setting decides what is included."""
@@ -935,6 +999,12 @@ async def entrypoint(ctx: JobContext):
                     "agentName": cfg["agentName"],
                     "agentId": cfg["agentId"],
                     "callerPhone": str(call_state.get("caller_phone") or ""),
+                    "toPhone": str(call_state.get("to_phone") or ""),
+                    "campaignId": str(meta.get("campaignId") or ""),
+                    "leadId": str(meta.get("leadId") or ""),
+                    # The recipient's recorded answer to the mandatory opening
+                    # disclosure (recording notice + request to continue).
+                    "openingConsent": str(call_state.get("opening_consent") or ""),
                     "direction": "outbound" if "_out_" in ctx.room.name else "inbound",
                     "source": meta.get("source", ""),
                     "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
@@ -984,7 +1054,6 @@ async def entrypoint(ctx: JobContext):
     # and a machine is detected we hang up rather than talk to voicemail; when
     # disabled nothing runs at all.
     amd_cfg = cfg.get("amd") or {}
-    is_outbound = "_out_" in ctx.room.name
     if amd_cfg.get("enabled") and not is_outbound:
         logger.info("AMD enabled but this is an inbound call — not started")
     if amd_cfg.get("enabled") and is_outbound:
@@ -1023,7 +1092,32 @@ async def entrypoint(ctx: JobContext):
 
     lifecycle.start()
 
-    # Who speaks first.
+    # OUTBOUND: never speak before the dialed person has answered — the
+    # mandatory opening disclosure must reach a human, not ringback or
+    # voicemail greetings mid-ring. No answer → hang up, no message.
+    if is_outbound:
+        answered = await wait_for_sip_answer(ctx)
+        if not answered:
+            await end_call("no_answer")
+            return
+        greeting = str(cfg.get("greeting") or "").strip()
+        if greeting:
+            await session.say(greeting, allow_interruptions=True)
+        else:
+            # The opening is NON-NEGOTIABLE on outbound campaign calls even if
+            # no greeting is configured: identify as an AI assistant for the
+            # clinic, state the purpose, disclose that the call is recorded,
+            # and ask whether the person wishes to continue.
+            await session.generate_reply(
+                instructions=(
+                    "Open the call now, briefly and warmly: say you are an AI assistant calling on behalf "
+                    "of the clinic, say in one sentence why you are calling, state that this call is being "
+                    "recorded, and ask whether they are happy to continue. Do not say anything else yet."
+                )
+            )
+        return  # inbound greeting logic below must not also run
+
+    # Who speaks first (inbound/web, unchanged).
     if cfg.get("greetFirst"):
         greeting = str(cfg.get("greeting") or "").strip()
         if greeting:
