@@ -2562,17 +2562,9 @@ export async function deleteCampaign(id: string): Promise<void> {
   await supabase.from("campaigns").delete().eq("id", id);
 }
 
-/** Record the explicit human approval the LiveKit dialer requires (0069).
- *  Without it every start-call attempt is refused (fail closed). */
-export async function approveCampaign(id: string): Promise<{ ok: boolean; message: string }> {
-  const { data } = await supabase.auth.getUser();
-  const { error } = await supabase
-    .from("campaigns")
-    .update({ approved_at: new Date().toISOString(), approved_by: data?.user?.id ?? null })
-    .eq("id", id);
-  if (error) return { ok: false, message: error.message };
-  return { ok: true, message: "Campaign approved for calling." };
-}
+// Campaign approval is a SERVER action (S1): POST /api/livekit/outbound with
+// action "approve" — admin-only, workspace-checked. No browser writer exists
+// for approved_at on purpose.
 
 // ----------------------------------------------------------- team members (0023)
 

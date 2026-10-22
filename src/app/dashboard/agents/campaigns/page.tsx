@@ -24,7 +24,6 @@ import {
   fetchWaTemplates,
   ensureNovaAgents,
   fetchVoiceProvider,
-  approveCampaign,
   type VoiceProvider,
   type Campaign,
   type AiAgent,
@@ -121,8 +120,10 @@ export default function CampaignsPage() {
 
   async function approve(c: Campaign) {
     if (!confirm(`Approve “${c.name}” for outbound calling? Every call opens with the AI/recording disclosure and only verified-eligible leads are dialed.`)) return;
-    const r = await approveCampaign(c.id);
-    toast(r.message, r.ok ? "success" : "info");
+    // S1: approval is an admin-only server action — the browser never writes it.
+    const res = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "approve", campaignId: c.id }) });
+    const r = await res.json().catch(() => ({}));
+    toast(r.ok ? "Campaign approved for calling." : r.error || "Approval failed (admins only).", r.ok ? "success" : "info");
     if (r.ok) refresh();
   }
 

@@ -16,6 +16,64 @@
 // outbound-call-server.ts binds LiveKit + Azure + Supabase to these rules.
 // This file deliberately imports nothing with secrets or network access.
 
+// ── phone canonicalization (S2) ──────────────────────────────────────────────
+// ONE canonical digits-only form everywhere a number is stored or compared —
+// lead seeding, the do-not-call registry (write AND check), and dialing — so
+// "050 123 4567", "0501234567" and "+971501234567" cannot evade an opt-out by
+// formatting. Mirrors the worker's normalize_phone plus UAE local-form folding
+// ("00…" international prefix dropped; a local leading 0 becomes 971…).
+// Anything that does not look like a phone number canonicalizes to "" and is
+// treated as undialable (fail closed).
+
+export function canonicalPhone(raw: unknown): string {
+  let d = String(raw ?? "").replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  else if (d.startsWith("0") && (d.length === 9 || d.length === 10)) d = `971${d.slice(1)}`;
+  if (d.length < 7 || d.length > 15) return "";
+  return d;
+}
+
+/** What the SIP leg dials: E.164-style '+<digits>' of the canonical form. */
+export function dialStringFor(canonical: string): string {
+  return canonical ? `+${canonical}` : "";
+}
+
+// ── marketing-eligibility attestation (replaces the source-label blocklist) ──
+// Eligibility turns on VERIFIED PERMISSION with documented evidence, never on
+// what a form is called: a registration form WITH an explicit
+// automated-promotional-calls clause is a valid basis; one without such a
+// clause simply has no truthful basis to select. The attestation (basis +
+// where the evidence lives) is stored verbatim with the timestamp.
+
+export const MARKETING_CONSENT_BASES = [
+  "explicit_marketing_opt_in",
+  "signed_consent_form",
+  "documented_verbal_consent",
+  "registration_form_with_marketing_clause",
+  "other",
+] as const;
+export type MarketingConsentBasis = (typeof MARKETING_CONSENT_BASES)[number];
+
+export interface MarketingAttestation {
+  basis: string;
+  /** Where the documented evidence lives (form name/date, log entry, file). */
+  detail: string;
+  evidenceRef?: string;
+}
+
+export function marketingEligibilitySource(a: MarketingAttestation): { ok: true; source: string } | { ok: false; error: string } {
+  const basis = String(a.basis ?? "").trim();
+  if (!(MARKETING_CONSENT_BASES as readonly string[]).includes(basis)) {
+    return { ok: false, error: `basis must be one of: ${MARKETING_CONSENT_BASES.join(", ")} (fail closed).` };
+  }
+  const detail = String(a.detail ?? "").trim();
+  if (detail.length < 5) {
+    return { ok: false, error: "detail must describe where the documented consent evidence lives (fail closed)." };
+  }
+  const ref = String(a.evidenceRef ?? "").trim();
+  return { ok: true, source: `${basis}: ${detail}${ref ? ` [${ref}]` : ""}` };
+}
+
 // ── gate (runs before ANY external call) ─────────────────────────────────────
 
 /** Consecutive recording-blocked attempts that halt a campaign (policy P2). */
@@ -30,6 +88,7 @@ export type OutboundRefusal =
   | "campaign_not_approved"
   | "campaign_halted"
   | "lead_not_pending"
+  | "invalid_phone"
   | "not_marketing_eligible"
   | "do_not_call"
   | "external_agent"
@@ -47,6 +106,7 @@ export interface OutboundGateInput {
   };
   lead: {
     status: string;
+    /** The CANONICAL phone (canonicalPhone output); "" = undialable. */
     phone: string;
     /** Verified promotional-call eligibility — null = never dial. */
     marketingEligibleAt: string | null;
@@ -74,6 +134,7 @@ export function outboundCallGate(i: OutboundGateInput): { ok: true } | { ok: fal
   if (!i.campaign.approvedAt) return no("campaign_not_approved");
   if (i.campaign.haltedReason || i.consecutiveRecordingBlocks >= RECORDING_HALT_THRESHOLD) return no("campaign_halted");
   if (i.lead.status !== "pending") return no("lead_not_pending");
+  if (!i.lead.phone) return no("invalid_phone");
   if (!i.lead.marketingEligibleAt) return no("not_marketing_eligible");
   if (i.dnc) return no("do_not_call");
   if (i.externalAgent) return no("external_agent");
@@ -90,6 +151,7 @@ export function outboundCallGate(i: OutboundGateInput): { ok: true } | { ok: fal
 export function leadBlockDetailFor(reason: OutboundRefusal): string | null {
   if (reason === "not_marketing_eligible") return "not_marketing_eligible";
   if (reason === "do_not_call") return "do_not_call";
+  if (reason === "invalid_phone") return "invalid_phone";
   if (reason === "recording_unavailable") return RECORDING_BLOCK_DETAIL;
   return null;
 }

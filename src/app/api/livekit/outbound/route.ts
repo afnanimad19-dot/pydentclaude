@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { authorizeRequest } from "@/lib/server-auth-deps";
 import {
+  approveCampaignForCalling,
   markLeadsEligible,
   placeCampaignCall,
   seedCampaignLeads,
@@ -16,10 +17,13 @@ import {
 // or nobody is dialed), and full attribution written before the dial.
 //
 // Actions:
+//   approve          — the explicit human approval gate (S1: admin-only,
+//                      server-side; the browser cannot write approved_at).
 //   seed             — create pending leads from the campaign's contact folder
 //                      (NEVER marks them eligible; that is a separate,
 //                      attested staff action).
-//   mark-eligible    — record verified marketing eligibility + its source.
+//   mark-eligible    — record verified marketing eligibility via a structured
+//                      attestation {basis, detail, evidenceRef?}.
 //   start-next       — place ONE call (the oldest pending eligible lead, or
 //                      body.leadId).
 //   verify-recording — read the stored blob's size for a finished call
@@ -51,6 +55,11 @@ export async function POST(req: NextRequest) {
 
   if (!campaignId) return NextResponse.json({ ok: false, error: "campaignId is required." }, { status: 400 });
 
+  if (action === "approve") {
+    const r = await approveCampaignForCalling(ws, campaignId, auth.userId);
+    return NextResponse.json(r, { status: r.ok ? 200 : 400 });
+  }
+
   if (action === "seed") {
     const r = await seedCampaignLeads(ws, campaignId);
     return NextResponse.json(r, { status: r.ok ? 200 : 400 });
@@ -59,7 +68,11 @@ export async function POST(req: NextRequest) {
   if (action === "mark-eligible") {
     const leadIds = Array.isArray(body.leadIds) ? body.leadIds.map(String) : [];
     if (!leadIds.length) return NextResponse.json({ ok: false, error: "leadIds is required." }, { status: 400 });
-    const r = await markLeadsEligible(ws, campaignId, leadIds, String(body.source ?? ""));
+    const r = await markLeadsEligible(ws, campaignId, leadIds, {
+      basis: String(body.basis ?? ""),
+      detail: String(body.detail ?? ""),
+      evidenceRef: body.evidenceRef ? String(body.evidenceRef) : undefined,
+    });
     return NextResponse.json(r, { status: r.ok ? 200 : 400 });
   }
 

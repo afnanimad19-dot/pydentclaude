@@ -5,7 +5,7 @@ import { runPostCallExtraction } from "@/lib/post-call";
 import { runCallSummaryForRow } from "@/lib/call-summary-server";
 import { SUMMARY_AI_KEY } from "@/lib/call-summary";
 import { workerMessagesToRows } from "@/lib/call-transcript";
-import { leadPatchForCallEnd, normalizeOpeningConsent } from "@/lib/outbound-call";
+import { canonicalPhone, leadPatchForCallEnd, normalizeOpeningConsent } from "@/lib/outbound-call";
 import type { ExtractionField } from "@/lib/db";
 
 // The deployed LiveKit worker posts here when a call ends: the transcript,
@@ -130,7 +130,9 @@ export async function POST(req: NextRequest) {
         updated_at: new Date().toISOString(),
       }).eq("id", leadId).eq("workspace_id", ws);
       if (patch.dnc) {
-        const phone = String(body.toPhone ?? "").trim();
+        // S2: the registry stores the canonical form so no formatting variant
+        // of this number can ever be dialed again.
+        const phone = canonicalPhone(body.toPhone);
         if (phone) {
           await supabase.from("voice_dnc").upsert(
             { workspace_id: ws, phone, source: `call opt-out (${`lk:${room}`})` },

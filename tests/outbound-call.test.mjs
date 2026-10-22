@@ -13,6 +13,7 @@ const {
   RECORDING_HALT_THRESHOLD,
   RECORDING_BLOCK_DETAIL,
   MIN_CAPTURED_RECORDING_BYTES,
+  MARKETING_CONSENT_BASES,
   outboundCallGate,
   leadBlockDetailFor,
   consecutiveRecordingBlocks,
@@ -20,6 +21,9 @@ const {
   leadPatchForCallEnd,
   capturedRecordingOk,
   outboundDispatchExtra,
+  canonicalPhone,
+  dialStringFor,
+  marketingEligibilitySource,
 } = await import("@/lib/outbound-call");
 
 // A gate input that passes every check; tests then break ONE rule at a time.
@@ -135,6 +139,44 @@ test("outbound dispatch metadata carries campaign, lead and dialed number", () =
   });
 });
 
+// ── S2: one canonical phone form everywhere ───────────────────────────────────
+test("formatting variants of the same number collide into one canonical form", () => {
+  const canonical = canonicalPhone("+971 50 123 4567");
+  assert.equal(canonical, "971501234567");
+  for (const variant of ["0501234567", "050 123 4567", "00971501234567", "971501234567", "+971-50-123-4567"]) {
+    assert.equal(canonicalPhone(variant), canonical, variant);
+  }
+  assert.equal(dialStringFor(canonical), "+971501234567");
+});
+
+test("non-phones canonicalize to empty (undialable, fail closed)", () => {
+  for (const bad of ["", "12345", "not a phone", null, undefined, "+"]) assert.equal(canonicalPhone(bad), "");
+  assert.equal(dialStringFor(""), "");
+  // and the gate refuses an empty canonical phone outright
+  assert.deepEqual(outboundCallGate({ ...OK, lead: { ...OK.lead, phone: "" } }), { ok: false, reason: "invalid_phone" });
+  assert.equal(leadBlockDetailFor("invalid_phone"), "invalid_phone");
+});
+
+// ── structured consent attestation (replaces the source-label blocklist) ─────
+test("attestation requires a known basis and documented evidence detail", () => {
+  assert.equal(marketingEligibilitySource({ basis: "", detail: "x" }).ok, false);
+  assert.equal(marketingEligibilitySource({ basis: "patient_registration", detail: "signed 2026" }).ok, false); // unknown basis
+  assert.equal(marketingEligibilitySource({ basis: "other", detail: "" }).ok, false); // no evidence
+  assert.equal(marketingEligibilitySource({ basis: "other", detail: "    " }).ok, false);
+});
+
+test("a registration form WITH an explicit marketing clause is a valid, recorded basis", () => {
+  const r = marketingEligibilitySource({
+    basis: "registration_form_with_marketing_clause",
+    detail: "2026 intake form §7 automated promotional calls, signed copies in patient files",
+    evidenceRef: "forms/intake-2026",
+  });
+  assert.equal(r.ok, true);
+  assert.match(r.source, /^registration_form_with_marketing_clause: 2026 intake form/);
+  assert.match(r.source, /\[forms\/intake-2026\]$/);
+  assert.ok(MARKETING_CONSENT_BASES.includes("registration_form_with_marketing_clause"));
+});
+
 // ── source-level guarantees ───────────────────────────────────────────────────
 const read = (p) => readFile(new URL(`../${p}`, import.meta.url), "utf8");
 
@@ -181,6 +223,30 @@ test("worker: outbound rooms wait for an answered SIP leg before any speech, and
   assert.match(s, /"openingConsent": str\(call_state\.get\("opening_consent"\) or ""\)/);
   // the no-answer path hangs up without speaking
   assert.match(s, /await end_call\("no_answer"\)/);
+  // S3: only the dialer's own SIP participant (or the named test identity)
+  // opens the gate — an attribute-less stranger/egress never does.
+  assert.match(s, /OUTBOUND_SIP_IDENTITY_PREFIX = "sip-out-"/);
+  assert.match(s, /identity\.startswith\(OUTBOUND_SIP_IDENTITY_PREFIX\)/);
+  assert.doesNotMatch(s, /not any\(k\.startswith\("sip\."\) for k in attrs\)/);
+});
+
+test("S1/S4: approval is a server admin action and the calling slot is DB-unique", async () => {
+  // no browser WRITER for approved_at (the read mapping in rowToCampaign stays)
+  const db = await read("src/lib/db.ts");
+  assert.doesNotMatch(db, /update\(\s*\{[^}]*approved_at/s, "db.ts must not write approved_at");
+  assert.doesNotMatch(db, /export async function approveCampaign\b/, "browser approveCampaign must not exist");
+  const route = await read("src/app/api/livekit/outbound/route.ts");
+  assert.match(route, /action === "approve"/);
+  assert.match(route, /approveCampaignForCalling\(ws, campaignId, auth\.userId\)/);
+  // the claim goes straight to 'calling' and surfaces a unique violation as another_call_live
+  const server = await read("src/lib/outbound-call-server.ts");
+  assert.match(server, /status: "calling", status_detail: "", attempts/);
+  assert.match(server, /23505/);
+  assert.match(server, /stale_calling/);
+  // the staged migration enforces one calling slot per workspace
+  const mig = await read("supabase/pending/0069_outbound_campaign_leads.sql");
+  assert.match(mig, /campaign_leads_one_calling_per_ws/);
+  assert.match(mig, /where status = 'calling'/);
 });
 
 test("marketing eligibility is its own fact: the migration separates it from recording consent and opening consent", async () => {

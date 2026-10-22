@@ -21,11 +21,15 @@ import { recordingEnvFrom, recordingObjectPath, type RecordingEnv } from "@/lib/
 import {
   RECORDING_BLOCK_DETAIL,
   RECORDING_HALT_THRESHOLD,
+  canonicalPhone,
   capturedRecordingOk,
   consecutiveRecordingBlocks,
+  dialStringFor,
   leadBlockDetailFor,
+  marketingEligibilitySource,
   outboundCallGate,
   outboundDispatchExtra,
+  type MarketingAttestation,
   type OutboundRefusal,
 } from "@/lib/outbound-call";
 
@@ -98,6 +102,15 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
     .from("campaigns").select("*").eq("id", campaignId).eq("workspace_id", ws).maybeSingle();
   if (!campaign) return { ok: false, reason: "not_found", detail: "campaign" };
 
+  // Release stale "calling" claims (worker crash / lost call-log): a lead that
+  // has held the single calling slot longer than the live-call window is marked
+  // failed so the campaign cannot deadlock. A real call this old has ended too.
+  await supabase
+    .from("campaign_leads")
+    .update({ status: "failed", status_detail: "stale_calling", updated_at: new Date().toISOString() })
+    .eq("workspace_id", ws).eq("status", "calling")
+    .lt("updated_at", new Date(Date.now() - LIVE_CALL_WINDOW_MIN * 60_000).toISOString());
+
   let leadQuery = supabase
     .from("campaign_leads").select("*").eq("campaign_id", campaignId).eq("workspace_id", ws).eq("status", "pending")
     .order("created_at", { ascending: true }).limit(1);
@@ -106,14 +119,18 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
   const lead = leadRows?.[0];
   if (!lead) return { ok: false, reason: "not_found", detail: "no pending lead" };
 
-  const [{ data: number }, { data: agent }, { count: dncCount }, { count: liveCount }] = await Promise.all([
+  // S2: ONE canonical phone form for the DNC check, the dial and the records.
+  const phone = canonicalPhone(lead.phone);
+
+  const [{ data: number }, { data: agent }, { count: dncCount }, { count: liveCalls }, { count: callingLeads }] = await Promise.all([
     supabase.from("voice_numbers").select("*").eq("id", campaign.number_id ?? "").maybeSingle(),
     supabase.from("agents").select("*").eq("id", campaign.agent_id ?? "").maybeSingle(),
-    supabase.from("voice_dnc").select("id", { count: "exact", head: true }).eq("workspace_id", ws).eq("phone", String(lead.phone)),
+    supabase.from("voice_dnc").select("id", { count: "exact", head: true }).eq("workspace_id", ws).eq("phone", phone || "-"),
     supabase
       .from("voice_calls").select("id", { count: "exact", head: true })
       .eq("workspace_id", ws).eq("direction", "outbound").eq("engine", "livekit").eq("status", "in-progress")
       .gte("started_at", new Date(Date.now() - LIVE_CALL_WINDOW_MIN * 60_000).toISOString()),
+    supabase.from("campaign_leads").select("id", { count: "exact", head: true }).eq("workspace_id", ws).eq("status", "calling"),
   ]);
   if (!number || !agent) return { ok: false, reason: "not_found", detail: !number ? "number" : "agent" };
 
@@ -129,12 +146,15 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
       approvedAt: campaign.approved_at ?? null,
       haltedReason: String(campaign.halted_reason ?? ""),
     },
-    lead: { status: String(lead.status), phone: String(lead.phone), marketingEligibleAt: lead.marketing_eligible_at ?? null },
+    lead: { status: String(lead.status), phone, marketingEligibleAt: lead.marketing_eligible_at ?? null },
     dnc: (dncCount ?? 0) > 0,
     externalAgent: bound.external,
     outboundTrunkId: String(number.livekit_outbound_trunk_id ?? ""),
     recordingEnvReady: !!env,
-    liveOutboundCalls: liveCount ?? 0,
+    // S4 defense in depth: a live voice_calls row OR a lead already holding the
+    // single calling slot both count; the 0069 partial unique index is the
+    // race-proof enforcement underneath.
+    liveOutboundCalls: (liveCalls ?? 0) + (callingLeads ?? 0),
     consecutiveRecordingBlocks: await recordingStreak(campaignId),
   });
   if (!gate.ok) {
@@ -144,17 +164,24 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
     return { ok: false, reason: gate.reason, halted };
   }
 
-  // Claim the lead (compare-and-set) so no concurrent invocation dials it too.
-  const { data: claimed } = await supabase
+  // S4: claim the lead straight into the single CALLING slot (compare-and-set
+  // on status). The 0069 partial unique index (one 'calling' row per
+  // workspace) makes two concurrent claims impossible at the database, not
+  // just unlikely: the loser gets a unique-violation and is refused. Every
+  // failure path below moves the lead out of 'calling', freeing the slot.
+  const { data: claimed, error: claimErr } = await supabase
     .from("campaign_leads")
-    .update({ status: "claimed", attempts: Number(lead.attempts ?? 0) + 1, updated_at: new Date().toISOString() })
+    .update({ status: "calling", status_detail: "", attempts: Number(lead.attempts ?? 0) + 1, updated_at: new Date().toISOString() })
     .eq("id", lead.id).eq("status", "pending").select("id");
+  if (claimErr) {
+    const duplicate = claimErr.code === "23505" || /duplicate key/i.test(claimErr.message);
+    return { ok: false, reason: duplicate ? "another_call_live" : "db_write_failed", detail: duplicate ? undefined : claimErr.message };
+  }
   if (!claimed?.length) return { ok: false, reason: "lead_claim_lost" };
 
   const room = lkRoomName(ws, "out");
   const callKey = `lk:${room}`;
   const path = recordingObjectPath(ws, room);
-  const phone = String(lead.phone).trim();
 
   // Attributed intent row FIRST — webhook/call-log upserts then land on it,
   // and the recording/campaign/lead association exists before anything rings.
@@ -234,7 +261,7 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
 
   try {
     const sip = new SipClient(lkHttpUrl(creds.url), creds.apiKey, creds.apiSecret);
-    await sip.createSipParticipant(String(number.livekit_outbound_trunk_id).trim(), phone, room, {
+    await sip.createSipParticipant(String(number.livekit_outbound_trunk_id).trim(), dialStringFor(phone), room, {
       participantIdentity: `sip-out-${String(lead.id).slice(0, 8)}`,
       participantName: "Outbound call",
     });
@@ -242,7 +269,7 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
     return fail(`sip create: ${e instanceof Error ? e.message : "error"}`, false);
   }
 
-  await markLead(String(lead.id), { status: "calling", status_detail: "", last_call_key: callKey });
+  await markLead(String(lead.id), { last_call_key: callKey }); // stays 'calling' until call-log closes it
   return { ok: true, room, callKey, leadId: String(lead.id), egressId };
 }
 
@@ -259,10 +286,12 @@ export async function seedCampaignLeads(ws: string, campaignId: string): Promise
     supabase.from("patients").select("id, phone, folder_id").eq("workspace_id", ws).eq("folder_id", campaign.folder_id),
     supabase.from("campaign_leads").select("phone").eq("campaign_id", campaignId),
   ]);
-  const seen = new Set((existing ?? []).map((r: any) => String(r.phone)));
+  const seen = new Set((existing ?? []).map((r: any) => canonicalPhone(r.phone) || String(r.phone)));
+  // S2: leads are stored in the ONE canonical phone form; numbers that do not
+  // canonicalize are skipped (an invalid phone can never become a dialable lead).
   const rows = (patients ?? [])
-    .filter((p: any) => String(p.phone ?? "").trim() && !seen.has(String(p.phone).trim()))
-    .map((p: any) => ({ workspace_id: ws, campaign_id: campaignId, patient_id: p.id, phone: String(p.phone).trim() }));
+    .map((p: any) => ({ workspace_id: ws, campaign_id: campaignId, patient_id: p.id, phone: canonicalPhone(p.phone) }))
+    .filter((r: any) => r.phone && !seen.has(r.phone));
   if (rows.length) {
     const { error } = await supabase.from("campaign_leads").insert(rows);
     if (error) return { ok: false, added: 0, total: seen.size, error: error.message };
@@ -270,21 +299,31 @@ export async function seedCampaignLeads(ws: string, campaignId: string): Promise
   return { ok: true, added: rows.length, total: seen.size + rows.length };
 }
 
-/** Record verified marketing eligibility for leads. `source` is the operator's
- *  attestation of WHERE the verification lives (form, signed consent, log) —
- *  required non-empty; registration consent alone is not a valid source. */
-export async function markLeadsEligible(ws: string, campaignId: string, leadIds: string[], source: string): Promise<{ ok: boolean; updated: number; error?: string }> {
-  const s = String(source ?? "").trim();
-  if (!s) return { ok: false, updated: 0, error: "A verification source is required (fail closed)." };
-  if (/^(patient[\s_-]*registration|registration)$/i.test(s)) {
-    return { ok: false, updated: 0, error: "Patient registration consent does not cover automated promotional calls — name the verified marketing-consent source." };
-  }
+/** Record verified marketing eligibility for leads via a STRUCTURED
+ *  ATTESTATION (basis + where the documented evidence lives). Eligibility
+ *  turns on verified permission, never on a form's label: a registration form
+ *  with an explicit automated-promotional-calls clause is a valid basis. */
+export async function markLeadsEligible(ws: string, campaignId: string, leadIds: string[], attestation: MarketingAttestation): Promise<{ ok: boolean; updated: number; error?: string }> {
+  const att = marketingEligibilitySource(attestation);
+  if (!att.ok) return { ok: false, updated: 0, error: att.error };
   const { data, error } = await supabase
     .from("campaign_leads")
-    .update({ marketing_eligible_at: new Date().toISOString(), marketing_eligibility_source: s, updated_at: new Date().toISOString() })
+    .update({ marketing_eligible_at: new Date().toISOString(), marketing_eligibility_source: att.source, updated_at: new Date().toISOString() })
     .eq("campaign_id", campaignId).eq("workspace_id", ws).in("id", leadIds).select("id");
   if (error) return { ok: false, updated: 0, error: error.message };
   return { ok: true, updated: data?.length ?? 0 };
+}
+
+/** S1: campaign approval is an ADMIN server action (the route enforces the
+ *  role); the browser no longer writes approved_at directly. */
+export async function approveCampaignForCalling(ws: string, campaignId: string, approvedBy: string): Promise<{ ok: boolean; error?: string }> {
+  const { data, error } = await supabase
+    .from("campaigns")
+    .update({ approved_at: new Date().toISOString(), approved_by: approvedBy })
+    .eq("id", campaignId).eq("workspace_id", ws).select("id");
+  if (error) return { ok: false, error: error.message };
+  if (!data?.length) return { ok: false, error: "Campaign not found." };
+  return { ok: true };
 }
 
 // ── capture verification (acceptance requirement: not just egress creation) ──

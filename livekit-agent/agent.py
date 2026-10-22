@@ -826,23 +826,36 @@ class CallLifecycle:
 
 
 # ── Outbound answer gate ─────────────────────────────────────────────────────
+# The dialer creates the outbound SIP participant with this identity prefix
+# (outbound-call-server.ts); only that participant's answer opens the gate.
+OUTBOUND_SIP_IDENTITY_PREFIX = "sip-out-"
+# Explicit, named test identity for supervised web-join pilots — nothing else
+# non-SIP is ever treated as an answer (S3: a visible egress or any stray
+# participant must not trigger speech into ringback).
+OUTBOUND_TEST_IDENTITY_PREFIX = "pydent-web-test"
+
+
 async def wait_for_sip_answer(ctx: JobContext, timeout_s: float = 45.0) -> bool:
-    """OUTBOUND rooms only: wait until the dialed SIP participant has actually
+    """OUTBOUND rooms only: wait until the EXPECTED participant has actually
     ANSWERED before the agent says a word (the mandatory opening disclosure
-    must reach a human, not ringback). Returns False on no-answer/hangup or
-    timeout. A non-SIP remote participant (a browser join in testing) counts
-    as answered."""
+    must reach a human, not ringback). Answered means: the dialer's own SIP
+    participant (identity 'sip-out-…') reports sip.callStatus == 'active', or
+    a deliberately named supervised-test web participant joined. Any other
+    participant — including a visible egress — is ignored. Returns False on
+    hangup/error or timeout."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         for p in ctx.room.remote_participants.values():
-            attrs = p.attributes or {}
-            status = str(attrs.get("sip.callStatus") or "")
+            identity = str(getattr(p, "identity", "") or "")
+            if identity.startswith(OUTBOUND_TEST_IDENTITY_PREFIX):
+                return True
+            if not identity.startswith(OUTBOUND_SIP_IDENTITY_PREFIX):
+                continue  # egress / unexpected participants never open the gate
+            status = str((p.attributes or {}).get("sip.callStatus") or "")
             if status == "active":
                 return True
             if status in ("hangup", "error"):
                 return False
-            if not status and not any(k.startswith("sip.") for k in attrs):
-                return True  # web participant (pilot/testing) — treat as answered
         await asyncio.sleep(0.5)
     return False
 

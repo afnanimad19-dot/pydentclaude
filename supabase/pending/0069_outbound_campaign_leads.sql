@@ -82,6 +82,11 @@ comment on table public.voice_dnc is
 
 create index if not exists campaign_leads_campaign_idx on public.campaign_leads (campaign_id, status);
 create index if not exists campaign_leads_ws_idx on public.campaign_leads (workspace_id);
+-- S4: single-call concurrency enforced BY THE DATABASE — at most one lead per
+-- workspace may hold the 'calling' slot; a concurrent second claim fails with
+-- a unique violation, which the dialer surfaces as "another call is live".
+create unique index if not exists campaign_leads_one_calling_per_ws
+  on public.campaign_leads (workspace_id) where status = 'calling';
 create index if not exists voice_calls_campaign_idx on voice_calls (campaign_id) where campaign_id is not null;
 
 alter table if exists public.campaign_leads enable row level security;
