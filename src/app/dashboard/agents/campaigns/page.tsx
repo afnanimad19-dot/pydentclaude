@@ -23,6 +23,8 @@ import {
   getWorkspaceId,
   fetchWaTemplates,
   ensureNovaAgents,
+  fetchVoiceProvider,
+  type VoiceProvider,
   type Campaign,
   type AiAgent,
   type VoiceNumber,
@@ -57,6 +59,10 @@ export default function CampaignsPage() {
   const [calling, setCalling] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Campaign | null>(null);
+  // The workspace's voice engine decides the dialer. Default (and the
+  // LiveKit-only architecture decision) is LiveKit; the legacy Vapi path
+  // remains reachable only while the engine is explicitly set to vapi.
+  const [engine, setEngine] = useState<VoiceProvider>("livekit");
 
   function refresh() { fetchCampaigns().then(setCampaigns); }
   function refreshAgents() { fetchAgents().then((r) => { setAgents(r.agents.filter((a) => a.kind === "voice")); setAllAgents(r.agents); }); }
@@ -70,6 +76,7 @@ export default function CampaignsPage() {
     fetchVoiceCalls().then(setCalls);
     fetchPatients().then((r) => setPatients(r.patients));
     fetchPatientFolderMap().then(setFolderMap);
+    fetchVoiceProvider().then(setEngine).catch(() => {});
   }, []);
 
   const callsByCampaign = useMemo(() => {
@@ -95,12 +102,59 @@ export default function CampaignsPage() {
     return patients.filter((p) => folderMap[p.id] === c.folderId && p.phone.trim());
   }
 
+  // LiveKit refusal reasons → what staff should actually do about them.
+  const REFUSAL_TEXT: Record<string, string> = {
+    campaign_not_approved: "This campaign has not been approved for calling yet — use “Approve for calling” first.",
+    campaign_halted: "Calling is halted after repeated recording failures. Resolve recording storage, then clear the halt in the campaign.",
+    campaign_not_active: "Set the campaign to active first.",
+    not_marketing_eligible: "The next lead has no verified marketing-call eligibility — record it (with its source) before dialing. Leads are never called without it.",
+    do_not_call: "The next lead's number is on the do-not-call list and was skipped permanently.",
+    no_outbound_trunk: "The campaign's number has no LiveKit outbound trunk configured yet.",
+    recording_unavailable: "Call recording could not start, so no call was placed (recording is mandatory on outbound calls).",
+    another_call_live: "Another outbound call is in progress — one call at a time.",
+    external_agent: "This agent is bound to an external LiveKit agent; outbound campaigns need a Pydent worker agent.",
+    not_found: "Nothing left to call (or the campaign/agent/number was not found).",
+    lead_claim_lost: "Someone else just started this lead — try again.",
+    livekit_unconfigured: "LiveKit is not configured for this workspace.",
+  };
+
+  async function approve(c: Campaign) {
+    if (!confirm(`Approve “${c.name}” for outbound calling? Every call opens with the AI/recording disclosure and only verified-eligible leads are dialed.`)) return;
+    // S1: approval is an admin-only server action — the browser never writes it.
+    const res = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "approve", campaignId: c.id }) });
+    const r = await res.json().catch(() => ({}));
+    toast(r.ok ? "Campaign approved for calling." : r.error || "Approval failed (admins only).", r.ok ? "success" : "info");
+    if (r.ok) refresh();
+  }
+
+  async function startCallingLivekit(c: Campaign, contactCount: number) {
+    if (!confirm(`Start LiveKit calling for “${c.name}”? Leads are seeded from the contact list; one call is placed at a time and every call is recorded with an opening disclosure.`)) return;
+    setCalling(c.id);
+    try {
+      const seedRes = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "seed", campaignId: c.id }) });
+      const seed = await seedRes.json().catch(() => ({}));
+      if (!seedRes.ok || !seed.ok) { toast(seed.error || "Couldn't prepare the lead list.", "info"); return; }
+      const startRes = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "start-next", campaignId: c.id }) });
+      const start = await startRes.json().catch(() => ({}));
+      if (start.ok) {
+        toast(`Calling started (lead 1 of ${contactCount}). The next lead dials after this call ends.`, "success");
+      } else {
+        toast(REFUSAL_TEXT[String(start.reason)] || start.error || "No call was placed.", "info");
+      }
+    } catch {
+      toast("Network error starting the calls.", "info");
+    } finally {
+      setCalling(null);
+    }
+  }
+
   async function startCalling(c: Campaign) {
     const agent = agents.find((a) => a.id === c.agentId);
     const number = numbers.find((n) => n.id === c.numberId);
     if (!agent) { toast("Assign a voice agent to this campaign first.", "info"); return; }
-    if (!agent.vapiAssistantId) { toast(`Open “${agent.name}” and Save once to sync it to Vapi first.`, "info"); return; }
     if (!number) { toast("Assign a phone number to this campaign first.", "info"); return; }
+    if (engine === "livekit") { await startCallingLivekit(c, contactsFor(c).length); return; }
+    if (!agent.vapiAssistantId) { toast(`Open “${agent.name}” and Save once to sync it to Vapi first.`, "info"); return; }
     const contacts = contactsFor(c);
     if (contacts.length === 0) { toast("This campaign's contact list has no numbers to call.", "info"); return; }
     if (!confirm(`Start calling ${contacts.length} contact${contacts.length === 1 ? "" : "s"} with “${agent.name}” from ${number.number}?`)) return;
@@ -153,7 +207,7 @@ export default function CampaignsPage() {
         }
       />
 
-      <QuickOutreach agents={allAgents} numbers={numbers} onSynced={refreshAgents} />
+      <QuickOutreach agents={allAgents} numbers={numbers} onSynced={refreshAgents} engine={engine} />
 
       <h2 className="mb-3 mt-8 font-semibold text-ink-900">Saved campaigns</h2>
       {campaigns.length === 0 ? (
@@ -193,7 +247,19 @@ export default function CampaignsPage() {
                   </p>
                 </div>
 
-                {c.direction === "outbound" && (
+                {c.direction === "outbound" && engine === "livekit" && c.haltedReason ? (
+                  <p className="mt-4 rounded-xl bg-amber-50 p-2 text-xs text-amber-700" title={c.haltedReason}>
+                    Calling halted: repeated recording failures. Resolve storage, then clear the halt to resume.
+                  </p>
+                ) : null}
+                {c.direction === "outbound" && engine === "livekit" && !c.approvedAt && !c.haltedReason ? (
+                  <button
+                    onClick={() => approve(c)}
+                    className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-brand-600 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+                  >
+                    <PhoneCall className="h-4 w-4" /> Approve for calling
+                  </button>
+                ) : c.direction === "outbound" && !c.haltedReason ? (
                   <button
                     onClick={() => startCalling(c)}
                     disabled={calling === c.id}
@@ -201,7 +267,7 @@ export default function CampaignsPage() {
                   >
                     <PhoneCall className="h-4 w-4" /> {calling === c.id ? "Starting calls…" : "Start calling"}
                   </button>
-                )}
+                ) : null}
 
                 <div className="mt-4 flex gap-2 border-t border-ink-100 pt-4">
                   <button
@@ -302,7 +368,7 @@ function CampaignModal({
 // Ad-hoc outreach: paste/upload a number list, pick ANY agent, and launch —
 // voice agents call the list (Vapi), chat agents message it (WhatsApp) and then
 // handle the replies automatically.
-function QuickOutreach({ agents, numbers, onSynced }: { agents: AiAgent[]; numbers: VoiceNumber[]; onSynced: () => void }) {
+function QuickOutreach({ agents, numbers, onSynced, engine }: { agents: AiAgent[]; numbers: VoiceNumber[]; onSynced: () => void; engine: VoiceProvider }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [text, setText] = useState("");
   const [agentId, setAgentId] = useState("");
@@ -353,6 +419,14 @@ function QuickOutreach({ agents, numbers, onSynced }: { agents: AiAgent[]; numbe
     setBusy(true);
     try {
       if (isVoice) {
+        if (engine === "livekit") {
+          // LiveKit outbound runs ONLY through saved campaigns: every call
+          // needs the approval gate, verified marketing eligibility, the
+          // do-not-call check and mandatory recording — a pasted ad-hoc list
+          // has none of those, so it is refused rather than dialed.
+          toast("Voice quick outreach is not available on LiveKit: create a saved campaign so eligibility, do-not-call and recording checks apply.", "info");
+          return;
+        }
         if (!agent.vapiAssistantId) { toast("Sync this voice agent to Vapi first.", "info"); return; }
         const number = numbers.find((n) => n.id === numberId);
         if (!number) { toast("Choose the number to call from.", "info"); return; }

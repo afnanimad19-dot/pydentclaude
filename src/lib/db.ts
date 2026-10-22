@@ -2496,6 +2496,10 @@ export interface Campaign {
   direction: "inbound" | "outbound";
   status: "active" | "paused" | "draft";
   createdAt: string;
+  // LiveKit outbound (0069): explicit human approval + the dialer's halt note.
+  // Undefined until the migration is applied.
+  approvedAt?: string | null;
+  haltedReason?: string;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -2509,6 +2513,8 @@ function rowToCampaign(r: any): Campaign {
     direction: r.direction ?? "outbound",
     status: r.status ?? "active",
     createdAt: r.created_at,
+    approvedAt: "approved_at" in r ? r.approved_at ?? null : undefined,
+    haltedReason: typeof r.halted_reason === "string" ? r.halted_reason : undefined,
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -2555,6 +2561,10 @@ export async function updateCampaign(id: string, input: Partial<Omit<Campaign, "
 export async function deleteCampaign(id: string): Promise<void> {
   await supabase.from("campaigns").delete().eq("id", id);
 }
+
+// Campaign approval is a SERVER action (S1): POST /api/livekit/outbound with
+// action "approve" — admin-only, workspace-checked. No browser writer exists
+// for approved_at on purpose.
 
 // ----------------------------------------------------------- team members (0023)
 

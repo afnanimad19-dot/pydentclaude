@@ -5,6 +5,7 @@ import { runPostCallExtraction } from "@/lib/post-call";
 import { runCallSummaryForRow } from "@/lib/call-summary-server";
 import { SUMMARY_AI_KEY } from "@/lib/call-summary";
 import { workerMessagesToRows } from "@/lib/call-transcript";
+import { canonicalPhone, leadPatchForCallEnd, normalizeOpeningConsent } from "@/lib/outbound-call";
 import type { ExtractionField } from "@/lib/db";
 
 // The deployed LiveKit worker posts here when a call ends: the transcript,
@@ -73,9 +74,20 @@ export async function POST(req: NextRequest) {
   const ended = body.endedAt ? new Date(body.endedAt) : new Date();
   const duration = started ? Math.max(0, Math.round((ended.getTime() - started.getTime()) / 1000)) : Number(body.durationSec ?? 0) || 0;
 
+  // Outbound-campaign attribution (Phase 2A). The dialer already wrote these
+  // on the intent row; echoing the worker's values keeps a late insert (dialer
+  // row lost) attributed too. Empty values are omitted so an update can never
+  // blank what the dialer stored.
+  const agentId = String(body.agentId ?? "").trim();
+  const campaignId = String(body.campaignId ?? "").trim();
+  const leadId = String(body.leadId ?? "").trim();
+  const openingConsent = normalizeOpeningConsent(body.openingConsent);
+
   const row: Record<string, any> = {
     workspace_id: ws,
     agent_name: String(body.agentName ?? ""),
+    ...(agentId ? { agent_id: agentId } : {}),
+    ...(campaignId ? { campaign_id: campaignId } : {}),
     caller_phone: String(body.callerPhone ?? ""),
     to_phone: String(body.toPhone ?? ""),
     direction: String(body.direction ?? "inbound"),
@@ -91,12 +103,47 @@ export async function POST(req: NextRequest) {
     // item's created_at). A missing offset stays null — never the array index.
     messages: workerMessagesToRows(messages),
     engine: "livekit",
-    structured_data: { engine: "livekit", room, source: body.source ?? "", privacy, ...(body.structuredData && typeof body.structuredData === "object" ? body.structuredData : {}) },
+    structured_data: {
+      engine: "livekit", room, source: body.source ?? "", privacy,
+      ...(leadId ? { leadId } : {}),
+      ...(openingConsent ? { openingConsent } : {}),
+      ...(body.structuredData && typeof body.structuredData === "object" ? body.structuredData : {}),
+    },
     latency_metrics: body.latencyMetrics && typeof body.latencyMetrics === "object" ? body.latencyMetrics : {},
     config_version: Number(body.configVersion) || 1,
   };
   const saved = await upsert(`lk:${room}`, row);
   if (saved.error) return NextResponse.json({ ok: false, error: saved.error.message }, { status: 500 });
+
+  // Close out the campaign lead: opening-consent outcome + opt-outs become
+  // DATA, and a declined/opt_out answer joins the permanent do-not-call
+  // registry (voice_dnc has no campaign reference, so it survives campaign
+  // deletion). Best-effort: a lead-table hiccup never fails the call log.
+  if (leadId) {
+    try {
+      const patch = leadPatchForCallEnd({ openingConsent, endedReason: String(body.endedReason ?? "") });
+      await supabase.from("campaign_leads").update({
+        status: patch.status,
+        status_detail: patch.status_detail,
+        ...(patch.opening_consent ? { opening_consent: patch.opening_consent, opening_consent_at: patch.opening_consent_at } : {}),
+        last_call_key: `lk:${room}`,
+        updated_at: new Date().toISOString(),
+      }).eq("id", leadId).eq("workspace_id", ws);
+      if (patch.dnc) {
+        // S2: the registry stores the canonical form so no formatting variant
+        // of this number can ever be dialed again.
+        const phone = canonicalPhone(body.toPhone);
+        if (phone) {
+          await supabase.from("voice_dnc").upsert(
+            { workspace_id: ws, phone, source: `call opt-out (${`lk:${room}`})` },
+            { onConflict: "workspace_id,phone", ignoreDuplicates: true }
+          );
+        }
+      }
+    } catch (e) {
+      console.warn(`[outbound] lead close-out failed lead=${leadId}: ${e instanceof Error ? e.message : "error"}`);
+    }
+  }
 
   // Post-call data extraction. Runs only when the agent's privacy setting
   // allows analysis, and AFTER the call row is saved — it never delays the
