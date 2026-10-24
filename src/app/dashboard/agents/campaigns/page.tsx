@@ -116,6 +116,21 @@ export default function CampaignsPage() {
     not_found: "Nothing left to call (or the campaign/agent/number was not found).",
     lead_claim_lost: "Someone else just started this lead — try again.",
     livekit_unconfigured: "LiveKit is not configured for this workspace.",
+    // Shared FXO line (one physical phone line; inbound always has priority).
+    inbound_active: "An inbound call is on the clinic line right now — outbound waits until the line is free.",
+    line_busy_outbound: "The shared line is already reserved or in use by another outbound call.",
+    line_cooldown: "The line is in its short post-call cooldown — try again in a minute.",
+    line_state_unknown: "The phone line's state can't be verified as idle right now, so no call was placed (an unknown line is never treated as free). An admin can attest the line idle for a supervised call.",
+    line_unavailable: "The shared line is in maintenance mode.",
+    line_maintenance: "The shared line is in maintenance mode.",
+    no_pending_lead: "No pending leads left to call.",
+    duplicate_request: "This exact request was already made — the original attempt stands (no duplicate call was placed).",
+    bad_idempotency_key: "The request was missing a valid idempotency key — reload and try again.",
+    not_uae_mobile: "The next lead's number is not an approved UAE mobile number, so it was blocked (calling policy).",
+    own_number: "The next lead's number is the clinic's own line and was blocked.",
+    special_service: "The next lead's number is an emergency/special-service number and was blocked.",
+    invalid: "The next lead's number is not a dialable phone number.",
+    db_unavailable: "Outbound is disabled: the shared-line safety tables are not installed yet (migration pending).",
   };
 
   async function approve(c: Campaign) {
@@ -134,7 +149,9 @@ export default function CampaignsPage() {
       const seedRes = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "seed", campaignId: c.id }) });
       const seed = await seedRes.json().catch(() => ({}));
       if (!seedRes.ok || !seed.ok) { toast(seed.error || "Couldn't prepare the lead list.", "info"); return; }
-      const startRes = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "start-next", campaignId: c.id }) });
+      // One idempotency key per attempt: a retried/duplicated submission can
+      // never place a second call (the server collapses it onto the original).
+      const startRes = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "start-next", campaignId: c.id, idempotencyKey: crypto.randomUUID() }) });
       const start = await startRes.json().catch(() => ({}));
       if (start.ok) {
         toast(`Calling started (lead 1 of ${contactCount}). The next lead dials after this call ends.`, "success");

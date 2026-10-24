@@ -6,6 +6,7 @@ import { runCallSummaryForRow } from "@/lib/call-summary-server";
 import { SUMMARY_AI_KEY } from "@/lib/call-summary";
 import { workerMessagesToRows } from "@/lib/call-transcript";
 import { canonicalPhone, leadPatchForCallEnd, normalizeOpeningConsent } from "@/lib/outbound-call";
+import { releaseReservationForCallEnd } from "@/lib/shared-line-server";
 import type { ExtractionField } from "@/lib/db";
 
 // The deployed LiveKit worker posts here when a call ends: the transcript,
@@ -143,6 +144,17 @@ export async function POST(req: NextRequest) {
     } catch (e) {
       console.warn(`[outbound] lead close-out failed lead=${leadId}: ${e instanceof Error ? e.message : "error"}`);
     }
+  }
+
+  // Shared FXO line (Phase 2B): a verified call termination releases the
+  // line reservation that belongs to THIS call key and starts the cooldown.
+  // Keyed by call_key, so a late or replayed post for an older call can never
+  // release a newer reservation. Best-effort: the reconciliation sweep is the
+  // fallback, and a hiccup here never fails the call log.
+  try {
+    await releaseReservationForCallEnd(ws, `lk:${room}`);
+  } catch (e) {
+    console.warn(`[shared-line] reservation release failed room=${room}: ${e instanceof Error ? e.message : "error"}`);
   }
 
   // Post-call data extraction. Runs only when the agent's privacy setting

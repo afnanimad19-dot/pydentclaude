@@ -4,10 +4,10 @@ import { authorizeRequest } from "@/lib/server-auth-deps";
 import {
   approveCampaignForCalling,
   markLeadsEligible,
-  placeCampaignCall,
   seedCampaignLeads,
   verifyCapturedRecording,
 } from "@/lib/outbound-call-server";
+import { attestLineIdle, getLineStatus, placeLineGuardedCall, setLineMaintenance } from "@/lib/shared-line-server";
 
 // LiveKit outbound campaign calls (Phase 2A). ADMIN-ONLY and workspace-scoped
 // — the replacement for the unauthenticated /api/vapi/outbound, which this
@@ -25,7 +25,14 @@ import {
 //   mark-eligible    — record verified marketing eligibility via a structured
 //                      attestation {basis, detail, evidenceRef?}.
 //   start-next       — place ONE call (the oldest pending eligible lead, or
-//                      body.leadId).
+//                      body.leadId) THROUGH the shared FXO line controller:
+//                      line admission (inbound priority, cooldown, unknown
+//                      state blocks), atomic per-line reservation, required
+//                      idempotencyKey — then the existing fail-closed dialer.
+//   line-status      — derived shared-line state + holding reservation.
+//   attest-line-idle — operator personally verified the physical line is idle
+//                      RIGHT NOW (supervised pilot; valid for the short TTL).
+//   line-maintenance — block/unblock all outbound admission ({enabled}).
 //   verify-recording — read the stored blob's size for a finished call
 //                      (acceptance check: captured audio, not just a started
 //                      egress; two-way audio is confirmed by a human listening
@@ -53,6 +60,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: v.ok, sizeBytes: v.sizeBytes, detail: v.detail, recordingStatus: String(row.recording_status ?? "") });
   }
 
+  if (action === "line-status") {
+    const r = await getLineStatus(ws);
+    return NextResponse.json(r, { status: r.ok ? 200 : 503 });
+  }
+
+  if (action === "attest-line-idle") {
+    const r = await attestLineIdle(ws, auth.userId, String(body.note ?? ""));
+    return NextResponse.json(r, { status: r.ok ? 200 : 400 });
+  }
+
+  if (action === "line-maintenance") {
+    const r = await setLineMaintenance(ws, auth.userId, body.enabled !== false, String(body.note ?? ""));
+    return NextResponse.json(r, { status: r.ok ? 200 : 400 });
+  }
+
   if (!campaignId) return NextResponse.json({ ok: false, error: "campaignId is required." }, { status: 400 });
 
   if (action === "approve") {
@@ -77,7 +99,13 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === "start-next") {
-    const r = await placeCampaignCall({ ws, campaignId, leadId: body.leadId ? String(body.leadId) : undefined });
+    const r = await placeLineGuardedCall({
+      ws,
+      campaignId,
+      leadId: body.leadId ? String(body.leadId) : undefined,
+      idempotencyKey: body.idempotencyKey,
+      actor: auth.userId,
+    });
     // Refusals are 200s with ok:false — they are answers, not transport errors.
     return NextResponse.json(r);
   }
