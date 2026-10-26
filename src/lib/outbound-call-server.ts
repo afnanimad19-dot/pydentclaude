@@ -51,7 +51,7 @@ const LIVE_CALL_WINDOW_MIN = 15; // an outbound call older than this no longer b
 
 export interface PlaceCallRefusal {
   ok: false;
-  reason: OutboundRefusal | "not_found" | "lead_claim_lost" | "db_write_failed" | "livekit_unconfigured" | "sip_failed";
+  reason: OutboundRefusal | "not_found" | "lead_claim_lost" | "db_write_failed" | "db_unavailable" | "livekit_unconfigured" | "sip_failed";
   detail?: string;
   halted?: boolean;
 }
@@ -67,21 +67,27 @@ async function markLead(leadId: string, fields: Record<string, any>): Promise<vo
   await supabase.from("campaign_leads").update({ ...fields, updated_at: new Date().toISOString() }).eq("id", leadId);
 }
 
-/** Trailing recording-failure streak for a campaign; halts it at the P2 threshold. */
-async function recordingStreak(campaignId: string): Promise<number> {
-  const { data } = await supabase
+/** Trailing recording-failure streak for a campaign; halts it at the P2 threshold.
+ *  An unreadable history reads as readable=false: the GATE then blocks (fail
+ *  closed) but haltIfNeeded never writes a halt from a transient read error. */
+async function recordingStreak(campaignId: string): Promise<{ streak: number; readable: boolean }> {
+  const { data, error } = await supabase
     .from("campaign_leads")
     .select("status, status_detail")
     .eq("campaign_id", campaignId)
     .neq("status", "pending")
     .order("updated_at", { ascending: false })
     .limit(10);
-  return consecutiveRecordingBlocks((data ?? []).map((r: any) => ({ status: String(r.status), statusDetail: String(r.status_detail ?? "") })));
+  if (error) return { streak: RECORDING_HALT_THRESHOLD, readable: false };
+  return {
+    streak: consecutiveRecordingBlocks((data ?? []).map((r: any) => ({ status: String(r.status), statusDetail: String(r.status_detail ?? "") }))),
+    readable: true,
+  };
 }
 
 async function haltIfNeeded(campaignId: string): Promise<boolean> {
-  const streak = await recordingStreak(campaignId);
-  if (streak < RECORDING_HALT_THRESHOLD) return false;
+  const { streak, readable } = await recordingStreak(campaignId);
+  if (!readable || streak < RECORDING_HALT_THRESHOLD) return false;
   await supabase
     .from("campaigns")
     .update({ halted_reason: `recording: ${streak} consecutive failures (policy P2) — resolve storage/egress, clear this field to resume` })
@@ -122,7 +128,7 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
   // S2: ONE canonical phone form for the DNC check, the dial and the records.
   const phone = canonicalPhone(lead.phone);
 
-  const [{ data: number }, { data: agent }, { count: dncCount }, { count: liveCalls }, { count: callingLeads }] = await Promise.all([
+  const [numberRes, agentRes, dncRes, liveRes, callingRes] = await Promise.all([
     supabase.from("voice_numbers").select("*").eq("id", campaign.number_id ?? "").maybeSingle(),
     supabase.from("agents").select("*").eq("id", campaign.agent_id ?? "").maybeSingle(),
     supabase.from("voice_dnc").select("id", { count: "exact", head: true }).eq("workspace_id", ws).eq("phone", phone || "-"),
@@ -132,7 +138,17 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
       .gte("started_at", new Date(Date.now() - LIVE_CALL_WINDOW_MIN * 60_000).toISOString()),
     supabase.from("campaign_leads").select("id", { count: "exact", head: true }).eq("workspace_id", ws).eq("status", "calling"),
   ]);
+  const number = numberRes.data;
+  const agent = agentRes.data;
   if (!number || !agent) return { ok: false, reason: "not_found", detail: !number ? "number" : "agent" };
+  // Fail closed (T1 F-3): an UNREADABLE do-not-call registry must never read
+  // as "not on the list" — a transient DB error on exactly this query used to
+  // dial opted-out numbers. Concurrency-count read errors likewise block.
+  if (dncRes.error) return { ok: false, reason: "db_unavailable", detail: "do-not-call registry unreadable (fail closed)" };
+  const dncCount = dncRes.count ?? 0;
+  const liveCalls = liveRes.error ? 1 : liveRes.count ?? 0;
+  const callingLeads = callingRes.error ? 1 : callingRes.count ?? 0;
+  const streakNow = await recordingStreak(campaignId);
 
   const creds = await getLivekitCreds(ws);
   if (!lkConfigured(creds)) return { ok: false, reason: "livekit_unconfigured" };
@@ -147,15 +163,16 @@ export async function placeCampaignCall(opts: { ws: string; campaignId: string; 
       haltedReason: String(campaign.halted_reason ?? ""),
     },
     lead: { status: String(lead.status), phone, marketingEligibleAt: lead.marketing_eligible_at ?? null },
-    dnc: (dncCount ?? 0) > 0,
+    dnc: dncCount > 0,
     externalAgent: bound.external,
     outboundTrunkId: String(number.livekit_outbound_trunk_id ?? ""),
     recordingEnvReady: !!env,
     // S4 defense in depth: a live voice_calls row OR a lead already holding the
     // single calling slot both count; the 0069 partial unique index is the
     // race-proof enforcement underneath.
-    liveOutboundCalls: (liveCalls ?? 0) + (callingLeads ?? 0),
-    consecutiveRecordingBlocks: await recordingStreak(campaignId),
+    liveOutboundCalls: liveCalls + callingLeads,
+    // Unreadable history blocks (campaign_halted) without writing a halt.
+    consecutiveRecordingBlocks: streakNow.readable ? streakNow.streak : RECORDING_HALT_THRESHOLD,
   });
   if (!gate.ok) {
     const block = leadBlockDetailFor(gate.reason);

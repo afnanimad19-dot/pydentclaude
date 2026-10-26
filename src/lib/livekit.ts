@@ -2,6 +2,7 @@ import { AccessToken, RoomServiceClient, SipClient, WebhookReceiver, RoomConfigu
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { languageRule } from "@/lib/agent-reply";
 import { LIVEKIT_DEFAULTS, livekitSttLanguage, type LivekitAgentSettings } from "@/lib/livekit-models";
+import { normalizeVoiceEngine } from "@/lib/voice-engine";
 import { normalizeVoiceSettings, AGENT_CONFIG_VERSION } from "@/lib/agent-config";
 import { callEndingRules, resolveClosingMessages, applySilencePolicy } from "@/lib/call-ending";
 import { resolveWorkerTokenOrdered } from "@/lib/worker-token";
@@ -201,6 +202,7 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: 
   // skipped (the imported configuration itself stays stored untouched).
   const callEnding = (vs as any).callEnding ?? { enabled: false };
   const lk: LivekitAgentSettings = { ...LIVEKIT_DEFAULTS, ...((agent.voice_settings?.livekit ?? {}) as Partial<LivekitAgentSettings>) };
+  const engineCfg = normalizeVoiceEngine(lk);
   const tools = (vs as any).tools as Record<string, boolean>;
 
   // The three prompt sections stay separate in the database (agent_identity /
@@ -239,6 +241,9 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: 
     "VOICE OUTPUT RULES: plain spoken sentences only — no markdown, lists, emojis or URLs; one or two short sentences per turn; say numbers, prices, times and emails the way a person would.",
     tools.lookup_patient
       ? "CALLER ID: when the caller's phone number was captured from telephony it is available to your tools automatically — call lookup_patient right away without asking for the number, and never read the number aloud except to confirm digits with the caller. If the tool says no number was captured, ask for their complete phone number first. Never call lookup_patient with empty values and never invent a number."
+      : "",
+    tools.lookup_patient || tools.reschedule_appointment || tools.cancel_appointment
+      ? "IDENTITY & PRIVACY: personal details and appointment changes belong to the VERIFIED caller only — lookups and changes are tied by the system to the number the call actually came from. Before reading out personal details, confirm the caller's full name matches the record. Never disclose or change anything for a different person or a different phone number; offer to have the team follow up instead."
       : "",
     canBook
       ? "BOOKING: use get_available_slots first and offer ONLY the real open times it returned. Collect details ONE question at a time (name → email → phone), then read back ONE summary — doctor, service, date and time — and only after the caller explicitly confirms call book_appointment. Announce success only when the tool succeeded; if it reports the slot is taken or a duplicate, apologize and offer the other open times the tools returned. Never invent an appointment id, doctor, service or time."
@@ -285,6 +290,12 @@ export function livekitAgentConfig(agent: any, ws: string, origin: string, tz?: 
     },
     greeting: agent.first_message || `Hi, this is ${agent.name} from the dental office. How can I help?`,
     greetFirst: (agent.first_message_mode ?? "assistant_first") !== "user_first",
+
+    // ── Voice engine (Phase 2: Grok realtime) ──
+    // The worker decides AT CONNECT between the realtime model and the
+    // pipeline trio below (voice-engine.ts rules; never mid-call).
+    voiceEngine: engineCfg.engine,
+    realtime: { model: engineCfg.realtimeModel, voice: engineCfg.realtimeVoice, fallbackToPipeline: engineCfg.fallbackToPipeline },
 
     // ── Models (LiveKit Inference identifiers) ──
     stt: lk.stt,

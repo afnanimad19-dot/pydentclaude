@@ -7,6 +7,7 @@ import { SUMMARY_AI_KEY } from "@/lib/call-summary";
 import { workerMessagesToRows } from "@/lib/call-transcript";
 import { canonicalPhone, leadPatchForCallEnd, normalizeOpeningConsent } from "@/lib/outbound-call";
 import { releaseReservationForCallEnd } from "@/lib/shared-line-server";
+import { closeQueueItemForCallEnd } from "@/lib/call-queue-server";
 import type { ExtractionField } from "@/lib/db";
 
 // The deployed LiveKit worker posts here when a call ends: the transcript,
@@ -155,6 +156,18 @@ export async function POST(req: NextRequest) {
     await releaseReservationForCallEnd(ws, `lk:${room}`);
   } catch (e) {
     console.warn(`[shared-line] reservation release failed room=${room}: ${e instanceof Error ? e.message : "error"}`);
+  }
+
+  // Outbound queue (Phase 4): close out the queue item behind this call, by
+  // the same call key. Reached-human outcomes are terminal; no_answer retries
+  // with backoff up to the item's max attempts. Best-effort as above.
+  if (leadId) {
+    try {
+      const patch = leadPatchForCallEnd({ openingConsent, endedReason: String(body.endedReason ?? "") });
+      await closeQueueItemForCallEnd(ws, `lk:${room}`, patch.status_detail || patch.status);
+    } catch (e) {
+      console.warn(`[call-queue] close-out failed room=${room}: ${e instanceof Error ? e.message : "error"}`);
+    }
   }
 
   // Post-call data extraction. Runs only when the agent's privacy setting

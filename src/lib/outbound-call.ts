@@ -50,6 +50,12 @@ export const MARKETING_CONSENT_BASES = [
   "signed_consent_form",
   "documented_verbal_consent",
   "registration_form_with_marketing_clause",
+  // Transactional service calls about the patient's OWN care (appointment
+  // reminders/confirmations, requested follow-ups, missed-call callbacks):
+  // the documented basis is the existing care relationship, not a marketing
+  // opt-in. DNC still always wins, and the attestation detail must say what
+  // the call is about (e.g. "reminder for their own 2026-11-02 appointment").
+  "service_relationship",
   "other",
 ] as const;
 export type MarketingConsentBasis = (typeof MARKETING_CONSENT_BASES)[number];

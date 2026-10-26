@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const {
+  preDialRecheck,
   SHARED_LINE_STATES,
   TRUSTED_LINE_OBSERVATION_SOURCES,
   DEFAULT_OBSERVATION_TTL_SECONDS,
@@ -302,7 +303,7 @@ test("start-next goes THROUGH the line controller, which still runs the existing
   // admission → reservation → FINAL re-check → dial, in that order
   const admissionAt = server.indexOf("lineAdmission(pre.state)");
   const reserveAt = server.indexOf('from("line_reservations")\n    .insert');
-  const recheckAt = server.indexOf("excludeReservationId: reservationId");
+  const recheckAt = server.indexOf("preDialRecheck({");
   const dialAt = server.indexOf("placeCampaignCall({ ws, campaignId");
   assert.ok(admissionAt > 0 && reserveAt > admissionAt && recheckAt > reserveAt && dialAt > recheckAt, "admission → reserve → re-check → dial order");
   // a reservation is a scheduling control: the dialer's own gate still runs
@@ -311,6 +312,16 @@ test("start-next goes THROUGH the line controller, which still runs the existing
   // call-log releases by call key only (late events cannot corrupt)
   const callLog = await readFile(new URL("../src/app/api/livekit/call-log/route.ts", import.meta.url), "utf8");
   assert.match(callLog, /releaseReservationForCallEnd\(ws, `lk:\$\{room\}`\)/);
+});
+
+test("final pre-dial re-check: a blocker arriving between reservation and dial refuses (without re-requiring the consumed attestation)", () => {
+  const base = { maintenance: false, liveInboundCalls: 0, otherReservationHolds: false, cooldownUntil: null, now: NOW };
+  assert.deepEqual(preDialRecheck(base), { ok: true });
+  assert.deepEqual(preDialRecheck({ ...base, liveInboundCalls: 1 }), { ok: false, reason: "inbound_active" });
+  assert.deepEqual(preDialRecheck({ ...base, maintenance: true }), { ok: false, reason: "line_unavailable" });
+  assert.deepEqual(preDialRecheck({ ...base, otherReservationHolds: true }), { ok: false, reason: "line_busy_outbound" });
+  assert.deepEqual(preDialRecheck({ ...base, cooldownUntil: new Date(NOW.getTime() + 30_000).toISOString() }), { ok: false, reason: "line_cooldown" });
+  assert.deepEqual(preDialRecheck({ ...base, cooldownUntil: new Date(NOW.getTime() - 1_000).toISOString() }), { ok: true });
 });
 
 test("fail-closed server bindings: db errors refuse, inbound-read errors count as inbound, and auto outbound stays structurally disabled", async () => {

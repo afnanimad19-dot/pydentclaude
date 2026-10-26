@@ -153,6 +153,33 @@ export function lineAdmission(state: SharedLineState): { ok: true } | { ok: fals
   }
 }
 
+/**
+ * The FINAL pre-dial re-check, run after a reservation is acquired (and the
+ * one-shot attestation consumed) but before anything dials. It does not
+ * require a fresh idle observation — the reservation holds the slot — but any
+ * newly arrived blocker (inbound call, maintenance, cooldown, a competing
+ * reservation that somehow holds the line) refuses and releases.
+ */
+export function preDialRecheck(i: {
+  maintenance: boolean;
+  liveInboundCalls: number;
+  /** Another reservation (not ours) holds the line, or its state is unreadable. */
+  otherReservationHolds: boolean;
+  cooldownUntil: string | null;
+  now?: Date;
+}): { ok: true } | { ok: false; reason: LineAdmissionRefusal } {
+  const no = (reason: LineAdmissionRefusal) => ({ ok: false as const, reason });
+  const now = i.now ?? new Date();
+  if (i.maintenance) return no("line_unavailable");
+  if (i.liveInboundCalls > 0) return no("inbound_active");
+  if (i.otherReservationHolds) return no("line_busy_outbound");
+  if (i.cooldownUntil) {
+    const until = Date.parse(i.cooldownUntil);
+    if (Number.isFinite(until) && until > now.getTime()) return no("line_cooldown");
+  }
+  return { ok: true };
+}
+
 // ── destination policy (application copy; Asterisk enforces it AGAIN) ────────
 // Approved calling policy for this phase: UAE MOBILE numbers only, in the
 // canonical digits form (canonicalPhone output). Everything else — landlines,

@@ -14,6 +14,7 @@ import {
   lineAdmission,
   normalizeIdempotencyKey,
   outboundDestinationPolicy,
+  preDialRecheck,
   reservationSweepAction,
   type SharedLineRefusal,
   type SharedLineState,
@@ -114,6 +115,14 @@ async function ensureLine(ws: string): Promise<LineRow | null> {
   if (insErr && insErr.code !== "23505") return null; // 23505 = concurrent create won the race
   const again = await sel();
   return again.error ? null : ((again.data as LineRow) ?? null);
+}
+
+/** Re-read the line row. Admission decisions must use a FRESH row: a cooldown
+ *  or maintenance flag written moments ago (even by this invocation's own
+ *  sweep) must be seen, not a stale in-memory copy (T1 F-4). */
+async function freshLine(lineId: string): Promise<LineRow | null> {
+  const { data, error } = await supabase.from("shared_lines").select("*").eq("id", lineId).maybeSingle();
+  return error ? null : ((data as LineRow) ?? null);
 }
 
 /** Live inbound LiveKit calls right now. Errors count as "inbound present"
@@ -231,10 +240,10 @@ async function sweepReservation(ws: string, line: LineRow): Promise<void> {
 }
 
 /** Deterministic derived state for the line, after the sweep. */
-async function derivedState(ws: string, line: LineRow, opts?: { excludeReservationId?: string }): Promise<{ state: SharedLineState; holding: any | null }> {
+async function derivedState(ws: string, line: LineRow): Promise<{ state: SharedLineState; holding: any | null }> {
   const inbound = await liveInboundCount(ws);
   const { row, readFailed } = await holdingReservation(line.id);
-  const holding = opts?.excludeReservationId && row && String(row.id) === opts.excludeReservationId ? null : row;
+  const holding = row;
   const state = deriveLineState({
     maintenance: !!line.maintenance,
     liveInboundCalls: inbound,
@@ -366,7 +375,9 @@ export async function placeLineGuardedCall(opts: {
   // Destination policy (application copy — the proposed Asterisk context
   // enforces the same rules again at the telephony boundary).
   const phone = canonicalPhone(lead.phone);
-  const { data: ownNums } = await supabase.from("voice_numbers").select("phone").eq("workspace_id", ws);
+  const { data: ownNums, error: ownErr } = await supabase.from("voice_numbers").select("phone").eq("workspace_id", ws);
+  // Fail closed: an unreadable own-number list must not read as "no own numbers".
+  if (ownErr) return { ok: false, reason: "db_unavailable", detail: "voice_numbers unreadable (fail closed)" };
   const ownCanonical = (ownNums ?? []).map((n: any) => canonicalPhone(n.phone)).filter(Boolean);
   const policy = outboundDestinationPolicy(phone, ownCanonical);
   if (!policy.ok) {
@@ -377,8 +388,12 @@ export async function placeLineGuardedCall(opts: {
     return { ok: false, reason: policy.reason };
   }
 
-  // Shared-line admission (strictly before any reservation).
-  const pre = await derivedState(ws, line);
+  // Shared-line admission (strictly before any reservation), on a FRESH line
+  // row — the sweep above may have just started a cooldown, and a concurrent
+  // maintenance toggle must be seen (T1 F-4).
+  const lineNow = await freshLine(line.id);
+  if (!lineNow) return { ok: false, reason: "db_unavailable", detail: "line row unreadable (fail closed)" };
+  const pre = await derivedState(ws, lineNow);
   const admission = lineAdmission(pre.state);
   if (!admission.ok) return { ok: false, reason: admission.reason, lineState: pre.state };
 
@@ -408,6 +423,20 @@ export async function placeLineGuardedCall(opts: {
   const reservationId = String(reservation.id);
   await logLineEvent({ ws, lineId: line.id, reservationId, campaignId, leadId: String(lead.id), fromState: pre.state, toState: "outbound_reserved", reason: "reservation acquired", actor: opts.actor });
 
+  // One attestation admits ONE reservation (T1 F-5): consume the idle
+  // observation now, so the next attempt — even after this call's cooldown —
+  // needs a fresh operator verification. Consumed regardless of how this
+  // attempt ends; a failed consume fails the attempt (fail closed).
+  const { error: consumeErr } = await supabase
+    .from("shared_lines")
+    .update({ observed_state: "unknown", observed_source: "", observed_note: "consumed by reservation", updated_at: nowIso() })
+    .eq("id", line.id);
+  if (consumeErr) {
+    await transitionReservation({ id: reservationId, status: "reserved" }, "released", { release_reason: "attestation consume failed", released_at: nowIso() });
+    return { ok: false, reason: "db_unavailable", detail: "could not consume the line attestation (fail closed)", reservationId };
+  }
+  await logLineEvent({ ws, lineId: line.id, reservationId, toState: "unknown", reason: "idle attestation consumed (one attestation = one dial attempt)", actor: "system" });
+
   const releaseAndRefuse = async (reason: LineGuardRefusal["reason"], detail?: string, cooldown = false, halted?: boolean): Promise<LineGuardRefusal> => {
     await transitionReservation({ id: reservationId, status: "reserved" }, "released", { release_reason: String(reason), released_at: nowIso() });
     await logLineEvent({ ws, lineId: line.id, reservationId, campaignId, leadId: String(lead.id), fromState: "outbound_reserved", toState: "released", reason: `refused: ${reason}${detail ? ` (${detail})` : ""}`, actor: "system" });
@@ -415,11 +444,22 @@ export async function placeLineGuardedCall(opts: {
     return { ok: false, reason, detail, reservationId, halted };
   };
 
-  // Final availability re-check between reservation and dial: inbound may
-  // have started in the window. Our own fresh reservation is excluded.
-  const post = await derivedState(ws, line, { excludeReservationId: reservationId });
-  const postAdmission = lineAdmission(post.state);
-  if (!postAdmission.ok) return releaseAndRefuse(postAdmission.reason, `final pre-dial check: line ${post.state}`);
+  // FINAL availability re-check between reservation and dial: inbound may
+  // have started in the window, and the line row is re-read fresh again. The
+  // consumed attestation is not re-required (our reservation holds the slot);
+  // everything else — inbound, maintenance, cooldown, a competing holder —
+  // refuses and releases.
+  const lineAtDial = await freshLine(line.id);
+  if (!lineAtDial) return releaseAndRefuse("db_unavailable", "line row unreadable at final pre-dial check");
+  const inboundAtDial = await liveInboundCount(ws);
+  const { row: holderAtDial, readFailed: holderReadFailed } = await holdingReservation(line.id);
+  const postAdmission = preDialRecheck({
+    maintenance: !!lineAtDial.maintenance,
+    liveInboundCalls: inboundAtDial,
+    otherReservationHolds: holderReadFailed || (!!holderAtDial && String(holderAtDial.id) !== reservationId),
+    cooldownUntil: lineAtDial.cooldown_until ?? null,
+  });
+  if (!postAdmission.ok) return releaseAndRefuse(postAdmission.reason, "final pre-dial check lost");
 
   // Existing fail-closed dialer: campaign approval, eligibility, DNC,
   // recording-before-dial, single calling slot — all still enforced.

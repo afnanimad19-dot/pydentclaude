@@ -283,6 +283,20 @@ def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | N
     def caller_number() -> str:
         return str(state.get("caller_phone") or "")
 
+    def verified_phone(model_phone: str) -> str:
+        """Patient identity pin (fail closed). On telephony calls the captured
+        caller number IS the verified identity: record lookups and appointment
+        changes run against it, and a model-supplied DIFFERENT number is
+        ignored (it could expose or modify another patient's data on the
+        model's say-so). Calls with no captured number (web tests) use what
+        the caller provided, and the prompt requires explicit confirmation."""
+        captured = caller_number()
+        supplied = normalize_phone(model_phone)
+        if captured and supplied and supplied != captured:
+            logger.info("identity pin: tool-supplied number ignored in favor of the verified caller number")
+            return captured
+        return supplied or captured
+
     # Call Ending & Goodbye: when ENABLED the tool takes an outcome and the
     # WORKER speaks the exact configured closing message before hanging up.
     # Manual mode registers no end_call tool at all — the agent can never
@@ -386,7 +400,7 @@ def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | N
             ),
         )
         async def reschedule_appointment(datetime: str, name: str = "", phone: str = "", appointment_id: str = "") -> str:
-            phone = phone.strip() or caller_number()
+            phone = verified_phone(phone)  # identity pin: never another patient's number
             return await run_tool(agent_id, "reschedule_appointment", {"datetime": datetime, "name": name, "phone": phone, "appointment_id": appointment_id})
 
         tools.append(reschedule_appointment)
@@ -401,7 +415,7 @@ def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | N
             ),
         )
         async def cancel_appointment(name: str = "", phone: str = "", appointment_id: str = "") -> str:
-            phone = phone.strip() or caller_number()
+            phone = verified_phone(phone)  # identity pin: never another patient's number
             return await run_tool(agent_id, "cancel_appointment", {"name": name, "phone": phone, "appointment_id": appointment_id})
 
         tools.append(cancel_appointment)
@@ -417,7 +431,7 @@ def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | N
             ),
         )
         async def lookup_patient(phone: str = "", name: str = "", email: str = "") -> str:
-            phone = phone.strip() or caller_number()
+            phone = verified_phone(phone)  # identity pin: never another patient's number
             if not phone and not name.strip() and not email.strip():
                 return ASK_FOR_NUMBER
             return await run_tool(agent_id, "lookup_patient", {"phone": phone, "name": name, "email": email})
@@ -432,7 +446,7 @@ def build_tools(cfg: dict[str, Any], on_end_call, call_state: dict[str, Any] | N
             ),
         )
         async def list_upcoming_appointments(phone: str = "", email: str = "", patient_id: str = "") -> str:
-            phone = phone.strip() or caller_number()
+            phone = verified_phone(phone)  # identity pin: never another patient's number
             if not phone and not email.strip() and not patient_id.strip():
                 return ASK_FOR_NUMBER
             return await run_tool(agent_id, "list_upcoming_appointments", {"phone": phone, "email": email, "patient_id": patient_id})
@@ -860,6 +874,36 @@ async def wait_for_sip_answer(ctx: JobContext, timeout_s: float = 45.0) -> bool:
     return False
 
 
+# ── Voice engine (Phase 2: Grok realtime) ────────────────────────────────────
+# Mirrors src/lib/voice-engine.ts. The engine is decided ONCE, at connect,
+# before any audio has flowed: an unpinned/deprecated realtime model falls
+# back to the proven STT→LLM→TTS pipeline (when fallback is allowed) or the
+# job is refused. There is NO mid-call engine switching — swapping models on a
+# live call could lose conversation context or duplicate tool actions — so a
+# fatal engine error mid-call ends the call through the normal end_call path.
+SUPPORTED_REALTIME_MODELS = {"xai/grok-voice-3.0"}
+REJECTED_REALTIME_MODELS = {"grok-voice-latest", "xai/grok-voice-latest", "grok-voice-2.0", "xai/grok-voice-2.0"}
+DEFAULT_REALTIME_VOICE = "eve"
+
+
+def resolve_voice_engine(cfg: dict[str, Any]) -> tuple[str, str, str, str]:
+    """Connect-time engine decision. Returns (engine, model, voice, note):
+    engine is 'pipeline', 'grok-realtime' or 'refused'; note carries the
+    visible fallback/refusal reason for the log and the call record."""
+    engine = str(cfg.get("voiceEngine") or "pipeline")
+    if engine != "grok-realtime":
+        return "pipeline", "", "", ""
+    rt = cfg.get("realtime") or {}
+    model = str(rt.get("model") or "").strip()
+    voice = str(rt.get("voice") or "").strip() or DEFAULT_REALTIME_VOICE
+    if model in SUPPORTED_REALTIME_MODELS and model not in REJECTED_REALTIME_MODELS:
+        return "grok-realtime", model, voice, ""
+    reason = f"realtime model {model!r} is not in the pinned allowlist"
+    if rt.get("fallbackToPipeline") is False:
+        return "refused", "", "", reason
+    return "pipeline", "", "", f"{reason} — connect-time fallback to pipeline"
+
+
 # ── Worker entrypoint ───────────────────────────────────────────────────────
 server = AgentServer()
 
@@ -890,15 +934,31 @@ async def entrypoint(ctx: JobContext):
     if cfg.get("sttLanguage"):
         stt_kwargs["language"] = cfg["sttLanguage"]
 
-    session_kwargs: dict[str, Any] = {
-        "stt": inference.STT(**stt_kwargs),
-        "llm": inference.LLM(model=cfg["llm"]),
-        "tts": inference.TTS(model=cfg["tts"], voice=cfg["voice"]),
-        "turn_handling": build_turn_handling(cfg),
-    }
-    vad = build_vad(cfg)
-    if vad is not None:
-        session_kwargs["vad"] = vad
+    # Voice engine: decided once, HERE, before any audio (never mid-call).
+    engine, rt_model, rt_voice, engine_note = resolve_voice_engine(cfg)
+    if engine_note:
+        logger.warning("voice engine: %s", engine_note)
+    if engine == "refused":
+        logger.error("voice engine refused and fallback disabled — not answering this call")
+        ctx.shutdown(reason=f"voice engine refused: {engine_note}")
+        return
+    if engine == "grok-realtime":
+        # Speech-to-speech realtime via LiveKit Inference (same LiveKit Cloud
+        # credentials as the pipeline models; no separate xAI key). Turn
+        # detection is the model's built-in server VAD.
+        session_kwargs: dict[str, Any] = {
+            "llm": inference.RealtimeModel(model=rt_model, voice=rt_voice),
+        }
+    else:
+        session_kwargs = {
+            "stt": inference.STT(**stt_kwargs),
+            "llm": inference.LLM(model=cfg["llm"]),
+            "tts": inference.TTS(model=cfg["tts"], voice=cfg["voice"]),
+            "turn_handling": build_turn_handling(cfg),
+        }
+        vad = build_vad(cfg)
+        if vad is not None:
+            session_kwargs["vad"] = vad
 
     session = AgentSession(**session_kwargs)
 
@@ -1027,7 +1087,12 @@ async def entrypoint(ctx: JobContext):
                     "endedReason": str(call_state.get("ended_reason") or ""),
                     "messages": lines,
                     "latencyMetrics": tracker.summary(),
-                    "structuredData": {"toolCalls": list(tool_calls)},
+                    "structuredData": {
+                        "toolCalls": list(tool_calls),
+                        "voiceEngine": engine,
+                        **({"voiceEngineModel": rt_model} if rt_model else {}),
+                        **({"engineFallback": engine_note} if engine_note else {}),
+                    },
                     "configVersion": cfg.get("configVersion", 1),
                     # Pydent runs the configured extraction when analysis is allowed.
                     "analyze": analyze,
@@ -1069,7 +1134,11 @@ async def entrypoint(ctx: JobContext):
     amd_cfg = cfg.get("amd") or {}
     if amd_cfg.get("enabled") and not is_outbound:
         logger.info("AMD enabled but this is an inbound call — not started")
-    if amd_cfg.get("enabled") and is_outbound:
+    if amd_cfg.get("enabled") and is_outbound and engine == "grok-realtime":
+        # AMD compatibility with realtime speech-to-speech sessions is not
+        # verified — do not guess; the strict answered-gate still applies.
+        logger.info("AMD not started: unverified with the realtime engine")
+    elif amd_cfg.get("enabled") and is_outbound:
         try:
             from livekit.agents.voice.amd import AMD  # imported lazily
 

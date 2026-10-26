@@ -17,6 +17,7 @@ import { sendByChannel } from "@/lib/wa-send";
 import { sendSms } from "@/lib/sms-send";
 import { sendEmail } from "@/lib/email-send";
 import { resolveVapiPhoneNumberId, placeOutboundCall } from "@/lib/vapi-call";
+import { canonicalPhone } from "@/lib/outbound-call";
 import { saveReport, markdownToHtml } from "@/lib/report-render";
 
 // Base URL for report download links (the runner has no request origin).
@@ -156,6 +157,18 @@ async function patientEmail(db: DB, patientId: string): Promise<string> {
 async function placeCall(db: DB, run: any, cfg: any): Promise<{ ok: boolean; message: string }> {
   if (!run.contact_phone) return { ok: false, message: "no contact number to call" };
   if (!cfg?.agentId) return { ok: false, message: "no voice agent configured on the call step" };
+  // Do-not-call enforcement (T1 F-2): workflow "call" steps used to dial with
+  // no DNC check at all. Canonical phone form; an unreadable registry or an
+  // uncanonicalizable number refuses the call (fail closed).
+  {
+    const canonical = canonicalPhone(run.contact_phone);
+    if (!canonical) return { ok: false, message: "contact number is not a dialable phone number" };
+    const { count, error } = await db
+      .from("voice_dnc").select("id", { count: "exact", head: true })
+      .eq("workspace_id", run.workspace_id ?? "").eq("phone", canonical);
+    if (error) return { ok: false, message: "do-not-call registry unreadable — call refused (fail closed)" };
+    if ((count ?? 0) > 0) return { ok: false, message: "number is on the do-not-call list — call refused" };
+  }
   try {
     const { data: agent } = await db.from("agents").select("vapi_assistant_id, name").eq("id", cfg.agentId).maybeSingle();
     if (!agent?.vapi_assistant_id) return { ok: false, message: "the call step's agent isn't synced to Vapi yet" };

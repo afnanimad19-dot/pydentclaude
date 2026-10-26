@@ -226,6 +226,8 @@ export default function CampaignsPage() {
 
       <QuickOutreach agents={allAgents} numbers={numbers} onSynced={refreshAgents} engine={engine} />
 
+      {engine === "livekit" && <SharedLineStatusCard />}
+
       <h2 className="mb-3 mt-8 font-semibold text-ink-900">Saved campaigns</h2>
       {campaigns.length === 0 ? (
         <Card className="p-10 text-center text-sm text-ink-500">
@@ -536,6 +538,102 @@ function QuickOutreach({ agents, numbers, onSynced, engine }: { agents: AiAgent[
             {isVoice ? "Start calls" : agent ? "Send messages" : "Choose an agent"}
           </button>
           {agent && !isVoice && <p className="flex items-center gap-1 text-xs text-ink-400"><MessageCircle className="h-3 w-3" /> Replies are handled automatically by the agent.</p>}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ── Shared FXO line status (Phase 2B/8) ──────────────────────────────────────
+// The clinic has ONE physical analog line shared between inbound (Laura) and
+// outbound campaigns. This card shows the controller's derived state and the
+// operator controls. Deliberate wording: the line is never shown as
+// "Available" — physical availability is unverified by design (unknown fails
+// closed), and only a fresh operator attestation briefly verifies idle.
+const LINE_STATE_LABELS: Record<string, { label: string; tone: "green" | "amber" | "red" | "gray" }> = {
+  idle: { label: "Idle (operator-verified, short-lived)", tone: "green" },
+  inbound_active: { label: "Inbound call active — outbound blocked", tone: "amber" },
+  outbound_reserved: { label: "Outbound reserved", tone: "amber" },
+  outbound_dialing: { label: "Outbound dialing", tone: "amber" },
+  outbound_active: { label: "Outbound call active", tone: "amber" },
+  cooldown: { label: "Cooldown — settling after a call", tone: "amber" },
+  unknown: { label: "Unknown — outbound blocked (never assumed free)", tone: "gray" },
+  unavailable: { label: "Maintenance — outbound blocked", tone: "red" },
+};
+
+function SharedLineStatusCard() {
+  const [state, setState] = useState<string>("unknown");
+  const [line, setLine] = useState<Record<string, unknown> | null>(null);
+  const [reservation, setReservation] = useState<Record<string, unknown> | null>(null);
+  const [error, setError] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+
+  async function refreshLine() {
+    setBusy(true);
+    try {
+      const res = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "line-status" }) });
+      const d = await res.json().catch(() => ({}));
+      setState(String(d.state ?? "unknown"));
+      setLine(d.line ?? null);
+      setReservation(d.reservation ?? null);
+      setError(d.ok ? "" : String(d.error ?? "Shared-line status unavailable."));
+    } catch {
+      setError("Network error reading the line status.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  useEffect(() => {
+    // Deferred so the initial render commits before any state updates.
+    const t = setTimeout(() => void refreshLine(), 0);
+    return () => clearTimeout(t);
+  }, []);
+
+  async function attest() {
+    if (!confirm("Confirm: you are physically verifying RIGHT NOW that the clinic line is idle (no inbound call, handset free). This admits at most ONE supervised outbound call and expires in about two minutes.")) return;
+    const res = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "attest-line-idle", note: "attested from campaigns page" }) });
+    const d = await res.json().catch(() => ({}));
+    toast(d.ok ? `Line attested idle for ~${d.validForSeconds ?? 120}s (admins only, one call).` : d.error || "Attestation failed (admins only).", d.ok ? "success" : "info");
+    void refreshLine();
+  }
+
+  async function toggleMaintenance(enabled: boolean) {
+    const res = await authFetch("/api/livekit/outbound", { method: "POST", body: JSON.stringify({ action: "line-maintenance", enabled, note: "toggled from campaigns page" }) });
+    const d = await res.json().catch(() => ({}));
+    toast(d.ok ? (enabled ? "Maintenance on — outbound blocked." : "Maintenance off.") : d.error || "Change failed (admins only).", d.ok ? "success" : "info");
+    void refreshLine();
+  }
+
+  const meta = LINE_STATE_LABELS[state] ?? LINE_STATE_LABELS.unknown;
+  const maintenance = !!(line as { maintenance?: boolean } | null)?.maintenance;
+  return (
+    <Card className="mt-6 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <PhoneCall className="h-4 w-4 text-ink-400" />
+            <span className="text-sm font-semibold text-ink-900">Shared clinic line (FXO)</span>
+            <StatusBadge status={meta.label} tone={meta.tone} />
+          </div>
+          <p className="mt-1 text-[11px] text-ink-500">
+            One physical line carries inbound and outbound: inbound always has priority, one outbound call at a time, and an
+            unverified line is treated as busy. While an outbound call is live, inbound callers may get a busy tone — software cannot prevent that on one analog line.
+          </p>
+          {error && <p className="mt-1 text-[11px] text-amber-600">{error}</p>}
+          {reservation ? (
+            <p className="mt-1 text-[11px] text-ink-500">Reservation: {String(reservation.status)} {reservation.callKey ? `· ${String(reservation.callKey)}` : ""}</p>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => void refreshLine()} disabled={busy} className="flex items-center gap-1 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-50">
+            <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} /> Refresh
+          </button>
+          <button onClick={() => void attest()} className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100">
+            Attest line idle (admin)
+          </button>
+          <button onClick={() => void toggleMaintenance(!maintenance)} className="rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-50">
+            {maintenance ? "End maintenance" : "Maintenance mode"}
+          </button>
         </div>
       </div>
     </Card>

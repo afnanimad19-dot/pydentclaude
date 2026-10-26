@@ -70,6 +70,7 @@ import {
 } from "@/lib/db";
 import { History } from "lucide-react";
 import { LIVEKIT_STT, LIVEKIT_LLM, LIVEKIT_TTS, LIVEKIT_DEFAULTS, livekitVoiceLabel, type LivekitAgentSettings } from "@/lib/livekit-models";
+import { REALTIME_MODELS } from "@/lib/voice-engine";
 import { normalizeVoiceSettings, validateVoiceSettings } from "@/lib/agent-config";
 import { parseBuilderExport, mapBuilderModels, callEndingText, BUILDER_FIELDS, parseBuilderTools, mergeImportedTools, type BuilderField } from "@/lib/livekit-builder-import";
 import { parseBuilderZip, type ZipParseResult } from "@/lib/livekit-zip-import";
@@ -188,6 +189,33 @@ function LivekitModelPicker({ value, onChange }: { value: LivekitAgentSettings; 
               <li>Greeting → <code className="rounded bg-ink-100 px-1">{"{{metadata.greeting}}"}</code></li>
             </ul>
             <p className="mt-1">Pydent sends both on every call, so anything you edit here is live on the next call. Tools (booking, email) run through the Pydent worker only — switch to it for those.</p>
+          </div>
+        )}
+      </div>
+      <div className="md:col-span-2">
+        <Field label="Voice engine">
+          <select
+            className={inputCls}
+            value={value.voiceEngine ?? "pipeline"}
+            onChange={(e) => set({ voiceEngine: (e.target.value === "grok-realtime" ? "grok-realtime" : "pipeline") })}
+          >
+            <option value="pipeline">Pipeline — STT / LLM / TTS below (proven, current Laura setup)</option>
+            {REALTIME_MODELS.map((m) => <option key={m.id} value="grok-realtime">Realtime — {m.label}</option>)}
+          </select>
+        </Field>
+        {(value.voiceEngine ?? "pipeline") === "grok-realtime" && (
+          <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/60 p-3 text-[11px] text-ink-600">
+            <p className="font-semibold text-ink-800">Grok realtime speech-to-speech ({value.realtimeModel || "xai/grok-voice-3.0"}).</p>
+            <p className="mt-1">The STT / LLM / TTS pickers below are ignored on calls while this engine is selected. Tools, knowledge and booking work the same. If the realtime engine cannot start, the call falls back to the pipeline at connect time (never mid-call).</p>
+            <div className="mt-2 grid gap-3 md:grid-cols-2">
+              <Field label="Realtime voice">
+                <input className={inputCls} value={value.realtimeVoice ?? "eve"} onChange={(e) => set({ realtimeVoice: e.target.value })} placeholder="eve" />
+              </Field>
+              <label className="flex items-end gap-2 pb-2 text-[12px] text-ink-700">
+                <input type="checkbox" checked={value.realtimeFallback !== false} onChange={(e) => set({ realtimeFallback: e.target.checked })} />
+                Fall back to the pipeline at connect if realtime can&apos;t start
+              </label>
+            </div>
           </div>
         )}
       </div>

@@ -11,6 +11,13 @@ export interface LivekitAgentSettings {
   tts: string;          // e.g. "inworld/inworld-tts-2"
   voice: string;        // provider voice id / name, e.g. "Ashley"
   interruptions: "adaptive" | "eager" | "off";
+  // Voice engine (Phase 2): "pipeline" runs the STT/LLM/TTS trio below;
+  // "grok-realtime" runs the speech-to-speech realtime model instead (the
+  // trio is then ignored at call time). See src/lib/voice-engine.ts.
+  voiceEngine: "pipeline" | "grok-realtime";
+  realtimeModel: string;   // pinned id, e.g. "xai/grok-voice-3.0"
+  realtimeVoice: string;   // Grok Voice built-in voice, e.g. "eve"
+  realtimeFallback: boolean; // fall back to the pipeline AT CONNECT TIME only
   // Which deployed LiveKit agent answers for this Pydent agent. "" = the Pydent
   // worker (full control: models/voice/instructions all from Pydent). Any other
   // value = an agent you built/deployed in the LiveKit console (Agent Builder);
@@ -26,6 +33,10 @@ export const LIVEKIT_DEFAULTS: LivekitAgentSettings = {
   tts: "inworld/inworld-tts-2",
   voice: "Ashley",
   interruptions: "adaptive",
+  voiceEngine: "pipeline",
+  realtimeModel: "xai/grok-voice-3.0",
+  realtimeVoice: "eve",
+  realtimeFallback: true,
   agentName: "",
 };
 

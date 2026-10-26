@@ -8,6 +8,7 @@ import {
   verifyCapturedRecording,
 } from "@/lib/outbound-call-server";
 import { attestLineIdle, getLineStatus, placeLineGuardedCall, setLineMaintenance } from "@/lib/shared-line-server";
+import { enqueueCall, queueStatus, runQueueOnce } from "@/lib/call-queue-server";
 
 // LiveKit outbound campaign calls (Phase 2A). ADMIN-ONLY and workspace-scoped
 // — the replacement for the unauthenticated /api/vapi/outbound, which this
@@ -75,6 +76,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(r, { status: r.ok ? 200 : 400 });
   }
 
+  if (action === "queue-status") {
+    const r = await queueStatus(ws);
+    return NextResponse.json(r, { status: r.ok ? 200 : 503 });
+  }
+
+  if (action === "queue-run") {
+    // Run AT MOST ONE due queue item through the full guarded path. Explicit
+    // admin action — automated outbound initiation stays disabled (K-1).
+    const r = await runQueueOnce(ws, auth.userId);
+    return NextResponse.json(r);
+  }
+
   if (!campaignId) return NextResponse.json({ ok: false, error: "campaignId is required." }, { status: 400 });
 
   if (action === "approve") {
@@ -94,6 +107,19 @@ export async function POST(req: NextRequest) {
       basis: String(body.basis ?? ""),
       detail: String(body.detail ?? ""),
       evidenceRef: body.evidenceRef ? String(body.evidenceRef) : undefined,
+    });
+    return NextResponse.json(r, { status: r.ok ? 200 : 400 });
+  }
+
+  if (action === "queue-add") {
+    const r = await enqueueCall(ws, auth.userId, {
+      campaignId,
+      leadId: String(body.leadId ?? ""),
+      kind: String(body.kind ?? "campaign"),
+      scheduledAt: String(body.scheduledAt ?? ""),
+      notAfter: body.notAfter ? String(body.notAfter) : undefined,
+      maxAttempts: Number(body.maxAttempts) || undefined,
+      consentBasis: body.consentBasis ? String(body.consentBasis) : undefined,
     });
     return NextResponse.json(r, { status: r.ok ? 200 : 400 });
   }
