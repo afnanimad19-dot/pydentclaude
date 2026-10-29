@@ -13,6 +13,7 @@
 import { AccessToken } from "livekit-server-sdk";
 import { getLivekitCreds, lkConfigured } from "@/lib/livekit";
 import { retrieveKnowledge, queriesFromMessages, type RetrievalResult } from "@/lib/kb-retrieval";
+import { SCHEDULING_TOOL_CONTRACTS } from "@/lib/scheduling-tools";
 
 export interface AgentReplyInput {
   model?: string;
@@ -25,7 +26,15 @@ export interface AgentReplyInput {
   behavior?: string;
   knowledgeBase?: string;
   language?: string; // the agent's configured language, e.g. "Arabic"
-  capabilities?: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean };
+  capabilities?: {
+    canBook?: boolean;
+    canReschedule?: boolean;
+    canCancel?: boolean;
+    /** Smart Scheduling (read-only live calendar availability) — per-agent
+     *  opt-in flags from voice_settings.tools; OFF unless explicitly enabled. */
+    canCheckDoctorAvailability?: boolean;
+    canFindAvailableDoctors?: boolean;
+  };
   patientContext?: string;
   sessionNote?: string;
   messages: { role: "user" | "assistant"; content: string }[];
@@ -332,8 +341,17 @@ export async function generateAgentReply(
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-function toolsFor(caps: { canBook?: boolean; canReschedule?: boolean; canCancel?: boolean }): any[] {
+// Exported for tests: the gating here decides which tools an agent's LLM is
+// even OFFERED, so it must be provably opt-in for the scheduling tools.
+export function toolsFor(caps: NonNullable<AgentReplyInput["capabilities"]>): any[] {
   const tools: any[] = [];
+  // Smart Scheduling (READ-ONLY live calendar availability) — shares the exact
+  // contracts every other channel uses (scheduling-tools.ts). Opt-in per agent;
+  // no WhatsApp agent gains a tool until the clinic enables it explicitly.
+  for (const c of SCHEDULING_TOOL_CONTRACTS) {
+    const on = c.name === "check_doctor_availability" ? caps.canCheckDoctorAvailability : caps.canFindAvailableDoctors;
+    if (on) tools.push({ type: "function", function: { name: c.name, description: c.description, parameters: c.parameters } });
+  }
   if (caps.canBook) {
     tools.push({
       type: "function",

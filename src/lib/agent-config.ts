@@ -28,6 +28,9 @@ export interface AgentToolDef {
   legacyFlag?: "canBook" | "canReschedule" | "canCancel";
   /** Extra runtime requirement, surfaced in the UI when unmet. */
   requires?: "transferNumber";
+  /** Ships switched OFF: the clinic opts in per agent (nothing in production
+   *  changes behaviour until an admin enables the tool explicitly). */
+  defaultOff?: boolean;
 }
 
 export const AGENT_TOOLS: AgentToolDef[] = [
@@ -40,6 +43,10 @@ export const AGENT_TOOLS: AgentToolDef[] = [
   { id: "create_patient", label: "Create patient", description: "Add a new patient/lead record from the call." },
   { id: "send_email", label: "Send email", description: "Email the caller a confirmation or the details they asked for." },
   { id: "transfer_call", label: "Transfer to a human", description: "Warm-transfer the call to the clinic's number.", requires: "transferNumber" },
+  // Smart Scheduling (read-only live Google Calendar availability). OFF by
+  // default: no existing agent gains a tool until the clinic enables it.
+  { id: "check_doctor_availability", label: "Check doctor availability (live calendar)", description: "Read a doctor's real open times from the clinic's connected calendar. Read-only — cannot book, change, or cancel anything.", defaultOff: true },
+  { id: "find_available_doctors", label: "Find available doctors (live calendar)", description: "Read which doctors have calendar openings on a date. Read-only — cannot book, change, or cancel anything.", defaultOff: true },
 ];
 
 export type AgentToolState = Record<string, boolean>;
@@ -49,9 +56,9 @@ export function defaultToolState(agent?: { canBook?: boolean; canReschedule?: bo
   for (const t of AGENT_TOOLS) {
     if (t.always) { state[t.id] = true; continue; }
     if (t.legacyFlag) { state[t.id] = agent?.[t.legacyFlag] ?? true; continue; }
-    // Tools with no legacy equivalent default ON except the transfer tool,
-    // which needs a number configured before it can do anything.
-    state[t.id] = t.requires !== "transferNumber";
+    // Tools with no legacy equivalent default ON except opt-in tools and the
+    // transfer tool, which needs a number configured before it can do anything.
+    state[t.id] = !t.defaultOff && t.requires !== "transferNumber";
   }
   return state;
 }

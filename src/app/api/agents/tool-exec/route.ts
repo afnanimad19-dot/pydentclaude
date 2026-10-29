@@ -9,7 +9,9 @@ import {
 } from "@/lib/agent-tools-core";
 import { manageAppointmentFlow, listUpcomingFlow, voiceSpoken, type BuilderAgentRow } from "@/lib/builder-tools";
 import { realBuilderToolDeps } from "@/lib/builder-tools-deps";
-import { executeSchedulingTool } from "@/lib/scheduling-tools";
+import { executeSchedulingTool, type SchedulingToolName } from "@/lib/scheduling-tools";
+import { normalizeVoiceSettings } from "@/lib/agent-config";
+import type { AgentToolState } from "@/lib/agent-config";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // search_knowledge / lookup_patient / create_patient — real backends for the
@@ -85,14 +87,23 @@ export async function POST(req: NextRequest) {
       case "send_email":
         result = await sendAgentEmail({ to: String(a.to ?? ""), subject: String(a.subject ?? ""), body: String(a.body ?? ""), ws: agent.workspace_id ?? undefined, fromName: agent.name });
         break;
-      // Smart Scheduling (read-only live calendar availability). Additive:
-      // nothing calls these until an agent's configuration registers them.
+      // Smart Scheduling (read-only live calendar availability). Gated on the
+      // agent's tool configuration — OFF by default, so no agent answers with
+      // live availability until a clinic admin enables the tool explicitly.
       case "check_doctor_availability":
-      case "find_available_doctors":
-        result = ctx.ws
-          ? (await executeSchedulingTool(ctx.ws, name, a)).spoken
-          : "Scheduling isn't configured for this agent's workspace.";
+      case "find_available_doctors": {
+        const tools = (normalizeVoiceSettings(agent.voice_settings, {
+          canBook: !!agent.can_book, canReschedule: !!agent.can_reschedule, canCancel: !!agent.can_cancel,
+        }) as { tools?: AgentToolState }).tools ?? {};
+        if (tools[name] !== true) {
+          result = "Live calendar availability is not enabled for this agent.";
+        } else if (!ctx.ws) {
+          result = "Scheduling isn't configured for this agent's workspace.";
+        } else {
+          result = (await executeSchedulingTool(ctx.ws, name as SchedulingToolName, a)).spoken;
+        }
         break;
+      }
       case "search_knowledge":
         result = await searchKnowledge(agent, a);
         break;

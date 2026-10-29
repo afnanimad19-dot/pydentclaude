@@ -14,6 +14,7 @@ import {
 } from "@/lib/booking-server";
 import { lookupPatientCore, createPatientCore, searchKnowledgeCore, getPatientById } from "@/lib/agent-tools-core";
 import { sendAgentEmailDetailed } from "@/lib/email-send";
+import { executeSchedulingTool } from "@/lib/scheduling-tools";
 import type { BuilderToolDeps } from "@/lib/builder-tools";
 
 export function realBuilderToolDeps(channel: string): BuilderToolDeps {
@@ -31,5 +32,6 @@ export function realBuilderToolDeps(channel: string): BuilderToolDeps {
     createPatient: createPatientCore,
     searchKnowledge: (agent, a) => searchKnowledgeCore(agent, a, channel),
     sendEmail: sendAgentEmailDetailed,
+    executeScheduling: executeSchedulingTool,
   };
 }

@@ -18,7 +18,7 @@
 import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 import { freeBusyQuery, googleCalendarConfigured, type FreeBusyQuery, type FreeBusyResponse } from "@/lib/google-freebusy";
 import {
-  computeDaySlots, parseBusyIntervals, zonedTimeToUtcMs, isValidDateStr,
+  computeDaySlots, parseBusyIntervals, zonedTimeToUtcMs, isValidDateStr, isValidTimeZone,
   type AvailabilitySlot,
 } from "@/lib/availability";
 import {
@@ -32,6 +32,11 @@ export interface DoctorCalendarRow {
   calendar_id: string;
   provider: string;
   active: boolean;
+  /** Optional per-doctor IANA timezone override (migration 0066); null/absent = clinic timezone. */
+  timezone?: string | null;
+  /** True for development/test calendar mappings (migration 0066): availability
+   *  from them is labelled test data, never confirmed clinical availability. */
+  is_test?: boolean | null;
 }
 
 export interface ClinicConfig {
@@ -60,6 +65,11 @@ export interface DoctorAvailability {
   error?: AvailabilityError;
   detail?: string;
   busyCount?: number;
+  /** Timezone the slot times are expressed in (per-doctor override or clinic tz). */
+  timezone?: string;
+  /** Present and true ONLY for test-calendar mappings: these times are test
+   *  data from the development calendar, NOT confirmed clinical availability. */
+  test?: boolean;
   slots: AvailabilitySlot[];
 }
 
@@ -124,15 +134,36 @@ export async function getClinicAvailability(
   if (weekday && cfg.settings.closedDays.includes(weekday)) {
     return {
       ...base, success: true,
-      doctors: rows.map((r) => ({ doctor: r.doctor_name, status: "closed", slots: [] })),
+      doctors: rows.map((r) => ({ doctor: r.doctor_name, status: "closed", ...(r.is_test ? { test: true as const } : {}), slots: [] })),
     };
   }
 
-  const openMs = zonedTimeToUtcMs(base.date, cfg.settings.openTime, cfg.timezone);
-  const closeMs = zonedTimeToUtcMs(base.date, cfg.settings.closeTime, cfg.timezone);
+  // A doctor's slot window is the clinic's opening hours expressed in that
+  // doctor's timezone: the clinic timezone by default, or the mapping's
+  // per-doctor override (0066) when valid — an invalid stored value falls
+  // back to the clinic timezone rather than failing the request.
+  const tzFor = (r: DoctorCalendarRow) => (isValidTimeZone(r.timezone) ? r.timezone : cfg.timezone);
+  // For "today", never offer start times already in the past: push the
+  // effective opening forward to the next grid point at or after now.
+  const effectiveOpenFor = (tz: string, openMs: number) => {
+    if (base.date !== todayInTz(tz, deps.now())) return cfg.settings.openTime;
+    const sinceOpenMin = Math.max(0, Math.ceil((deps.now().getTime() - openMs) / 60_000));
+    const grid = Math.max(1, cfg.settings.slotMinutes);
+    const shifted = timeToMinutes(cfg.settings.openTime) + Math.ceil(sinceOpenMin / grid) * grid;
+    return `${String(Math.floor(shifted / 60)).padStart(2, "0")}:${String(shifted % 60).padStart(2, "0")}`;
+  };
+  const windows = new Map<string, { openMs: number; closeMs: number; effectiveOpen: string }>();
+  for (const tz of new Set(rows.map(tzFor))) {
+    const openMs = zonedTimeToUtcMs(base.date, cfg.settings.openTime, tz);
+    windows.set(tz, { openMs, closeMs: zonedTimeToUtcMs(base.date, cfg.settings.closeTime, tz), effectiveOpen: effectiveOpenFor(tz, openMs) });
+  }
+  // One batched query spanning every doctor's window, so a timezone override
+  // can never push busy intervals outside the queried range (missed busy time
+  // would read as fabricated availability).
+  const all = [...windows.values()];
   const fb = await deps.freeBusy({
-    timeMin: new Date(openMs).toISOString(),
-    timeMax: new Date(closeMs).toISOString(),
+    timeMin: new Date(Math.min(...all.map((w) => w.openMs))).toISOString(),
+    timeMax: new Date(Math.max(...all.map((w) => w.closeMs))).toISOString(),
     timeZone: cfg.timezone,
     calendarIds: rows.map((r) => r.calendar_id),
   });
@@ -142,31 +173,24 @@ export async function getClinicAvailability(
     return { ...failAll(base, err, fb.detail, rows.map((r) => r.doctor_name)), tookMs: fb.tookMs };
   }
 
-  // For "today", never offer start times already in the past: push the
-  // effective opening forward to the next grid point at or after now.
-  let effectiveOpen = cfg.settings.openTime;
-  if (base.date === todayInTz(cfg.timezone, deps.now())) {
-    const sinceOpenMin = Math.max(0, Math.ceil((deps.now().getTime() - openMs) / 60_000));
-    const grid = Math.max(1, cfg.settings.slotMinutes);
-    const shifted = timeToMinutes(cfg.settings.openTime) + Math.ceil(sinceOpenMin / grid) * grid;
-    effectiveOpen = `${String(Math.floor(shifted / 60)).padStart(2, "0")}:${String(shifted % 60).padStart(2, "0")}`;
-  }
-
   const doctors: DoctorAvailability[] = rows.map((r) => {
+    const tz = tzFor(r);
+    const flags = { timezone: tz, ...(r.is_test ? { test: true as const } : {}) };
     const cal = fb.calendars[r.calendar_id];
-    if (!cal) return { doctor: r.doctor_name, status: "unavailable", error: "calendar_error", detail: "calendar missing from FreeBusy response", slots: [] };
+    if (!cal) return { doctor: r.doctor_name, status: "unavailable", error: "calendar_error", detail: "calendar missing from FreeBusy response", ...flags, slots: [] };
     if (cal.errors?.length) {
       const reason = cal.errors.map((e) => e.reason ?? "error").join(",").slice(0, 80);
-      return { doctor: r.doctor_name, status: "unavailable", error: "calendar_error", detail: reason, slots: [] };
+      return { doctor: r.doctor_name, status: "unavailable", error: "calendar_error", detail: reason, ...flags, slots: [] };
     }
     const busy = parseBusyIntervals(cal.busy);
+    const w = windows.get(tz)!;
     const slots = computeDaySlots({
-      date: base.date, timezone: cfg.timezone,
-      openTime: effectiveOpen, closeTime: cfg.settings.closeTime,
+      date: base.date, timezone: tz,
+      openTime: w.effectiveOpen, closeTime: cfg.settings.closeTime,
       slotMinutes: cfg.settings.slotMinutes, durationMin: base.durationMin,
       busy,
     });
-    return { doctor: r.doctor_name, status: "ok", busyCount: busy.length, slots };
+    return { doctor: r.doctor_name, status: "ok", busyCount: busy.length, ...flags, slots };
   });
 
   return { ...base, success: doctors.some((d) => d.status !== "unavailable"), tookMs: fb.tookMs, doctors };
@@ -209,6 +233,14 @@ export const realAvailabilityDeps: AvailabilityDeps = {
   configured: googleCalendarConfigured,
   listDoctorCalendars: async (ws) => {
     try {
+      // Day-2 columns first (migration 0066); when they don't exist yet the
+      // select errors, so retry with the 0065 column set — deployments between
+      // migrations keep working with clinic-timezone, non-test semantics.
+      const extended = await supabase
+        .from("doctor_calendars")
+        .select("doctor_name, calendar_id, provider, active, timezone, is_test")
+        .eq("workspace_id", ws);
+      if (!extended.error) return { ok: true, rows: (extended.data ?? []) as DoctorCalendarRow[] };
       const { data, error } = await supabase
         .from("doctor_calendars")
         .select("doctor_name, calendar_id, provider, active")

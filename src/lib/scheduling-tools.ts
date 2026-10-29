@@ -53,11 +53,16 @@ export interface SchedulingToolOutput {
 const offerList = (slots: { start: string }[], max = 6) =>
   slots.slice(0, max).map((s) => s.start).join(", ") + (slots.length > max ? `, and ${slots.length - max} more` : "");
 
+// Test-calendar mappings (doctor_calendars.is_test) must never read as
+// confirmed clinical availability — the label travels with every sentence.
+const TEST_NOTE = " [TEST calendar — demo data, not confirmed clinical availability]";
+
 function spokenForDoctor(d: DoctorAvailability, date: string): string {
+  const test = d.test ? TEST_NOTE : "";
   if (d.status === "closed") return `The clinic is closed on ${date}.`;
   if (d.status === "unavailable") return `I can't verify ${d.doctor}'s calendar right now, so I won't guess times — please try again shortly.`;
-  if (!d.slots.length) return `${d.doctor} has no openings on ${date} — offer another day.`;
-  return `${d.doctor} is available on ${date} at: ${offerList(d.slots)}.`;
+  if (!d.slots.length) return `${d.doctor} has no openings on ${date} — offer another day.${test}`;
+  return `${d.doctor} is available on ${date} at: ${offerList(d.slots)}.${test}`;
 }
 
 // Executes one scheduling tool for an authenticated workspace. `ws` MUST come
@@ -97,6 +102,7 @@ export async function executeSchedulingTool(
     else {
       spoken = `Available on ${r.date}: ` + open.map((d) => `${d.doctor} at ${offerList(d.slots, 4)}`).join("; ") + ".";
       if (unverified.length) spoken += ` (Could not verify: ${unverified.map((d) => d.doctor).join(", ")}.)`;
+      if (open.some((d) => d.test)) spoken += TEST_NOTE;
     }
   }
   return { structured: r, spoken };

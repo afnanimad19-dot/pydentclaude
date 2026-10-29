@@ -132,6 +132,19 @@ export function computeDaySlots(input: DayAvailabilityInput): AvailabilitySlot[]
   return out;
 }
 
+// Is `tz` an IANA timezone Intl can resolve? Used to validate per-doctor
+// timezone overrides before they ever reach slot math (an invalid stored
+// value must fall back to the clinic timezone, never throw mid-request).
+export function isValidTimeZone(tz: unknown): tz is string {
+  if (typeof tz !== "string" || !tz.trim()) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isValidDateStr(d: unknown): d is string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d ?? ""))) return false;
   return Number.isFinite(Date.parse(`${d}T00:00:00Z`));

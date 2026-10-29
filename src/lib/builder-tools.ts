@@ -42,6 +42,7 @@ import type {
 } from "@/lib/booking-server";
 import type { PatientHit, LookupPatientResult, CreatePatientResult, KnowledgeResult } from "@/lib/agent-tools-core";
 import type { EmailSendResult } from "@/lib/email-send";
+import type { SchedulingToolName, SchedulingToolOutput } from "@/lib/scheduling-tools";
 
 export interface BuilderAgentRow {
   id: string;
@@ -71,6 +72,9 @@ export interface BuilderToolDeps {
   createPatient(ws: string | null, agentName: string, q: { name?: unknown; phone?: unknown; email?: unknown }): Promise<CreatePatientResult>;
   searchKnowledge(agent: { name?: string | null; knowledge_base?: string | null }, a: { query?: unknown; context?: unknown }): Promise<KnowledgeResult>;
   sendEmail(input: { to: string; subject: string; body: string; ws?: string; fromName?: string }): Promise<EmailSendResult>;
+  /** Smart Scheduling (READ-ONLY live calendar availability) — never books,
+   *  reschedules, or cancels anything. */
+  executeScheduling(ws: string, name: SchedulingToolName, args: Record<string, unknown>): Promise<SchedulingToolOutput>;
 }
 
 export interface BuilderHttpResult {
@@ -93,6 +97,11 @@ const SERVED_TOOLS = new Set([
   "list_upcoming_appointments",
   "send_email",
   "search_knowledge",
+  // Smart Scheduling — read-only availability. Default OFF per agent
+  // (agent-config.ts defaultOff), so no production agent serves them until a
+  // clinic admin enables the tool explicitly.
+  "check_doctor_availability",
+  "find_available_doctors",
 ]);
 
 const NATIVE_TOOLS = new Set(["end_call", "transfer_call"]);
@@ -563,6 +572,23 @@ export async function handleBuilderToolRequest(
               status: "Scheduled",
             },
             spoken: r.spoken,
+          },
+        };
+      }
+      case "check_doctor_availability":
+      case "find_available_doctors": {
+        // Read-only Smart Scheduling: live calendar free/busy for THIS
+        // workspace only. A failed calendar read comes back as
+        // success:false — never an invented "fully free" calendar.
+        if (!ws) return fail(403, "no_workspace", "This agent has no workspace, so live availability is not configured.");
+        const out = await deps.executeScheduling(ws, canonical as SchedulingToolName, args);
+        return {
+          status: 200,
+          body: {
+            success: out.structured.success,
+            ...(out.structured.error ? { reason: out.structured.error } : {}),
+            availability: out.structured,
+            spoken: out.spoken,
           },
         };
       }

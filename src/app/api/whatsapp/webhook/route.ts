@@ -6,6 +6,8 @@ import { sendByChannel, fetchMetaUserName, getWaCredsByPhoneId, getPageCredsByPa
 import { getSlots, bookAppointment, rescheduleAppt, cancelAppt, type BookingCtx } from "@/lib/booking-server";
 import { sendAgentEmail } from "@/lib/email-send";
 import { triggerWorkflows } from "@/lib/workflow-runner";
+import { executeSchedulingTool, SCHEDULING_TOOL_NAMES, type SchedulingToolName } from "@/lib/scheduling-tools";
+import { normalizeVoiceSettings, type AgentToolState } from "@/lib/agent-config";
 
 // Meta calls this endpoint:
 //  1. GET  — verification handshake when you save the webhook (echo hub.challenge).
@@ -426,6 +428,16 @@ async function storeInbound(
     sessionNote = returningGreetingNote({ name, appt: upcomingAppt, known });
   }
 
+  // Smart Scheduling (read-only live calendar availability): strictly opt-in
+  // per agent via voice_settings.tools (default OFF in agent-config.ts), so no
+  // active WhatsApp agent changes behaviour until a clinic admin enables it.
+  const agentTools: AgentToolState =
+    (normalizeVoiceSettings(agent.voice_settings, {
+      canBook: !!agent.can_book, canReschedule: !!agent.can_reschedule, canCancel: !!agent.can_cancel,
+    }) as { tools?: AgentToolState }).tools ?? {};
+  const canCheckDoctorAvailability = agentTools.check_doctor_availability === true;
+  const canFindAvailableDoctors = agentTools.find_available_doctors === true;
+
   const replyInput = {
     model: agent.model ?? "openai/gpt-4o-mini",
     // Workspace id lets a "livekit:" model authenticate with this clinic's own
@@ -437,13 +449,13 @@ async function storeInbound(
     behavior: agent.behavior ?? "",
     knowledgeBase: agent.knowledge_base ?? "",
     language: agent.language ?? "",
-    capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel },
+    capabilities: { canBook: agent.can_book, canReschedule: agent.can_reschedule, canCancel: agent.can_cancel, canCheckDoctorAvailability, canFindAvailableDoctors },
     patientContext: `Contact name: ${name}. Contact phone: ${contactId}.${apptContext}`,
     sessionNote,
     messages: (history ?? []).map((h: any) => ({ role: h.direction === "inbound" ? ("user" as const) : ("assistant" as const), content: h.body })),
   };
 
-  const useTools = agent.can_book || agent.can_reschedule || agent.can_cancel;
+  const useTools = agent.can_book || agent.can_reschedule || agent.can_cancel || canCheckDoctorAvailability || canFindAvailableDoctors;
   // Stamp every booking with the channel it came from and the chat agent's name.
   const bookingCtx: BookingCtx = {
     ws,
@@ -461,6 +473,14 @@ async function storeInbound(
     if (toolName === "cancel_appointment") return cancelAppt(bookingCtx, args);
     if (toolName === "send_email")
       return sendAgentEmail({ to: String(args.to ?? ""), subject: String(args.subject ?? ""), body: String(args.body ?? ""), ws: ws ?? undefined, fromName: agent.name });
+    // Read-only Smart Scheduling — the LLM is only offered these when the
+    // per-agent flags are on; the gate here is defence in depth.
+    if ((SCHEDULING_TOOL_NAMES as readonly string[]).includes(toolName)) {
+      const enabled = toolName === "check_doctor_availability" ? canCheckDoctorAvailability : canFindAvailableDoctors;
+      if (!enabled) return "Live calendar availability is not enabled for this agent.";
+      if (!ws) return "Scheduling isn't configured for this clinic's workspace.";
+      return (await executeSchedulingTool(ws, toolName as SchedulingToolName, args)).spoken;
+    }
     return "Unsupported tool.";
   };
 
