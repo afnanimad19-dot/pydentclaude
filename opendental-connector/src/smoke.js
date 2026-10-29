@@ -4,7 +4,10 @@
 // (No Open Dental, no clinic API keys, no tunnel needed.)
 
 process.env.OPEN_DENTAL_MOCK = "1";
-process.env.CLINIC_API_KEY = process.env.CLINIC_API_KEY || "smoke-key";
+// Booking endpoints are exercised against the IN-MEMORY mock only, so the
+// default-on read-only mode is explicitly lifted for this one process.
+process.env.OPEN_DENTAL_READ_ONLY = "0";
+process.env.CLINIC_API_KEY = process.env.CLINIC_API_KEY || "smoke-test-key-0123456789";
 process.env.PORT = process.env.PORT || "4123";
 
 const base = `http://localhost:${process.env.PORT}`;
@@ -24,6 +27,7 @@ console.log("\nPydent Connector — smoke test (mock mode)\n");
 // Health (no auth)
 const health = await (await fetch(`${base}/health`)).json();
 assert(health.ok && health.mode === "mock", "health responds in mock mode");
+assert(health.readOnly === false, "read-only mode is explicitly lifted for the mock smoke run");
 
 // Auth is enforced
 assert((await fetch(`${base}/doctors`)).status === 401, "requests without the API key are rejected (401)");

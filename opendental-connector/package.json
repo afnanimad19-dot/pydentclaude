@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server.js",
     "start:mock": "OPEN_DENTAL_MOCK=1 node src/server.js",
-    "smoke": "node src/smoke.js"
+    "smoke": "node src/smoke.js",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "express": "^4.19.2"
