@@ -9,6 +9,7 @@ import {
 } from "@/lib/agent-tools-core";
 import { manageAppointmentFlow, listUpcomingFlow, voiceSpoken, type BuilderAgentRow } from "@/lib/builder-tools";
 import { realBuilderToolDeps } from "@/lib/builder-tools-deps";
+import { executeSchedulingTool } from "@/lib/scheduling-tools";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // search_knowledge / lookup_patient / create_patient — real backends for the
@@ -83,6 +84,14 @@ export async function POST(req: NextRequest) {
       }
       case "send_email":
         result = await sendAgentEmail({ to: String(a.to ?? ""), subject: String(a.subject ?? ""), body: String(a.body ?? ""), ws: agent.workspace_id ?? undefined, fromName: agent.name });
+        break;
+      // Smart Scheduling (read-only live calendar availability). Additive:
+      // nothing calls these until an agent's configuration registers them.
+      case "check_doctor_availability":
+      case "find_available_doctors":
+        result = ctx.ws
+          ? (await executeSchedulingTool(ctx.ws, name, a)).spoken
+          : "Scheduling isn't configured for this agent's workspace.";
         break;
       case "search_knowledge":
         result = await searchKnowledge(agent, a);
