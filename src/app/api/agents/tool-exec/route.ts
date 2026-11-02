@@ -12,6 +12,8 @@ import { realBuilderToolDeps } from "@/lib/builder-tools-deps";
 import { executeSchedulingTool, type SchedulingToolName } from "@/lib/scheduling-tools";
 import { normalizeVoiceSettings } from "@/lib/agent-config";
 import type { AgentToolState } from "@/lib/agent-config";
+import { authorizeToolExec, extractWorkerToken, toolExecAuthRequired } from "@/lib/tool-exec-auth";
+import { resolveWorkerToken } from "@/lib/livekit";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // search_knowledge / lookup_patient / create_patient — real backends for the
@@ -44,11 +46,32 @@ const workerDeps = realBuilderToolDeps("voice");
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export async function POST(req: NextRequest) {
-  const { agentId, name, args } = await req.json().catch(() => ({}));
+  const body = await req.json().catch(() => ({}));
+  const { agentId, name, args } = body ?? {};
   if (!agentId || !name) return NextResponse.json({ error: "agentId and name are required." }, { status: 400 });
+
+  // Worker authentication (see lib/tool-exec-auth.ts for the rollout model).
+  // The credential is checked BEFORE the agent lookup, so in strict mode this
+  // endpoint no longer confirms whether an agent UUID exists; a presented
+  // token is verified in every mode, and a workspace-bound token may only act
+  // on agents of its own workspace.
+  const token = extractWorkerToken(body, req.headers.get("authorization"));
+  const authDeps = { resolveToken: resolveWorkerToken, requireAuth: toolExecAuthRequired() };
+  // Credential check BEFORE the agent lookup (agentWorkspace deferred): a
+  // missing token in strict mode or an invalid token in any mode is rejected
+  // without confirming whether the agent UUID exists.
+  const preAuth = await authorizeToolExec(authDeps, { token, agentWorkspace: undefined });
+  if (!preAuth.ok) return NextResponse.json({ error: preAuth.error }, { status: preAuth.status });
 
   const { data: agent } = await supabase.from("agents").select("*").eq("id", agentId).maybeSingle();
   if (!agent) return NextResponse.json({ error: "Agent not found." }, { status: 404 });
+
+  const auth = await authorizeToolExec(authDeps, { token, agentWorkspace: agent.workspace_id ?? null });
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+  if (auth.warn) {
+    // Never log args or patient data — only enough to track the rollout.
+    console.warn(`tool-exec ${auth.warn} call: agent=${String(agentId).slice(0, 8)}… tool=${String(name)}`);
+  }
 
   const a: any = args ?? {};
   const ctx: BookingCtx = {
