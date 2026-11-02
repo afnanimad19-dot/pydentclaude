@@ -107,7 +107,7 @@ except Exception:  # pragma: no cover
     logger.warning("livekit-plugins-noise-cancellation not installed — noise reduction disabled")
 
 
-# ── Pydent HTTP helpers ─────────────────────────────────────────────────────
+# ── Pydent HTTP helpers ───────────────────────────────────────────────────────────
 async def pydent_post(path: str, payload: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
     async with aiohttp.ClientSession() as http:
         async with http.post(f"{PYDENT_BASE}{path}", json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
@@ -143,7 +143,9 @@ async def run_tool(agent_id: str, name: str, args: dict[str, Any]) -> str:
     started = time.monotonic()
     ok = True
     try:
-        data = await pydent_post("/api/agents/tool-exec", {"agentId": agent_id, "name": name, "args": args})
+        # The worker token authenticates this call (same credential agent-config
+        # and call-log already send). Older Pydent deployments ignore the field.
+        data = await pydent_post("/api/agents/tool-exec", {"token": WORKER_TOKEN, "agentId": agent_id, "name": name, "args": args})
         return str(data.get("result") or data.get("error") or "Tool failed.")
     except Exception as e:  # never crash the call over a tool
         ok = False
@@ -157,7 +159,7 @@ async def run_tool(agent_id: str, name: str, args: dict[str, Any]) -> str:
         logger.info("TOOL_CALL name=%s ok=%s ms=%s", name, ok, ms)
 
 
-# ── Caller identity ──────────────────────────────────────────────────────────
+# ── Caller identity ────────────────────────────────────────────────────────────────
 # The caller's number arrives as the SIP participant attribute
 # "sip.phoneNumber". It is normalized here and kept in a PRIVATE per-call
 # holder (call_state) that only the tool layer reads — it is never written
@@ -789,7 +791,7 @@ class CallLifecycle:
         self._tasks.clear()
 
 
-# ── Worker entrypoint ───────────────────────────────────────────────────────
+# ── Worker entrypoint ───────────────────────────────────────────────────────────
 server = AgentServer()
 
 
