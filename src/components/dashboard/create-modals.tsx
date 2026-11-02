@@ -7,8 +7,8 @@ import {
   createPatient,
   createAppointment,
   fetchAppointments,
-  getWorkspaceId,
 } from "@/lib/db";
+import { authFetch } from "@/lib/auth-fetch";
 
 function ResultNote({ ok, text }: { ok: boolean; text: string }) {
   return ok ? (
@@ -211,12 +211,12 @@ export function NewAppointmentModal({
       // Mirror to the clinic's Google Calendar (in-app OAuth or the engine's
       // connected calendar) — same push agent bookings get. Best-effort.
       try {
-        const ws = await getWorkspaceId();
+        // Authenticated: the server derives the workspace from the session
+        // token (never from the body), per the Phase 2A security contract.
         const pName = patientName ?? patientOptions?.find((p) => p.id === pid)?.name ?? "Patient";
-        void fetch("/api/calendar/gcal", {
+        void authFetch("/api/calendar/gcal", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ws, summary: `${procedure || "Appointment"} — ${pName}`, description: `Provider: ${provider} · ${operatory} · booked manually`, date: slot.date, time: slot.time }),
+          body: JSON.stringify({ summary: `${procedure || "Appointment"} — ${pName}`, description: `Provider: ${provider} · ${operatory} · booked manually`, date: slot.date, time: slot.time }),
         });
       } catch { /* calendar mirror is optional */ }
     }
@@ -306,4 +306,3 @@ export function NewAppointmentModal({
     </Modal>
   );
 }
-
