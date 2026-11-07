@@ -1,6 +1,6 @@
 # Pydent GC-1 — Google OAuth Security Hardening
 
-Date: 2026-11-07 · Branch: `claude/compassionate-gauss-urq2bj` · Baseline: `4a631fade0125940d83cbd802cb757078b6b6a75`
+Date: 2026-11-07 · Branch: `claude/compassionate-gauss-urq2bj` · Baseline: `4a631fade0125940d83cbd802cb257078b6b6a75`
 Status: **implemented, NOT deployed — NOT PRODUCTION READY until migration 0067 is reviewed and applied and `OAUTH_STATE_SECRET` is set (the flow fails closed without both, by design).**
 
 ## 1. Files changed
