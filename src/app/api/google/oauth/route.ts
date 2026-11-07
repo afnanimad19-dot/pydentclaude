@@ -1,50 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authorizeRequest } from "@/lib/server-auth-deps";
+import { ADMIN_ROLES } from "@/lib/server-auth";
+import { beginGoogleOAuth, realOAuthFlowDeps } from "@/lib/google-oauth-flow";
 
-// Google OAuth — step 1: send the clinic to Google's consent screen.
+// Google OAuth — step 1 (GC-1 hardened): an AUTHENTICATED owner/admin asks the
+// server to begin a connection; the server mints an HMAC-signed state bound to
+// the SESSION workspace (plus a one-time nonce persisted in oauth_nonces) and
+// returns the Google consent URL for the dashboard to open in a popup.
 //
-// MULTI-TENANT: there is ONE Google OAuth *app* (its client id/secret live in env
-// vars — the developer's app). Each clinic connects its OWN Google account here;
-// the resulting tokens are stored per-workspace (see the callback). We pass the
-// workspace id + which product through `state` so the callback knows who/what.
+// The previous unauthenticated GET redirect — which took the workspace id from
+// the query string and carried forgeable state — is REMOVED. Client input can
+// no longer name a tenant anywhere in this flow.
 //
-// IMPORTANT: in Google Cloud Console → Credentials → your OAuth client, the
-// "Authorized redirect URI" must EXACTLY match: <origin>/api/google/oauth/callback
-// (e.g. https://pydent.netlify.app/api/google/oauth/callback). A mismatch is the
-// "Error 400: redirect_uri_mismatch" screen.
+// Fail-closed: missing OAUTH_STATE_SECRET or an unavailable nonce ledger
+// (migration 0067 not applied) refuses to start, with a clear reason.
+//
+// Google Cloud: the redirect URI is unchanged —
+// <origin>/api/google/oauth/callback — matching the authorized URI configured
+// for the OAuth client.
+export const runtime = "nodejs";
 
-// Each Google product needs its own scope(s). One app can request any of these.
-const SCOPES: Record<string, string> = {
-  google_calendar: "https://www.googleapis.com/auth/calendar.events",
-  google_analytics: "https://www.googleapis.com/auth/analytics.readonly",
-  google_search_console: "https://www.googleapis.com/auth/webmasters.readonly",
-  google_business: "https://www.googleapis.com/auth/business.manage",
-  google_ads: "https://www.googleapis.com/auth/adwords",
-  google_drive: "https://www.googleapis.com/auth/drive.readonly",
-  youtube: "https://www.googleapis.com/auth/youtube.readonly",
-  google_gmail: "https://www.googleapis.com/auth/gmail.send",
-};
-
-export async function GET(req: NextRequest) {
-  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
-  if (!clientId) {
-    return NextResponse.json({ error: "GOOGLE_OAUTH_CLIENT_ID is not configured." }, { status: 503 });
-  }
-  const provider = req.nextUrl.searchParams.get("provider") ?? "google_calendar";
-  const ws = req.nextUrl.searchParams.get("ws") ?? "";
-  const popup = req.nextUrl.searchParams.get("popup") === "1";
-  const scope = SCOPES[provider] ?? SCOPES.google_calendar;
-
-  const origin = req.nextUrl.origin;
-  const state = Buffer.from(JSON.stringify({ ws, provider, popup })).toString("base64url");
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: `${origin}/api/google/oauth/callback`,
-    response_type: "code",
-    scope: `${scope} openid email`,
-    access_type: "offline",
-    include_granted_scopes: "true",
-    prompt: "consent",
-    state,
+export async function POST(req: NextRequest) {
+  const auth = await authorizeRequest(req, {
+    allowedRoles: ADMIN_ROLES,
+    roleError: "Only a workspace owner or admin can connect Google accounts.",
   });
-  return NextResponse.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+
+  const body = await req.json().catch(() => ({}));
+  const provider = String(body?.provider ?? "google_calendar");
+  const popup = body?.popup === true;
+
+  const r = await beginGoogleOAuth(realOAuthFlowDeps(), {
+    ws: auth.workspaceId,
+    provider,
+    popup,
+    origin: req.nextUrl.origin,
+    clientId: process.env.GOOGLE_OAUTH_CLIENT_ID,
+  });
+  if (!r.ok) return NextResponse.json({ error: r.error }, { status: r.status });
+  return NextResponse.json({ url: r.url });
 }
