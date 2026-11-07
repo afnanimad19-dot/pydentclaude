@@ -1,21 +1,38 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { authorizeRequest } from "@/lib/server-auth-deps";
+import { ADMIN_ROLES } from "@/lib/server-auth";
+import { disconnectGoogle, realOAuthFlowDeps, GOOGLE_SCOPES } from "@/lib/google-oauth-flow";
+import { supabaseAdmin as supabase } from "@/lib/supabase-admin";
 
-// Disconnects a provider for a workspace: removes the stored tokens and the
-// connection status row. Uses the service-role key to reach oauth_tokens.
+// Disconnect a provider (GC-1 hardened): requires a signed-in workspace
+// OWNER/ADMIN; the workspace always comes from the verified session — the
+// previous unauthenticated handler that trusted a workspaceId in the body is
+// REMOVED, so one tenant can never sever another tenant's integrations.
+//
+// Google providers additionally get best-effort token revocation at Google
+// before the stored rows are deleted (a revocation failure never blocks the
+// local disconnect, and is reported in the response).
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
-  const { workspaceId, provider } = await req.json().catch(() => ({}));
-  if (!workspaceId || !provider) {
-    return NextResponse.json({ error: "workspaceId and provider are required." }, { status: 400 });
+  const auth = await authorizeRequest(req, {
+    allowedRoles: ADMIN_ROLES,
+    roleError: "Only a workspace owner or admin can disconnect integrations.",
+  });
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+
+  const { provider } = await req.json().catch(() => ({}));
+  if (!provider || typeof provider !== "string") {
+    return NextResponse.json({ error: "provider is required." }, { status: 400 });
   }
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://mzqynjywncbvqfikbzgm.supabase.co";
-  if (!serviceKey) {
-    return NextResponse.json({ error: "Server not configured for disconnect." }, { status: 503 });
+
+  if (provider in GOOGLE_SCOPES) {
+    const r = await disconnectGoogle(realOAuthFlowDeps(), { ws: auth.workspaceId, provider });
+    return NextResponse.json({ ok: true, revoked: r.revoked });
   }
-  const admin = createClient(supabaseUrl, serviceKey);
-  await admin.from("oauth_tokens").delete().eq("workspace_id", workspaceId).eq("provider", provider);
-  await admin.from("connections").delete().eq("workspace_id", workspaceId).eq("provider", provider);
+
+  // Non-Google providers: same row cleanup, scoped to the session workspace.
+  await supabase.from("oauth_tokens").delete().eq("workspace_id", auth.workspaceId).eq("provider", provider);
+  await supabase.from("connections").delete().eq("workspace_id", auth.workspaceId).eq("provider", provider);
   return NextResponse.json({ ok: true });
 }
