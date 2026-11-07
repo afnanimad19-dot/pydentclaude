@@ -5,7 +5,8 @@ import { Search, CheckCircle2, CircleAlert, X } from "lucide-react";
 import { Card } from "@/components/ui";
 import { Modal, inputCls } from "@/components/modal";
 import { toast } from "@/components/toast";
-import { fetchConnections, disconnectConnection, setConnectionAccessMode, getWorkspaceId, type Connection } from "@/lib/db";
+import { fetchConnections, setConnectionAccessMode, getWorkspaceId, type Connection } from "@/lib/db";
+import { authFetch } from "@/lib/auth-fetch";
 
 // A provider in the catalog. `oauth: "google"` ones connect for real (popup);
 // the rest render as cards and explain the one-time app setup they need.
@@ -81,9 +82,44 @@ export function IntegrationsPanel() {
     setBusy(key);
     const popup = window.open(url, "pydent-oauth", "width=520,height=680");
     if (!popup) { window.location.assign(url.replace("&popup=1", "")); return; }
+    watchPopup(popup);
+  }
+
+  function watchPopup(popup: Window) {
     const timer = setInterval(() => {
       if (popup.closed) { clearInterval(timer); setBusy(null); refresh(); }
     }, 800);
+  }
+
+  // GC-1 Google flow: open the window inside the click gesture (popup blockers),
+  // then ask the server — authenticated, workspace from the session — for the
+  // signed consent URL and navigate the popup to it.
+  async function openGooglePopup(key: string) {
+    setBusy(key);
+    const popup = window.open("about:blank", "pydent-oauth", "width=520,height=680");
+    try {
+      const res = await authFetch("/api/google/oauth", {
+        method: "POST",
+        body: JSON.stringify({ provider: key, popup: !!popup }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.url) {
+        popup?.close();
+        setBusy(null);
+        toast(d.error ?? "Could not start the Google connection.", "info");
+        return;
+      }
+      if (popup) {
+        popup.location.href = d.url;
+        watchPopup(popup);
+      } else {
+        window.location.assign(d.url);
+      }
+    } catch {
+      popup?.close();
+      setBusy(null);
+      toast("Could not start the Google connection.", "info");
+    }
   }
 
   useEffect(() => {
@@ -105,10 +141,13 @@ export function IntegrationsPanel() {
     if (p.key === "wordpress_self") { setWpSelfOpen(true); return; }
     // Twilio needs a bespoke 3-field form (SID + token + from number).
     if (p.key === "twilio") { setTwilioOpen(true); return; }
-    // Google products (incl. YouTube) use the Google OAuth flow.
+    // Google products (incl. YouTube) use the Google OAuth flow. GC-1: the
+    // consent URL comes from an AUTHENTICATED begin step (signed state, session
+    // workspace) — the popup is opened synchronously first so blockers allow it,
+    // then pointed at Google once the server answers.
     if (GOOGLE_KEYS.has(p.key)) {
       if (!googleReady) { toast("Add GOOGLE_OAUTH_CLIENT_ID / SECRET in Netlify to enable Google connections.", "info"); return; }
-      openPopup(`/api/google/oauth?provider=${p.key}&ws=${encodeURIComponent(ws)}&popup=1`, p.key);
+      void openGooglePopup(p.key);
       return;
     }
     // Generic OAuth2 providers (Meta, LinkedIn, Reddit, Pinterest, TikTok, WordPress…).
@@ -126,10 +165,24 @@ export function IntegrationsPanel() {
   async function doDisconnect(p: Provider) {
     setConfirmDisconnect(null);
     setBusy(p.key);
-    await disconnectConnection(p.key);
+    // GC-1: authenticated; the server derives the workspace from the session
+    // and revokes Google tokens before deleting the stored connection.
+    try {
+      const res = await authFetch("/api/connections/disconnect", {
+        method: "POST",
+        body: JSON.stringify({ provider: p.key }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        toast(d.error ?? "Could not disconnect.", "info");
+      } else {
+        toast("Disconnected.", "success");
+      }
+    } catch {
+      toast("Could not disconnect.", "info");
+    }
     setBusy(null);
     refresh();
-    toast("Disconnected.", "success");
   }
 
   async function changeMode(p: Provider, mode: "read" | "write") {
